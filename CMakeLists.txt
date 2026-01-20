@@ -4,19 +4,27 @@ set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/install" CACHE PATH "Install prefi
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+# C++23
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS ON)
+
 # Bootstrap vcpkg (BEFORE project!)
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
   include(BootstrapVcpkg)
   bootstrap_vcpkg_toolchain()
 endif()
 
-project(MyProject)
+project(lifted-root)
 
-# FetchContent will download these automatically
 include(BuildRemill)
 include(BuildKLEE)
+include(BuildLIEF)
+include(BuildPolaris)
+include(BuildSouper)
 
-# Your code
-add_executable(my_app src/main.cpp)
+add_subdirectory(evaluation)
 
-target_link_libraries(my_app PRIVATE remill klee)
+add_subdirectory(helpers)
+
+add_subdirectory(src)

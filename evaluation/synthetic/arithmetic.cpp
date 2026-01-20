@@ -1,5 +1,7 @@
+#include "annotations.h"
 
-__declspec(dllexport) extern "C" int test(int x) 
+extern "C"
+int POLARIS_ANNOTATE test(int x) 
 {
     return (x * 2) | 7772 & x + 442;
 }

@@ -1,5 +1,7 @@
+#include "annotations.h"
 
-int test(int x)
+extern "C"
+int POLARIS_ANNOTATE test(int x)
 {
     switch (x) {
         case 1:

@@ -1,9 +1,11 @@
+#include "annotations.h"
 
-int test(int x)
+extern "C"
+int POLARIS_ANNOTATE test(int x, int y)
 {
-    int arr[16];
-    for (int i = 0; i < 16; i++) {
-        arr[i] = i;
+    int arr[32];
+    for (int i = 0; i < y; i++) {
+        arr[i] = i + x;
     }
     return arr[x];
 }

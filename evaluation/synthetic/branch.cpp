@@ -1,5 +1,7 @@
+#include "annotations.h"
 
-int test(int x) 
+extern "C"
+int POLARIS_ANNOTATE test(int x) 
 {
     if (x > 0) {
         x += 10;

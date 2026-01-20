@@ -1,6 +1,8 @@
 #include <cstdio>
+#include "annotations.h"
 
-void test(int x) 
+extern "C"
+void POLARIS_ANNOTATE test(int x) 
 {
     if (x > 0)
     {

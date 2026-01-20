@@ -1,4 +1,6 @@
 # BuildRemill.cmake - Fetch and build Remill using FetchContent
+# TODO: It would probably be better to do this via ExternalProject_Add
+# as currently configuring can take a while
 
 # Verify vcpkg toolchain is configured
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
@@ -14,6 +16,7 @@ message(STATUS "=== Fetching and Configuring Remill ===")
 include(FetchContent)
 
 # Configuration options
+# version is final commit which has LLVM 16 support
 set(REMILL_VERSION "7182636a687e5e005e3336108a653de3aec0362b" CACHE STRING "Remill version/branch to fetch")
 set(REMILL_REPOSITORY "https://github.com/lifting-bits/remill.git" CACHE STRING "Remill repository URL")
 
