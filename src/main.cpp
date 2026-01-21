@@ -148,9 +148,10 @@ llvm::Error test_klee(llvm::LLVMContext &context)
     auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
 
     std::filesystem::path path = EVAL_SYNTHETIC_LIBS_DIR;
-    path /= "libeval-branch-polaris.so";
+    // path /= "libeval-branch-polaris.so";
     // path /= "libeval-loop-unbounded-polaris.so";
     // path /= "libeval-test-polaris.so";
+    path /= "libeval-loop-unbounded.so"; // test block splitting
 
     std::filesystem::path output_path = path;
     output_path.remove_filename();

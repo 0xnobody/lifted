@@ -505,7 +505,7 @@ namespace lifted
         return {};
     }
 
-    LiftedBB Lifter::LiftBB(uint64_t addr)
+    LiftedBB Lifter::LiftBB(uint64_t addr, std::optional<uint64_t> stop_at)
     {
         auto &Context = Module->getContext();
 
@@ -522,6 +522,7 @@ namespace lifted
         inst_work_list.push(addr);
 
         remill::Instruction inst;
+        uint64_t block_end = addr;
 
         auto GetOrCreateBlock = [&](uint64_t address) -> llvm::BasicBlock *
         {
@@ -568,6 +569,31 @@ namespace lifted
 
             auto block = GetOrCreateBlock(inst_addr);
 
+            // Check if we've hit the stop boundary
+            // TODO: what if no inst has been lifted? aaa
+            // TODO: we should also probably handle stopping within instructions, but that's
+            // more logic in the ::Lift() function. Essentially we could create an extra basic block
+            // with the 'split' instruction.
+
+            if (stop_at && inst_addr >= *stop_at)
+            {
+                if (inst_addr > *stop_at)
+                {
+                    DLOG(WARNING) << "Warning: stop address not aligned with instruction boundary at "
+                                  << std::hex << inst_addr << std::dec;
+                }
+
+                // TODO: put this in a lambda or something
+                const auto pc_ref = remill::LoadProgramCounterRef(block);
+                const auto next_pc_ref = remill::LoadNextProgramCounterRef(block);
+                auto memory = remill::NthArgument(F, remill::kMemoryPointerArgNum);
+                llvm::IRBuilder<> ir(block);
+                ir.CreateStore(ir.CreateLoad(Arch->AddressType(), next_pc_ref), pc_ref);
+                ir.CreateRet(memory);
+
+                break;
+            }
+
             auto inst_bytes = ReadInstructionBytes(inst_addr);
 
             inst.Reset();
@@ -595,6 +621,7 @@ namespace lifted
                 break;
             case remill::Instruction::kCategoryDirectFunctionCall:
             {
+                // TODO: is this even correct???
                 if (inst.branch_not_taken_pc != inst.branch_taken_pc)
                 {
                     std::stringstream fn_ss;
@@ -610,8 +637,27 @@ namespace lifted
                 ir.CreateStore(ir.CreateLoad(Arch->AddressType(), ret_pc_ref), next_pc_ref);
                 ir.CreateBr(GetOrCreateBranchNotTakenBlock());
 
-                continue;
+                break;
             }
+            case remill::Instruction::kCategoryConditionalBranch:
+            case remill::Instruction::kCategoryDirectJump:
+                // In these cases, Remill doesn't store NEXT_PC into PC, as (I think) it assumed that it will
+                // still be able to do it at the start of the next instruction. But since we're lifting basic
+                // blocks, we finish lifting here, so we need to manually update PC with NEXT_PC.
+                //
+                // Then we return memory, like with normal termination.
+                //
+                // TODO: Perhaps add some hints regarding that we already know the targets?
+                // Maybe we can use this to optimize resolving targets (i.e. checking for opaque predicates).
+                {
+                    const auto pc_ref = remill::LoadProgramCounterRef(block);
+                    const auto next_pc_ref = remill::LoadNextProgramCounterRef(block);
+                    auto memory = remill::NthArgument(F, remill::kMemoryPointerArgNum);
+                    llvm::IRBuilder<> ir(block);
+                    ir.CreateStore(ir.CreateLoad(Arch->AddressType(), next_pc_ref), pc_ref);
+                    ir.CreateRet(memory);
+                    break;
+                }
             default:
                 // return memory
                 auto memory = remill::NthArgument(F, remill::kMemoryPointerArgNum);
@@ -649,6 +695,93 @@ namespace lifted
 
             uintptr_t current_addr = Worklist.front();
             Worklist.pop_front();
+
+            auto get_owning_bb = [&](uintptr_t addr) -> std::optional<std::pair<uintptr_t, LiftedBB>>
+            {
+                for (const auto &pair : Explored)
+                {
+                    const auto &bb = pair.second;
+                    if (addr >= bb.RVARange.start() && addr < bb.RVARange.end()) // TODO use .contains or something
+                    {
+                        return pair;
+                    }
+                }
+                return std::nullopt;
+            };
+
+            if (auto owning_bb = get_owning_bb(current_addr))
+            {
+                auto &[start, bb] = *owning_bb;
+
+                // Only split if current_addr is NOT at the start (otherwise it's an exact match)
+                if (start != current_addr)
+                {
+                    llvm::outs() << "    [SPLIT] Block [0x" << llvm::format_hex(start, 16)
+                                 << ", 0x" << llvm::format_hex(bb.RVARange.end(), 16)
+                                 << ") split at 0x" << llvm::format_hex(current_addr, 16) << "\n";
+
+                    // Save info before erasing
+                    uintptr_t original_start = start;
+                    uintptr_t original_end = bb.RVARange.end();
+
+                    // 1. Remove original block from Explored and both Modules
+                    Explored.erase(start);
+                    if (auto *old_func = Module->getFunction(bb.FuncName))
+                    {
+                        old_func->eraseFromParent();
+                    }
+                    if (auto *old_func = CleanModule->getFunction(bb.FuncName))
+                    {
+                        old_func->eraseFromParent();
+                    }
+
+                    // 2. Lift BOTH halves immediately (atomically)
+                    LiftedBB bb_start = LiftBB(original_start, current_addr);
+                    LiftedBB bb_end = LiftBB(current_addr, std::nullopt);
+
+                    utils::output_to_file("/home/atlas/lifted/out/split.ll", Module);
+
+                    auto BBStartFnc = Module->getFunction(bb_start.FuncName);
+                    OptimizeLiftedBB(BBStartFnc);
+                    remill::MoveFunctionIntoModule(BBStartFnc, CleanModule.get());
+                    Explored[original_start] = bb_start;
+
+                    auto BBEndFnc = Module->getFunction(bb_end.FuncName);
+                    OptimizeLiftedBB(BBEndFnc);
+                    remill::MoveFunctionIntoModule(BBEndFnc, CleanModule.get());
+                    Explored[current_addr] = bb_end;
+
+                    utils::output_to_file("/home/atlas/lifted/out/split.ll", CleanModule.get());
+
+                    // 3. Update edges: redirect outgoing edges from original_start to current_addr
+                    std::vector<std::pair<uintptr_t, uintptr_t>> edges_to_remove;
+                    std::vector<std::pair<uintptr_t, uintptr_t>> edges_to_add;
+
+                    for (const auto &edge : Edges)
+                    {
+                        if (edge.first == original_start)
+                        {
+                            edges_to_remove.push_back(edge);
+                            edges_to_add.push_back({current_addr, edge.second});
+                        }
+                    }
+
+                    for (const auto &edge : edges_to_remove)
+                    {
+                        Edges.erase(edge);
+                    }
+                    for (const auto &edge : edges_to_add)
+                    {
+                        Edges.insert(edge);
+                    }
+
+                    // 4. Add fallthrough edge from bb_start to bb_end
+                    Edges.insert({original_start, current_addr});
+
+                    // 5. Mark bb_start for reprove (it has a new outgoing edge)
+                    Reprove.insert(original_start);
+                }
+            }
 
             llvm::outs() << "[*] Analyzing BB at 0x" << llvm::format_hex(current_addr, 16) << "\n";
 

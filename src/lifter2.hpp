@@ -120,7 +120,7 @@ namespace lifted
         {
         }
 
-        LiftedBB LiftBB(uint64_t addr);
+        LiftedBB LiftBB(uint64_t addr, std::optional<uint64_t> stop_at = std::nullopt);
 
         std::set<uintptr_t> ResolveTargets(const LiftedBB &BB);
 

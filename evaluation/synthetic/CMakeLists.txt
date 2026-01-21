@@ -6,6 +6,7 @@ function(set_optimized_target target_name)
         $<$<CXX_COMPILER_ID:GNU,Clang>:-O2 -DNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/O2 /DNDEBUG>
         -fno-stack-protector
+        -fno-tree-vectorize
     )
 endfunction()
 
