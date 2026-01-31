@@ -6,6 +6,15 @@
 #include <algorithm>
 #include <iostream>
 
+//
+// The idea is that optimizations can modify the order of mem reads/writes in certain scenarios,
+// so if we run two versions of the program with the same initial seed, and lazily initialize memory
+// randomly on the first read, the values might differ between the two runs if the order of reads differ.
+//
+// So instead of that, we only lazily generate once, on the first run, and store the initial memory state.
+// Then, on the second run, we use that initial memory state to ensure both runs see the same values on reads.
+//
+
 class rand_memory_state
 {
 public:

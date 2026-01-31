@@ -22,9 +22,6 @@ include(BuildKLEE)
 include(BuildLIEF)
 include(BuildPolaris)
 include(BuildSouper)
-
-add_subdirectory(evaluation)
-
-add_subdirectory(helpers)
+include(BuildUnicorn)
 
 add_subdirectory(src)

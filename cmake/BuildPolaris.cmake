@@ -49,8 +49,8 @@ ExternalProject_Add(polaris
 
   # Quality-of-life options
   UPDATE_DISCONNECTED 1
-  LOG_CONFIGURE 1
-  LOG_BUILD 1
+  # LOG_CONFIGURE 1  # Disabled to show build progress in console
+  # LOG_BUILD 1      # Disabled to show build progress in console
 )
 
 # Optional: an interface target other targets can depend on

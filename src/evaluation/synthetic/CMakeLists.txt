@@ -61,4 +61,4 @@ endforeach()
 
 set_polaris_target(${EVAL_SYNTHETIC_LIBS})
 
-set(EVAL_SYNTHETIC_LIBS_DIR "${CMAKE_BINARY_DIR}/evaluation/synthetic" CACHE STRING "Directory containing synthetic evaluation shared libraries")
+set(EVAL_SYNTHETIC_LIBS_DIR "${CMAKE_BINARY_DIR}/src/evaluation/synthetic" CACHE STRING "Directory containing synthetic evaluation shared libraries")
