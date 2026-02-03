@@ -27,7 +27,7 @@ set(HELPER_LLVM_LINK_EXECUTABLE "${HELPER_LLVM_LINK_EXECUTABLE}/llvm-link")
 
 set(HELPER_CLANG_FLAGS
     -emit-llvm
-    -std=c++17
+    -std=c++20
     -O3
     -Werror
     -Wno-gnu-inline-cpp-without-extern

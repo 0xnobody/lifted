@@ -6,9 +6,9 @@
 #include <cstring>
 
 #include "types.hpp"
-#include "verification.hpp"
 
 #include "standard-intrinsics.hpp"
+#include "verification.hpp"
 
 HELPER uint8_t __remill_read_memory_8(Memory *m, addr_t a)
 {
@@ -52,6 +52,14 @@ HELPER Memory *__remill_write_memory_64(Memory *m, addr_t a, uint64_t v)
 {
     m->m.write64(a, v);
     return m;
+}
+
+HELPER Memory *__lifted_bb_entered(State &state, Memory *m)
+{
+}
+
+HELPER Memory *__lifted_bb_exited(State &state, Memory *m)
+{
 }
 
 extern "C" Memory *__remill_function(State &state, addr_t address, Memory *memory);

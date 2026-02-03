@@ -3,9 +3,8 @@
 #include <unicorn/unicorn.h>
 #include <utility>
 
-namespace lifted::uc
+namespace lifted::verif::uc
 {
-
     // RAII wrapper for uc_engine*
     struct engine
     {
