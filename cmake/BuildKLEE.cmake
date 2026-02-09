@@ -15,14 +15,29 @@ message(STATUS "=== Fetching and Configuring KLEE ===")
 
 include(FetchContent)
 
-add_library(z3::libz3 STATIC IMPORTED GLOBAL)  # or SHARED if using shared library
+# Define z3 paths based on where it will be installed by BuildSouper.cmake
+get_filename_component(Z3_INSTALL_DIR "${CMAKE_BINARY_DIR}/z3_external-prefix" ABSOLUTE)
+set(Z3_LIBRARIES "${Z3_INSTALL_DIR}/lib/libz3.so")
+set(Z3_INCLUDE_DIR "${Z3_INSTALL_DIR}/include")
+
+message(STATUS "Z3_INSTALL_DIR: ${Z3_INSTALL_DIR}")
+message(STATUS "Z3_LIBRARIES: ${Z3_LIBRARIES}")
+
+# Create Z3 directories if they don't exist (needed for clean builds)
+file(MAKE_DIRECTORY "${Z3_INSTALL_DIR}")
+file(MAKE_DIRECTORY "${Z3_INCLUDE_DIR}")
+file(MAKE_DIRECTORY "${Z3_INSTALL_DIR}/lib")
+
+add_library(z3::libz3 SHARED IMPORTED GLOBAL)
+# Z3 is built only in Release mode, so use it for all configurations
 set_target_properties(z3::libz3 PROPERTIES
     IMPORTED_LOCATION "${Z3_LIBRARIES}"
-    IMPORTED_LOCATION_DEBUG "${Z3_LIBRARIES}"
     IMPORTED_LOCATION_RELEASE "${Z3_LIBRARIES}"
-    IMPORTED_LOCATION_RELWITHDEBINFO "${Z3_LIBRARIES}"
-    IMPORTED_LOCATION_MINSIZEREL "${Z3_LIBRARIES}"
+    IMPORTED_LOCATION_DEBUG "${Z3_LIBRARIES}"
     INTERFACE_INCLUDE_DIRECTORIES "${Z3_INCLUDE_DIR}"
+    MAP_IMPORTED_CONFIG_DEBUG "Release"
+    MAP_IMPORTED_CONFIG_RELWITHDEBINFO "Release"
+    MAP_IMPORTED_CONFIG_MINSIZEREL "Release"
 )
 
 # Configuration options
@@ -74,6 +89,14 @@ if(NOT klee_POPULATED)
 
   # Now add it as a subdirectory
   add_subdirectory(${klee_SOURCE_DIR} ${klee_BINARY_DIR})
+  
+  # Add z3_external dependency to KLEE targets that use Z3
+  if(TARGET kleeCore)
+    add_dependencies(kleeCore z3_external)
+  endif()
+  if(TARGET kleaverExprParser)
+    add_dependencies(kleaverExprParser z3_external)
+  endif()
 endif()
 
 

@@ -56,10 +56,12 @@ HELPER Memory *__remill_write_memory_64(Memory *m, addr_t a, uint64_t v)
 
 HELPER Memory *__lifted_bb_entered(State &state, Memory *m)
 {
+    return m;
 }
 
 HELPER Memory *__lifted_bb_exited(State &state, Memory *m)
 {
+    return m;
 }
 
 extern "C" Memory *__remill_function(State &state, addr_t address, Memory *memory);

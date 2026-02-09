@@ -21,6 +21,8 @@ namespace lifted::helpers
 
     llvm::Error link_symbolic_helpers(llvm::Module *module);
 
+    llvm::Error link_lifting_helpers(llvm::Module *module);
+
     llvm::Error link_abi_helpers(llvm::Module *module);
 
     // Modules `src` and `dst` already have verification intrinsics linked in.

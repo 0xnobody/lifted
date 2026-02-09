@@ -52,6 +52,8 @@ ExternalProject_Add(z3_external
     CMAKE_ARGS
         -DCMAKE_BUILD_TYPE=${SOUPER_BUILD_TYPE}
         -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+        -DCMAKE_CXX_FLAGS=-include\ cstdint
+        -DCMAKE_C_FLAGS=-include\ stdint.h
         -DBUILD_SHARED_LIBS=ON
         -DZ3_BUILD_LIBZ3_SHARED=ON
         -DZ3_BUILD_PYTHON_BINDINGS=OFF
@@ -59,6 +61,9 @@ ExternalProject_Add(z3_external
         -DZ3_BUILD_DOTNET_BINDINGS=OFF
         -DZ3_BUILD_EXAMPLES=OFF
         -DZ3_BUILD_TEST_EXECUTABLES=OFF
+    BUILD_BYPRODUCTS
+        <INSTALL_DIR>/lib/libz3.so
+        <INSTALL_DIR>/include/z3.h
     UPDATE_DISCONNECTED 1
     LOG_CONFIGURE TRUE
     LOG_BUILD TRUE
@@ -96,6 +101,8 @@ ExternalProject_Add(alive2_external
     CMAKE_ARGS
         -DCMAKE_BUILD_TYPE=${SOUPER_BUILD_TYPE}
         -DCMAKE_PREFIX_PATH=${LLVM_PREFIX}\;${Z3_INSTALL_DIR}
+        -DCMAKE_CXX_FLAGS=-include\ cstdint
+        -DCMAKE_C_FLAGS=-include\ stdint.h
         -DZ3_DIR=${Z3_INSTALL_DIR}/lib/cmake/z3
         -DZ3_INCLUDE_DIR=${Z3_INSTALL_DIR}/include
         -DZ3_LIBRARIES=${Z3_INSTALL_DIR}/lib/libz3.so
@@ -116,6 +123,8 @@ ExternalProject_Add(klee_expr_external
     CMAKE_ARGS
         -DCMAKE_BUILD_TYPE=${SOUPER_BUILD_TYPE}
         -DCMAKE_CXX_STANDARD=20
+        -DCMAKE_CXX_FLAGS=-include\ cstdint
+        -DCMAKE_C_FLAGS=-include\ stdint.h
         -DCMAKE_CXX_STANDARD_REQUIRED=ON
         -DLLVM_CONFIG_BINARY=${LLVM_CONFIG_BINARY}
         -DLLVM_DIR=${LLVM_DIR}

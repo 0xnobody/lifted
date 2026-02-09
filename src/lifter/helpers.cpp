@@ -35,6 +35,11 @@ namespace lifted::helpers
         return utils::link_from_file(module, HELPERS_ABI_PATH);
     }
 
+    llvm::Error link_lifting_helpers(llvm::Module *module)
+    {
+        return utils::link_from_file(module, HELPERS_LIFTING_PATH);
+    }
+
     // Modules `src` and `dst` already have verification intrinsics linked in.
     // `src` -> function is called __src_fn
     // `dst` -> function is called __tgt_fn

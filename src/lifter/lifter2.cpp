@@ -24,6 +24,17 @@
 #include "helpers.hpp"
 #include "slicer.hpp"
 
+// Specific transformation passes
+#include <llvm/Transforms/Utils/Mem2Reg.h>                     // PromotePass
+#include <llvm/Transforms/InstCombine/InstCombine.h>           // InstCombinePass
+#include <llvm/Transforms/Scalar/DCE.h>                        // DCEPass
+#include <llvm/Transforms/Scalar/SCCP.h>                       // SCCPPass
+#include <llvm/Transforms/Scalar/CorrelatedValuePropagation.h> // CorrelatedValuePropagationPass
+#include <llvm/Transforms/Scalar/GVN.h>                        // GVNPass
+#include <llvm/Transforms/Scalar/Reassociate.h>                // ReassociatePass
+#include <llvm/Transforms/Scalar/SimplifyCFG.h>                // SimplifyCFGPass
+#include <llvm/Transforms/Scalar/ADCE.h>                       // AggressiveDCEPass
+
 namespace lifted
 {
     bool Lifter::IsExecutableSection(const uint64_t addr) const
@@ -116,7 +127,7 @@ namespace lifted
         opt::always_inline(BBFunc->getParent());
     }
 
-    llvm::Function *Lifter::ConcretizeEntryPC(llvm::Function *F, unsigned pc_param_idx, uint64_t concrete_pc)
+    llvm::Function *Lifter::ConcretizeEntryPC(llvm::Function *F, unsigned pc_param_idx, bb_id_t bb_id)
     {
         auto M = F->getParent();
         auto OldFTy = F->getFunctionType();
@@ -187,7 +198,7 @@ namespace lifted
             if (i == pc_param_idx)
             {
                 // Insert concrete PC value
-                args.push_back(llvm::ConstantInt::get(PCParamTy, concrete_pc));
+                args.push_back(llvm::ConstantInt::get(PCParamTy, bb_id));
             }
             else
             {
@@ -202,20 +213,22 @@ namespace lifted
         return NewF;
     }
 
-    std::optional<std::set<uintptr_t>> HeuresticallyResolveTargets(llvm::Function &F)
+    ResolvedTargetsResult HeuresticallyResolveTargets(llvm::Function &F)
     {
+        // TODO: use heurestics to find external targets too
+
         // Match for single target (i.e. opaque predicate):
         //
         // ret i64 {const}
 
-        std::set<uintptr_t> targets;
+        std::vector<ResolvedTarget> targets;
 
         if (auto ret_inst = llvm::dyn_cast<llvm::ReturnInst>((--F.end())->getTerminator()))
         {
             if (auto const_ret = llvm::dyn_cast<llvm::ConstantInt>(ret_inst->getReturnValue()))
             {
-                targets.insert(static_cast<uintptr_t>(const_ret->getZExtValue()));
-                return targets;
+                targets.push_back(ResolvedTarget{ResolvedTarget::Type::INTERNAL, static_cast<bb_id_t>(const_ret->getZExtValue()), std::nullopt});
+                return ResolvedTargetsResult{targets, std::nullopt};
             }
         }
 
@@ -235,22 +248,22 @@ namespace lifted
                 {
                     if (auto const_false = llvm::dyn_cast<llvm::ConstantInt>(false_val))
                     {
-                        targets.insert(static_cast<uintptr_t>(const_true->getZExtValue()));
-                        targets.insert(static_cast<uintptr_t>(const_false->getZExtValue()));
-                        return targets;
+                        targets.push_back(ResolvedTarget{ResolvedTarget::Type::INTERNAL, static_cast<bb_id_t>(const_true->getZExtValue()), std::nullopt});
+                        targets.push_back(ResolvedTarget{ResolvedTarget::Type::INTERNAL, static_cast<bb_id_t>(const_false->getZExtValue()), std::nullopt});
+                        return ResolvedTargetsResult{targets, std::nullopt};
                     }
                 }
             }
         }
 
-        return std::nullopt;
+        return ResolvedTargetsResult{targets, std::nullopt};
     }
 
     llvm::Function *Lifter::stitchCFG(
         llvm::Module *Module,
-        const std::set<uintptr_t> &BlockSet,
+        const std::set<bb_id_t> &BlockSet,
         llvm::StringRef NewFuncName,
-        uintptr_t TargetAddr,
+        bb_id_t TargetID,
         bool DeadEndIsUnreachable)
     {
         llvm::LLVMContext &Ctx = Module->getContext();
@@ -270,6 +283,16 @@ namespace lifted
         llvm::FunctionType *WrapperTy = llvm::FunctionType::get(MemPtrTy, {StatePtrTy, PCTy, MemPtrTy}, false);
         llvm::Function *WrapperFunc = llvm::Function::Create(WrapperTy, llvm::Function::ExternalLinkage, NewFuncName, Module);
 
+        // TODO: Should we do this here? Or in BB_Func creation?
+
+        // Add noalias to %state (parameter 0) and %memory (parameter 2)
+        WrapperFunc->addParamAttr(0, llvm::Attribute::NoAlias); // %state
+        WrapperFunc->addParamAttr(2, llvm::Attribute::NoAlias); // %memory
+
+        // Optional: also add nocapture for better optimization
+        WrapperFunc->addParamAttr(0, llvm::Attribute::NoCapture); // %state
+        WrapperFunc->addParamAttr(2, llvm::Attribute::NoCapture); // %memory
+
         // Name arguments
         llvm::Argument *ArgState = WrapperFunc->getArg(0);
         ArgState->setName("state");
@@ -288,9 +311,9 @@ namespace lifted
         llvm::BasicBlock *DeadEndBB = llvm::BasicBlock::Create(Ctx, "dead_end", WrapperFunc);
 
         std::map<uintptr_t, llvm::BasicBlock *> BlockMap;
-        for (uintptr_t addr : BlockSet)
+        for (bb_id_t id : BlockSet)
         {
-            BlockMap[addr] = llvm::BasicBlock::Create(Ctx, "bb_" + llvm::utohexstr(addr), WrapperFunc);
+            BlockMap[id] = llvm::BasicBlock::Create(Ctx, "bb_" + llvm::utohexstr(id), WrapperFunc);
         }
 
         llvm::IRBuilder<> Builder(EntryBB);
@@ -302,9 +325,9 @@ namespace lifted
 
         // --- ENTRY DISPATCH ---
         llvm::SwitchInst *EntrySwitch = Builder.CreateSwitch(ArgPC, DeadEndBB, BlockSet.size());
-        for (uintptr_t addr : BlockSet)
+        for (bb_id_t id : BlockSet)
         {
-            EntrySwitch->addCase(Builder.getInt64(addr), BlockMap[addr]);
+            EntrySwitch->addCase(Builder.getInt64(id), BlockMap[id]);
         }
 
         // --- DEAD END HANDLING ---
@@ -322,12 +345,12 @@ namespace lifted
         }
 
         // --- STITCHING LOOP ---
-        for (uintptr_t addr : BlockSet)
+        for (bb_id_t id : BlockSet)
         {
-            llvm::BasicBlock *CurrentBB = BlockMap[addr];
+            llvm::BasicBlock *CurrentBB = BlockMap[id];
             Builder.SetInsertPoint(CurrentBB);
 
-            llvm::Function *SourceFunc = Module->getFunction(Explored.at(addr).FuncName);
+            llvm::Function *SourceFunc = Module->getFunction(Explored.at(id).FuncName);
 
             llvm::Value *CurrMem = Builder.CreateLoad(MemPtrTy, MemVar);
             llvm::Value *CurrPC = Builder.CreateLoad(PCTy, PCVar);
@@ -338,7 +361,7 @@ namespace lifted
             Builder.CreateStore(Call, MemVar);
 
             // 1. Target Interception (Used by BuildPartialCFG)
-            if (TargetAddr != 0 && addr == TargetAddr)
+            if (TargetID != 0 && id == TargetID)
             {
                 Builder.CreateRet(Call);
                 continue;
@@ -351,7 +374,7 @@ namespace lifted
             std::vector<uintptr_t> Successors;
             for (const auto &edge : Edges)
             {
-                if (edge.first == addr)
+                if (edge.first == id)
                     Successors.push_back(edge.second);
             }
 
@@ -365,7 +388,7 @@ namespace lifted
             else
             {
                 llvm::SwitchInst *Switch = Builder.CreateSwitch(NextRIP, DeadEndBB, Successors.size());
-                for (uintptr_t succAddr : Successors)
+                for (bb_id_t succAddr : Successors)
                 {
                     if (BlockSet.count(succAddr))
                     {
@@ -384,16 +407,16 @@ namespace lifted
 
     llvm::Function *Lifter::buildPartialCFG(llvm::Module *Module, const LiftedBB &TargetBB)
     {
-        uintptr_t TargetAddr = TargetBB.RVARange.start();
+        bb_id_t ID = TargetBB.ID;
 
         // 1. COMPUTE BACKWARD SLICE
-        std::set<uintptr_t> ReachingSet;
-        std::vector<uintptr_t> Worklist;
+        std::set<bb_id_t> ReachingSet;
+        std::vector<bb_id_t> Worklist;
 
-        ReachingSet.insert(TargetAddr);
-        Worklist.push_back(TargetAddr);
+        ReachingSet.insert(ID);
+        Worklist.push_back(ID);
 
-        std::map<uintptr_t, std::vector<uintptr_t>> Predecessors;
+        std::map<bb_id_t, std::vector<bb_id_t>> Predecessors;
         for (const auto &edge : Edges)
         {
             Predecessors[edge.second].push_back(edge.first);
@@ -405,12 +428,12 @@ namespace lifted
             uintptr_t curr = Worklist[head++];
             if (Predecessors.count(curr))
             {
-                for (uintptr_t predAddr : Predecessors[curr])
+                for (bb_id_t predID : Predecessors[curr])
                 {
-                    if (Explored.count(predAddr) && !ReachingSet.count(predAddr))
+                    if (Explored.count(predID) && !ReachingSet.count(predID))
                     {
-                        ReachingSet.insert(predAddr);
-                        Worklist.push_back(predAddr);
+                        ReachingSet.insert(predID);
+                        Worklist.push_back(predID);
                     }
                 }
             }
@@ -420,14 +443,14 @@ namespace lifted
         // Name: partial_cfg_slice_ADDR
         // TargetAddr: ADDR (Stop when reached)
         // DeadEnd: Unreachable (Strict slicing)
-        std::string FuncName = "partial_cfg_" + llvm::utohexstr(TargetAddr);
-        return stitchCFG(Module, ReachingSet, FuncName, TargetAddr, true);
+        std::string FuncName = "partial_cfg_" + llvm::utohexstr(ID);
+        return stitchCFG(Module, ReachingSet, FuncName, ID, true);
     }
 
     llvm::Function *Lifter::buildCFG(llvm::Module *Module)
     {
         // 1. GATHER ALL BLOCKS
-        std::set<uintptr_t> AllBlocks;
+        std::set<bb_id_t> AllBlocks;
         for (const auto &pair : Explored)
         {
             AllBlocks.insert(pair.first);
@@ -440,8 +463,10 @@ namespace lifted
         return stitchCFG(Module, AllBlocks, "rebuilt_cfg", 0, true);
     }
 
-    std::set<uintptr_t> Lifter::ResolveTargets(const LiftedBB &BB)
+    ResolvedTargetsResult Lifter::ResolveTargets(const LiftedBB &BB)
     {
+        // TODO: add support for external targets and indirect targets
+
         auto M = llvm::CloneModule(*CleanModule);
 
         helpers::link_deobfuscation_intrinsics(M.get());
@@ -451,13 +476,21 @@ namespace lifted
 
         utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
 
+        opt::always_inline(M.get());
+
+        utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
+
+        runCFGPipeline(*F);
+
+        utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
+
         M->getFunction("__remill_function")->replaceAllUsesWith(F);
         F->addFnAttr(llvm::Attribute::AlwaysInline);
 
         utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
 
         llvm::Function *SliceRipFnc = M->getFunction("__slice_rip");
-        llvm::Function *ConcretizedFnc = ConcretizeEntryPC(SliceRipFnc, 2, BB.RVARange.start());
+        llvm::Function *ConcretizedFnc = ConcretizeEntryPC(SliceRipFnc, 2, InitialEntryPoint);
         SliceRipFnc->addFnAttr(llvm::Attribute::AlwaysInline);
 
         utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
@@ -470,16 +503,10 @@ namespace lifted
 
         utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
 
-        opt::run_pass<ConstantMemoryFoldingPass>(*ConcretizedFnc, *Binary, ConstMemoryRvaRanges);
-
-        // At this point we only care about the return expression; any other instructions
-        // are side effects of the function and are not relevant to target resolution.
-
-        utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
-
-        if (auto resolved_targets = HeuresticallyResolveTargets(*ConcretizedFnc))
+        auto resolved_targets = HeuresticallyResolveTargets(*ConcretizedFnc);
+        if (resolved_targets)
         {
-            return *resolved_targets;
+            return resolved_targets;
         }
 
         // If we reach here, it is because we failed to resolve any concrete targets.
@@ -498,14 +525,85 @@ namespace lifted
         // There is no simple way of differentiating between the two cases, apart from more heurestics.
         // For now, we will just log a warning and return an empty set.
 
-        DLOG(WARNING) << "Warning: Failed to resolve targets for BB at "
-                      << std::hex << BB.RVARange.start() << std::dec
+        DLOG(WARNING) << "Warning: Failed to resolve targets for BB "
+                      << std::hex << BB.ID << std::dec
                       << ". This may be due to limitations in the target resolution logic.";
 
-        return {};
+        return ResolvedTargetsResult{
+            .Targets = {},
+            .IndirectTarget = std::nullopt};
     }
 
-    LiftedBB Lifter::LiftBB(uint64_t addr, std::optional<uint64_t> stop_at)
+    void Lifter::issueExtCall(llvm::BasicBlock &BB, uintptr_t addr)
+    {
+        auto F = Module->getFunction("__lifted_issue_ext_call");
+
+        llvm::IRBuilder<> ir(&BB);
+        auto state_ptr = remill::LoadStatePointer(&BB);
+        auto pc = remill::LoadProgramCounterRef(&BB);
+        auto mem = remill::LoadMemoryPointer(&BB, *Intrinsics);
+
+        auto Call = ir.CreateCall(F, {state_ptr, ir.getInt64(addr), mem});
+
+        ir.CreateStore(Call, remill::LoadMemoryPointerRef(&BB));
+    }
+
+    void Lifter::runCFGPipeline(llvm::Function &F)
+    {
+        llvm::Module *M = F.getParent();
+
+        // Create all necessary analysis managers
+        llvm::LoopAnalysisManager LAM;
+        llvm::FunctionAnalysisManager FAM;
+        llvm::CGSCCAnalysisManager CGAM;
+        llvm::ModuleAnalysisManager MAM;
+
+        llvm::PassBuilder PB;
+
+        // CRITICAL: Cross-register ALL analysis managers
+        PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+        // Register all analyses
+        PB.registerModuleAnalyses(MAM);
+        PB.registerCGSCCAnalyses(CGAM);
+        PB.registerFunctionAnalyses(FAM);
+        PB.registerLoopAnalyses(LAM);
+
+        // Initial cleanup
+        llvm::FunctionPassManager FPM;
+        FPM.addPass(llvm::PromotePass());
+        FPM.addPass(llvm::InstCombinePass());
+        FPM.run(F, FAM);
+
+        // Iterative optimization loop
+        bool Changed = true;
+        int Iterations = 0;
+        const int MaxIterations = 3;
+
+        while (Changed && Iterations < MaxIterations)
+        {
+            llvm::FunctionPassManager IterFPM;
+
+            IterFPM.addPass(llvm::SCCPPass());
+            IterFPM.addPass(llvm::CorrelatedValuePropagationPass());
+            IterFPM.addPass(ConstantMemoryFoldingPass(*Binary, ConstMemoryRvaRanges));
+            IterFPM.addPass(llvm::InstCombinePass());
+            IterFPM.addPass(llvm::GVNPass());
+
+            llvm::PreservedAnalyses PA = IterFPM.run(F, FAM);
+            Changed = !PA.areAllPreserved();
+            Iterations++;
+        }
+
+        // Final cleanup
+        llvm::FunctionPassManager CleanupFPM;
+        CleanupFPM.addPass(llvm::SimplifyCFGPass());
+        CleanupFPM.addPass(llvm::ADCEPass());
+        CleanupFPM.addPass(llvm::InstCombinePass());
+        CleanupFPM.run(F, FAM);
+    }
+
+    LiftedBB Lifter::LiftBB(uintptr_t addr, std::optional<uintptr_t> stop_at)
     {
         auto &Context = Module->getContext();
 
@@ -537,12 +635,6 @@ namespace lifted
         {
             inst_work_list.push(inst.next_pc);
             return GetOrCreateBlock(inst.next_pc);
-        };
-
-        auto GetOrCreateBranchNotTakenBlock = [&]() -> llvm::BasicBlock *
-        {
-            inst_work_list.push(inst.branch_not_taken_pc);
-            return GetOrCreateBlock(inst.branch_not_taken_pc);
         };
 
         auto state_ptr = NthArgument(F, remill::kStatePointerArgNum);
@@ -610,6 +702,24 @@ namespace lifted
             // Connect together the basic blocks.
             switch (inst.category)
             {
+
+            // Ignore for now:
+            // kCategoryAsyncHyperCall
+            // kCategoryConditionalAsyncHyperCall
+            // kCategoryConditionalDirectFunctionCall
+            // kCategoryConditionalIndirectFunctionCall
+            //
+            case remill::Instruction::kCategoryAsyncHyperCall:
+            case remill::Instruction::kCategoryConditionalAsyncHyperCall:
+            case remill::Instruction::kCategoryConditionalDirectFunctionCall:
+            case remill::Instruction::kCategoryConditionalIndirectFunctionCall:
+            {
+                DLOG(WARNING) << "Warning: Unsupported instruction category "
+                              << inst.category << " at "
+                              << std::hex << inst_addr << std::dec;
+                [[fallthrough]];
+            }
+
             case remill::Instruction::kCategoryInvalid:
             case remill::Instruction::kCategoryError:
                 remill::AddTerminatingTailCall(block, Intrinsics->error, *Intrinsics);
@@ -619,26 +729,16 @@ namespace lifted
             case remill::Instruction::kCategoryNoOp:
                 llvm::BranchInst::Create(GetOrCreateNextBlock(), block);
                 break;
-            case remill::Instruction::kCategoryDirectFunctionCall:
-            {
-                // TODO: is this even correct???
-                if (inst.branch_not_taken_pc != inst.branch_taken_pc)
-                {
-                    std::stringstream fn_ss;
-                    fn_ss << "EXT_" << std::hex << inst.branch_taken_pc;
 
-                    auto target_trace = Arch->DeclareLiftedFunction(fn_ss.str(), Module); // TODO: cache same calls
-                    remill::AddCall(block, target_trace, *Intrinsics);
-                }
+                // Control transfer categories:
+                // kCategoryDirectJump
+                // kCategoryIndirectJump
+                // kCategoryConditionalIndirectJump
+                // kCategoryDirectFunctionCall
+                // kCategoryIndirectFunctionCall
+                // kCategoryFunctionReturn
+                // kCategoryConditionalBranch
 
-                const auto ret_pc_ref = remill::LoadReturnProgramCounterRef(block);
-                const auto next_pc_ref = remill::LoadNextProgramCounterRef(block);
-                llvm::IRBuilder<> ir(block);
-                ir.CreateStore(ir.CreateLoad(Arch->AddressType(), ret_pc_ref), next_pc_ref);
-                ir.CreateBr(GetOrCreateBranchNotTakenBlock());
-
-                break;
-            }
             case remill::Instruction::kCategoryConditionalBranch:
             case remill::Instruction::kCategoryDirectJump:
                 // In these cases, Remill doesn't store NEXT_PC into PC, as (I think) it assumed that it will
@@ -652,15 +752,20 @@ namespace lifted
                 {
                     const auto pc_ref = remill::LoadProgramCounterRef(block);
                     const auto next_pc_ref = remill::LoadNextProgramCounterRef(block);
-                    auto memory = remill::NthArgument(F, remill::kMemoryPointerArgNum);
                     llvm::IRBuilder<> ir(block);
                     ir.CreateStore(ir.CreateLoad(Arch->AddressType(), next_pc_ref), pc_ref);
-                    ir.CreateRet(memory);
-                    break;
+
+                    // Fallthrough to ext call handling
+                    [[fallthrough]];
                 }
+            case remill::Instruction::kCategoryIndirectJump:
+            case remill::Instruction::kCategoryConditionalIndirectJump:
+            case remill::Instruction::kCategoryDirectFunctionCall:
+            case remill::Instruction::kCategoryIndirectFunctionCall:
+            case remill::Instruction::kCategoryFunctionReturn:
             default:
                 // return memory
-                auto memory = remill::NthArgument(F, remill::kMemoryPointerArgNum);
+                auto memory = remill::LoadMemoryPointer(block, *Intrinsics);
                 llvm::IRBuilder<> ir(block);
                 ir.CreateRet(memory);
                 break;
@@ -668,6 +773,7 @@ namespace lifted
         }
 
         LiftedBB BB;
+        BB.ID = addr;
         BB.FuncName = F->getName();
         BB.RVARange = llvm::AddressRange{addr, inst.next_pc};
         BB.TerminatingCategory = inst.category;
@@ -677,7 +783,9 @@ namespace lifted
 
     void Lifter::Lift(uint64_t addr)
     {
-        Worklist.push_back(addr);
+        InitialEntryPoint = (bb_id_t)addr;
+
+        Worklist.push_back((bb_id_t)addr);
         while (!Worklist.empty() || !Reprove.empty())
         {
             dumpLifterState();
@@ -693,167 +801,235 @@ namespace lifted
                 Reprove.clear();
             }
 
-            uintptr_t current_addr = Worklist.front();
+            bb_id_t curr_id = Worklist.front();
             Worklist.pop_front();
 
-            auto get_owning_bb = [&](uintptr_t addr) -> std::optional<std::pair<uintptr_t, LiftedBB>>
+            auto get_owning_bb = [&](uintptr_t addr) -> auto
             {
-                for (const auto &pair : Explored)
-                {
+                return std::find_if(Explored.begin(), Explored.end(), [&](const auto &pair)
+                                    {
                     const auto &bb = pair.second;
-                    if (addr >= bb.RVARange.start() && addr < bb.RVARange.end()) // TODO use .contains or something
-                    {
-                        return pair;
-                    }
-                }
-                return std::nullopt;
+                    return !bb.isSynthetic() && addr >= bb.RVARange->start() && addr < bb.RVARange->end(); });
             };
 
-            if (auto owning_bb = get_owning_bb(current_addr))
+            if (!IsSynthetic(curr_id))
             {
-                auto &[start, bb] = *owning_bb;
+                uint64_t current_addr = (uint64_t)curr_id;
 
-                // Only split if current_addr is NOT at the start (otherwise it's an exact match)
-                if (start != current_addr)
+                if (auto owning_bb = get_owning_bb(current_addr); owning_bb != Explored.end())
                 {
-                    llvm::outs() << "    [SPLIT] Block [0x" << llvm::format_hex(start, 16)
-                                 << ", 0x" << llvm::format_hex(bb.RVARange.end(), 16)
-                                 << ") split at 0x" << llvm::format_hex(current_addr, 16) << "\n";
+                    auto original_bb_id = owning_bb->second.ID;
+                    auto original_func_name = owning_bb->second.FuncName;
+                    auto original_start = owning_bb->second.RVARange->start();
+                    auto original_end = owning_bb->second.RVARange->end();
 
-                    // Save info before erasing
-                    uintptr_t original_start = start;
-                    uintptr_t original_end = bb.RVARange.end();
-
-                    // 1. Remove original block from Explored and both Modules
-                    Explored.erase(start);
-                    if (auto *old_func = Module->getFunction(bb.FuncName))
+                    // Only split if current_addr is NOT at the start (otherwise it's an exact match)
+                    if (original_start != current_addr)
                     {
-                        old_func->eraseFromParent();
-                    }
-                    if (auto *old_func = CleanModule->getFunction(bb.FuncName))
-                    {
-                        old_func->eraseFromParent();
-                    }
+                        llvm::outs() << "    [SPLIT] Block [0x" << llvm::format_hex(original_start, 16)
+                                     << ", 0x" << llvm::format_hex(original_end, 16)
+                                     << ") split at 0x" << llvm::format_hex(current_addr, 16) << "\n";
 
-                    // 2. Lift BOTH halves immediately (atomically)
-                    LiftedBB bb_start = LiftBB(original_start, current_addr);
-                    LiftedBB bb_end = LiftBB(current_addr, std::nullopt);
-
-                    utils::output_to_file("/home/atlas/lifted/out/split.ll", Module);
-
-                    auto BBStartFnc = Module->getFunction(bb_start.FuncName);
-                    OptimizeLiftedBB(BBStartFnc);
-                    remill::MoveFunctionIntoModule(BBStartFnc, CleanModule.get());
-                    Explored[original_start] = bb_start;
-
-                    auto BBEndFnc = Module->getFunction(bb_end.FuncName);
-                    OptimizeLiftedBB(BBEndFnc);
-                    remill::MoveFunctionIntoModule(BBEndFnc, CleanModule.get());
-                    Explored[current_addr] = bb_end;
-
-                    utils::output_to_file("/home/atlas/lifted/out/split.ll", CleanModule.get());
-
-                    // 3. Update edges: redirect outgoing edges from original_start to current_addr
-                    std::vector<std::pair<uintptr_t, uintptr_t>> edges_to_remove;
-                    std::vector<std::pair<uintptr_t, uintptr_t>> edges_to_add;
-
-                    for (const auto &edge : Edges)
-                    {
-                        if (edge.first == original_start)
+                        // 1. Remove original block from Explored and both Modules
+                        Explored.erase(original_bb_id);
+                        if (auto *old_func = Module->getFunction(original_func_name))
                         {
-                            edges_to_remove.push_back(edge);
-                            edges_to_add.push_back({current_addr, edge.second});
+                            old_func->eraseFromParent();
                         }
-                    }
+                        if (auto *old_func = CleanModule->getFunction(original_func_name))
+                        {
+                            old_func->eraseFromParent();
+                        }
 
-                    for (const auto &edge : edges_to_remove)
-                    {
-                        Edges.erase(edge);
-                    }
-                    for (const auto &edge : edges_to_add)
-                    {
-                        Edges.insert(edge);
-                    }
+                        // 2. Lift BOTH halves immediately (atomically)
+                        LiftedBB bb_start = LiftBB(original_start, current_addr);
+                        LiftedBB bb_end = LiftBB(current_addr, std::nullopt);
 
-                    // 4. Add fallthrough edge from bb_start to bb_end
-                    Edges.insert({original_start, current_addr});
+                        utils::output_to_file("/home/atlas/lifted/out/split.ll", Module);
 
-                    // 5. Mark bb_start for reprove (it has a new outgoing edge)
-                    Reprove.insert(original_start);
+                        auto BBStartFnc = Module->getFunction(bb_start.FuncName);
+                        OptimizeLiftedBB(BBStartFnc);
+                        remill::MoveFunctionIntoModule(BBStartFnc, CleanModule.get());
+                        Explored[bb_start.ID] = bb_start;
+
+                        auto BBEndFnc = Module->getFunction(bb_end.FuncName);
+                        OptimizeLiftedBB(BBEndFnc);
+                        remill::MoveFunctionIntoModule(BBEndFnc, CleanModule.get());
+                        Explored[bb_end.ID] = bb_end;
+
+                        utils::output_to_file("/home/atlas/lifted/out/split.ll", CleanModule.get());
+
+                        // 3. Update edges: redirect outgoing edges from original_start to current_addr
+                        std::vector<std::pair<bb_id_t, bb_id_t>> edges_to_remove;
+                        std::vector<std::pair<bb_id_t, bb_id_t>> edges_to_add;
+
+                        for (const auto &edge : Edges)
+                        {
+                            if (edge.first == original_bb_id)
+                            {
+                                edges_to_remove.push_back(edge);
+                                edges_to_add.push_back({bb_end.ID, edge.second});
+                            }
+                        }
+
+                        for (const auto &edge : edges_to_remove)
+                        {
+                            Edges.erase(edge);
+                        }
+                        for (const auto &edge : edges_to_add)
+                        {
+                            Edges.insert(edge);
+                        }
+
+                        // 4. Add fallthrough edge from bb_start to bb_end
+                        Edges.insert({bb_start.ID, bb_end.ID});
+
+                        // 5. Mark bb_start for reprove (it has a new outgoing edge)
+                        Reprove.insert(bb_start.ID);
+                    }
                 }
             }
+            else
+            {
+                // Synthetic BB.
 
-            llvm::outs() << "[*] Analyzing BB at 0x" << llvm::format_hex(current_addr, 16) << "\n";
+
+            }
+
+            llvm::outs() << "[*] Analyzing BB 0x" << llvm::format_hex(curr_id, 16) << "\n";
 
             LiftedBB BB;
-            if (!Explored.contains(current_addr))
+            if (!Explored.contains(curr_id))
             {
-                BB = LiftBB(current_addr);
+                // TODO: check if curr_id is real or synthetic
+                BB = LiftBB(curr_id);
 
                 auto Func = Module->getFunction(BB.FuncName);
 
                 OptimizeLiftedBB(Func);
 
                 remill::MoveFunctionIntoModule(Func, CleanModule.get()); // maybe need to remove old?
-                Explored.insert({current_addr, BB});
+                Explored.insert({curr_id, BB});
             }
             else
             {
-                BB = Explored.at(current_addr);
+                BB = Explored.at(curr_id);
             }
 
             utils::output_to_file("/home/atlas/lifted/out/lifted_module.ll", CleanModule.get());
 
-            std::set<uintptr_t> targets = ResolveTargets(BB);
+            ResolvedTargetsResult targets_result = ResolveTargets(BB);
 
             llvm::outs() << "    Resolved targets:\n";
-            for (auto target : targets)
+            for (auto target : targets_result.Targets)
             {
-                llvm::outs() << "      0x" << llvm::format_hex(target, 16) << "\n";
+                llvm::outs() << "      " << target << "\n";
             }
 
-            for (auto target : targets)
+            for (auto target : targets_result.Targets)
             {
-                bool edgeKnown = Edges.contains({current_addr, target});
+                switch (target.Type)
+                {
+                case ResolvedTarget::Type::INTERNAL:
+                {
+                    // Edge within the function that we want to continue lifting at.
+                    //
+                    // We use the normal algorithm here, adding unknown edges, and scheduling
+                    // new blocks for exploration.
+                    //
+                    // We also update for reprove set for all blocks reachable from newly-discovered
+                    // edges.
 
-                if (!edgeKnown)
-                {
-                    // Always record any newly solved edge.
-                    Edges.insert({current_addr, target});
-                }
+                    // Internal, so target.Dest corresponds to a lifted BB ID.
+                    //
+                    bb_id_t new_target_id = (bb_id_t)target.Dest;
 
-                if (!Explored.contains(target))
-                {
-                    // New block: schedule for first-time exploration.
-                    Worklist.push_back(target);
-                }
-                else
-                {
-                    // Target is already known; if this edge is new, we may have strengthened
-                    // the path constraints into Target and its descendants.
+                    bool edgeKnown = Edges.contains({curr_id, new_target_id});
+
                     if (!edgeKnown)
                     {
-                        // Compute all BBs currently reachable from Target in the partial CFG.
-                        std::set<uintptr_t> reachable_set;
-                        std::function<void(uintptr_t)> dfs = [&](uintptr_t addr)
-                        {
-                            for (const auto &edge : Edges)
-                            {
-                                if (edge.first == addr && !reachable_set.contains(edge.second))
-                                {
-                                    reachable_set.insert(edge.second);
-                                    dfs(edge.second);
-                                }
-                            }
-                        };
-                        dfs(target);
+                        // Always record any newly solved edge.
+                        Edges.insert({curr_id, new_target_id});
+                    }
 
-                        for (auto b : reachable_set)
+                    if (!Explored.contains(new_target_id))
+                    {
+                        // New block: schedule for first-time exploration.
+                        Worklist.push_back(new_target_id);
+                    }
+                    else
+                    {
+                        // Target is already known; if this edge is new, we may have strengthened
+                        // the path constraints into Target and its descendants.
+                        if (!edgeKnown)
                         {
-                            Reprove.insert(b);
+                            // Compute all BBs currently reachable from Target in the partial CFG.
+                            std::set<uintptr_t> reachable_set;
+                            std::function<void(uintptr_t)> dfs = [&](uintptr_t addr)
+                            {
+                                for (const auto &edge : Edges)
+                                {
+                                    if (edge.first == addr && !reachable_set.contains(edge.second))
+                                    {
+                                        reachable_set.insert(edge.second);
+                                        dfs(edge.second);
+                                    }
+                                }
+                            };
+                            dfs(new_target_id);
+
+                            for (auto b : reachable_set)
+                            {
+                                Reprove.insert(b);
+                            }
                         }
                     }
+                    break;
                 }
+                case ResolvedTarget::Type::EXTERNAL:
+                {
+                    // We resolved an external target, so we need to create a dispatcher BB.
+                    // This BB needs to be unique to the callsite. For example:
+                    //
+                    // 0x1100: ins1
+                    // 0x1104: ins2
+                    // 0x1108: call ext_func
+                    // 0x110C: ins3
+                    //
+                    // We need to create a BB_0x1108_ext_func dispatcher that calls ext_func,
+                    // then continues to the retaddr. So the stub should issue a stub call to __lifted_ext_call,
+                    // pop the retaddr into rip, and update the stack. Then we can run ResolveTargets on the
+                    // dispatcher BB to continue at the INTERNAL 0x110C BB.
+                    //
+                    // Currently, target.Dest has the address of ext_func, but we can't use that for the BB address.
+                    //
+                    bb_id_t dispatcher_id = NextSyntheticID++;
+
+                    SyntheticBlocks[dispatcher_id] = SyntheticBlockInfo{
+                        .Type = SyntheticBlockInfo::Type::EXTERNAL,
+                        .DestAddr = target.Dest,
+                        .CalleeInfo = target.CalleeInfo};
+
+                    Edges.insert({curr_id, dispatcher_id});
+
+                    Worklist.push_back(dispatcher_id);
+                }
+                break;
+                }
+            }
+
+            if (targets_result.IndirectTarget)
+            {
+                bb_id_t dispatcher_id = NextSyntheticID++;
+
+                SyntheticBlocks[dispatcher_id] = SyntheticBlockInfo{
+                    .Type = SyntheticBlockInfo::Type::INDIRECT,
+                    .DestAddr = std::nullopt,
+                    .CalleeInfo = targets_result.IndirectTarget};
+
+                Edges.insert({curr_id, dispatcher_id});
+
+                Worklist.push_back(dispatcher_id);
             }
         }
 
@@ -864,6 +1040,11 @@ namespace lifted
         helpers::link_symbolic_helpers(M.get());
 
         llvm::Function *FinalFunc = buildCFG(M.get());
+
+        opt::always_inline(M.get());
+
+        runCFGPipeline(*FinalFunc);
+
         FinalFunc->addFnAttr(llvm::Attribute::AlwaysInline);
 
         llvm::Function *ConcretizedFinalFunc = ConcretizeEntryPC(FinalFunc, 1, addr);
@@ -883,13 +1064,6 @@ namespace lifted
 
         utils::output_to_file("/home/atlas/lifted/out/final_lifted.ll", M.get());
 
-        // Probably wasteful to run it again, since we already run it during partial CFG.
-        // But easier.
-        // TODO: maybe leave for caller?
-        //
-        opt::run_pass<ConstantMemoryFoldingPass>(*ConcretizedFinalFunc, *Binary, ConstMemoryRvaRanges);
-        opt::default_opt(M.get(), llvm::OptimizationLevel::O2);
-
         // temp: Let's try to link it against unfolder.
         ConcretizedFinalFunc->setName("__lifted_function");
         ConcretizedFinalFunc->addFnAttr(llvm::Attribute::AlwaysInline);
@@ -898,14 +1072,6 @@ namespace lifted
 
         opt::always_inline(M.get());
         opt::default_opt(M.get(), llvm::OptimizationLevel::O3);
-
-        auto new_func = M->getFunction("__unfold_function_systemv_x64_abi");
-
-        opt::run_pass<ConstantMemoryFoldingPass>(*new_func, *Binary, ConstMemoryRvaRanges);
-        opt::default_opt(M.get(), llvm::OptimizationLevel::O2);
-        opt::run_pass<ConstantMemoryFoldingPass>(*new_func, *Binary, ConstMemoryRvaRanges);
-        opt::default_opt(M.get(), llvm::OptimizationLevel::O2);
-        opt::run_pass<ConstantMemoryFoldingPass>(*new_func, *Binary, ConstMemoryRvaRanges);
 
         utils::output_to_file("/home/atlas/lifted/out/final_lifted.ll", M.get());
     }

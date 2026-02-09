@@ -38,7 +38,7 @@ add_executable(lifted
     "passes/analysis/stack_aa_pass.hpp"
 )
 
-target_link_libraries(lifted PRIVATE remill LIEF::LIEF libklee Souper)
+target_link_libraries(lifted PRIVATE remill LIEF::LIEF libklee Souper lifted-shared)
 
 target_compile_definitions(lifted PRIVATE
     "HELPERS_DEOBFUSCATION_INTRINSICS_PATH=\"${HELPERS_DEOBFUSCATION_INTRINSICS_PATH}\""
@@ -49,6 +49,8 @@ target_compile_definitions(lifted PRIVATE
     "KLEE_RUNTIME_LIBRARY_PATH=\"${KLEE_RUNTIME_LIBRARY_PATH}\""
     "HELPERS_SYMBOLIC_PATH=\"${HELPERS_SYMBOLIC_PATH}\""
     "HELPERS_ABI_PATH=\"${HELPERS_ABI_PATH}\""
+    "HELPERS_LIFTING_PATH=\"${HELPERS_LIFTING_PATH}\""
 )
 
-add_dependencies(lifted helpers)
+# Ensure Z3 is built before linking
+add_dependencies(lifted helpers z3_external)

@@ -45,6 +45,8 @@ llvm::Expected<lifter::LiftingResult> lift_function(const remill::Arch &arch, st
 
     auto lift_module = remill::LoadArchSemantics(&arch);
 
+    helpers::link_lifting_helpers(lift_module.get());
+
     std::set<llvm::AddressRange> const_rva_ranges;
     const_rva_ranges.insert(llvm::AddressRange{0x4030, 0x4080});
     Lifter lifter(&arch,
@@ -149,7 +151,7 @@ llvm::Error test_klee(llvm::LLVMContext &context)
 
     std::filesystem::path path = EVAL_SYNTHETIC_LIBS_DIR;
     // path /= "libeval-branch-polaris.so";
-    path /= "libeval-loop-unbounded-polaris.so";
+    path /= "libeval-loop-unbounded.so";
     // path /= "libeval-test-polaris.so";
     // path /= "libeval-loop-unbounded.so"; // test block splitting
 
@@ -209,7 +211,7 @@ int main(int argc, char **argv)
 
     std::filesystem::path binary_path = EVAL_SYNTHETIC_LIBS_DIR;
     // binary_path /= "libeval-test-polaris.so";
-    binary_path /= "libeval-branch-polaris.so";
+    binary_path /= "libeval-loop-unbounded-polaris.so";
 
     auto err = run_pipeline(*arch, binary_path, (*defs_module_or_err).get());
     if (err)

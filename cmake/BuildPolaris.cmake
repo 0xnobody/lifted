@@ -20,6 +20,22 @@ set(POLARIS_REPOSITORY "https://github.com/za233/Polaris-Obfuscator.git" CACHE S
 # Allow toggling LLVM assertions if desired
 set(LLVM_ENABLE_ASSERTIONS OFF CACHE BOOL "Enable LLVM assertions for Polaris build")
 
+# Auto-detect CPU cores and set conservative default for parallel jobs
+include(ProcessorCount)
+ProcessorCount(N_CORES)
+if(N_CORES EQUAL 0)
+  set(N_CORES 4)  # Fallback if detection fails
+endif()
+math(EXPR DEFAULT_POLARIS_JOBS "${N_CORES} - 4")
+if(DEFAULT_POLARIS_JOBS LESS 1)
+  set(DEFAULT_POLARIS_JOBS 1)
+endif()
+
+# Limit parallel build jobs to prevent resource exhaustion
+# Always use auto-detected value, but user can override via -DPOLARIS_BUILD_JOBS=X
+set(POLARIS_BUILD_JOBS "${DEFAULT_POLARIS_JOBS}" CACHE STRING "Number of parallel build jobs for Polaris (lower to reduce RAM/CPU usage)" FORCE)
+message(STATUS "Polaris will build with ${POLARIS_BUILD_JOBS} parallel jobs (detected ${N_CORES} cores)")
+
 # Preferred source/build locations
 set(POLARIS_SOURCE_DIR "${CMAKE_SOURCE_DIR}/external/polaris")
 set(POLARIS_BINARY_DIR "${CMAKE_BINARY_DIR}/polaris-build")
@@ -40,9 +56,20 @@ ExternalProject_Add(polaris
     -DLLVM_ENABLE_PROJECTS=clang
     -DLLVM_TARGETS_TO_BUILD=X86
     -DLLVM_ENABLE_ASSERTIONS=${LLVM_ENABLE_ASSERTIONS}
+    # Reduce compilation and linker memory usage (critical for WSL/low-memory systems)
+    -DLLVM_USE_LINKER=lld
+    -DLLVM_PARALLEL_LINK_JOBS=1
+    -DLLVM_OPTIMIZED_TABLEGEN=ON
+    -DLLVM_BUILD_TOOLS=OFF
+    -DLLVM_INCLUDE_TESTS=OFF
+    -DLLVM_INCLUDE_EXAMPLES=OFF
+    -DLLVM_INCLUDE_BENCHMARKS=OFF
     # Propagate vcpkg/toolchain settings into the external build
     -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
     -DVCPKG_TARGET_TRIPLET=${VCPKG_TARGET_TRIPLET}
+
+  # Limit parallel jobs to prevent resource exhaustion
+  BUILD_COMMAND ninja -j ${POLARIS_BUILD_JOBS}
 
   # No install step; keep the build local
   INSTALL_COMMAND ""
@@ -51,6 +78,10 @@ ExternalProject_Add(polaris
   UPDATE_DISCONNECTED 1
   # LOG_CONFIGURE 1  # Disabled to show build progress in console
   # LOG_BUILD 1      # Disabled to show build progress in console
+  
+  # Show build output in real-time
+  USES_TERMINAL_BUILD YES
+  USES_TERMINAL_CONFIGURE YES
 )
 
 # Optional: an interface target other targets can depend on

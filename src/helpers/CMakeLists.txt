@@ -56,6 +56,7 @@ set(HELPER_SOURCES
     "${HELPER_DIR}/verification-harness.cpp"
     "${HELPER_DIR}/symbolic-helper.cpp"
     "${HELPER_DIR}/state-utils.cpp"
+    "${HELPER_DIR}/lifting-helper.cpp"
 )
 
 foreach(source ${HELPER_SOURCES})
@@ -79,6 +80,7 @@ set(HELPERS_VERIFICATION_INTRINSICS_PATH "${HELPER_BINARY_DIR}/verification-help
 set(HELPERS_VERIFICATION_HARNESS_PATH "${HELPER_BINARY_DIR}/verification-harness.ll" CACHE STRING "verification-harness.ll path")
 set(HELPERS_STATE_UTILS_PATH "${HELPER_BINARY_DIR}/state-utils.ll" CACHE STRING "state-utils.ll path")
 set(HELPERS_SYMBOLIC_PATH "${HELPER_BINARY_DIR}/symbolic-helper.ll" CACHE STRING "symbolic-helper.ll path")
+set(HELPERS_LIFTING_PATH "${HELPER_BINARY_DIR}/lifting-helper.ll" CACHE STRING "lifting-helper.ll path")
 
 add_custom_target(helpers ALL
     DEPENDS ${HELPER_OUTPUTS}
