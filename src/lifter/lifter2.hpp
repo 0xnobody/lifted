@@ -16,6 +16,7 @@
 #include "utils.hpp"
 #include "opt.hpp"
 #include "helpers.hpp"
+#include "abi/calling_convention.hpp"
 
 namespace llvm
 {
@@ -44,6 +45,7 @@ namespace lifted
             SYNTHETIC // A synthetic basic block with no associated instruction range (e.g., for handling indirect jumps)
         };
 
+        Type Type;
         bb_id_t ID;
         llvm::StringRef FuncName;
         std::optional<llvm::AddressRange> RVARange;                       // Only for real BBs.
@@ -58,20 +60,28 @@ namespace lifted
         {
             return ID == other.ID;
         }
-
-        Type getType() const
-        {
-            return IsSynthetic(ID) ? Type::SYNTHETIC : Type::REAL;
-        }
-        
-        bool isSynthetic() const
-        {
-            return IsSynthetic(ID);
-        }
     };
 
-    class Callee
+    /// Metadata about a called function, resolved from the defs module.
+    /// Carries enough information to emit typed ABI-conformant call stubs.
+    struct Callee
     {
+        /// Function name as it appears in the defs module (e.g., "printf").
+        /// May be empty for unknown indirect calls (uses default type).
+        std::string FuncName;
+
+        /// The LLVM function type for this specific call site.
+        /// For variadic functions, each call site can have a different type.
+        /// nullptr means "use the calling convention's default type".
+        llvm::FunctionType *OrigType = nullptr;
+
+        /// Per-callee calling convention override.
+        /// nullptr means "use the Lifter's default CC".
+        const abi::CallingConvention *CC = nullptr;
+
+        /// Whether we have enough info for a typed call.
+        /// True even without OrigType — we'll fall back to the CC's default.
+        bool isTyped() const { return OrigType != nullptr || !FuncName.empty(); }
     };
 
     struct ResolvedTarget
@@ -133,9 +143,25 @@ namespace lifted
         const LIEF::Binary *Binary;
 
         std::set<llvm::AddressRange> ConstMemoryRvaRanges;
+        std::set<llvm::AddressRange> GotTableRvaRanges;
 
         llvm::Module *Module;
         std::unique_ptr<llvm::Module> CleanModule;
+
+        /// User-provided function declarations for external/indirect calls.
+        /// nullptr if no defs module is available (fallback to opaque calls).
+        const llvm::Module *DefsModule = nullptr;
+
+        /// Default calling convention used when a Callee doesn't specify one.
+        const abi::CallingConvention *DefaultCC = nullptr;
+
+        /// Counter for disambiguating Fn* wrapper names across callsites
+        /// with the same function name but different types (e.g., variadic calls).
+        unsigned NextWrapperID = 0;
+
+        /// Tracks Fn* wrapper declarations created for external calls.
+        /// Maps the wrapper function to its original Callee metadata.
+        std::map<llvm::Function *, Callee> ExternalWrappers;
 
         bb_id_t InitialEntryPoint;
         bb_id_t NextSyntheticID = 0xFFFF'0000'0000'0000; // Start of synthetic ID range
@@ -164,6 +190,23 @@ namespace lifted
 
         llvm::Function *buildPartialCFG(llvm::Module *Module, const LiftedBB &BB);
         llvm::Function *buildCFG(llvm::Module *Module);
+
+        /// Get or create an Fn* wrapper declaration for a typed external call.
+        /// Signature: RetTy funcname_extern_N(UserParams..., i64 %addr, ptr %memory_ptr)
+        /// Each callsite gets a unique wrapper (N is disambiguated) to support
+        /// variadic functions with different signatures at different sites.
+        llvm::Function *GetOrCreateExternWrapper(llvm::Module *M, const Callee &callee);
+
+        /// Resolve the calling convention for a specific callee.
+        /// Falls back to DefaultCC if the callee doesn't specify one.
+        const abi::CallingConvention *ResolveCC(const Callee &callee) const
+        {
+            return callee.CC ? callee.CC : DefaultCC;
+        }
+
+        /// Resolve the function type for a callee.
+        /// Uses OrigType if set, otherwise falls back to the CC's default type.
+        llvm::FunctionType *ResolveCalleeType(const Callee &callee) const;
 
         void dumpLifterState()
         {
@@ -202,25 +245,33 @@ namespace lifted
             llvm::outs() << "]\n";
         }
 
-        void issueExtCall(llvm::BasicBlock &BB, bb_id_t id);
-
         void runCFGPipeline(llvm::Function &F);
+
+        ResolvedTargetsResult HeuresticallyResolveIndirectTargets(llvm::Function &F);
+        ResolvedTargetsResult HeuresticallyResolveTargets(llvm::Function &F);
 
     public:
         Lifter(const remill::Arch *arch,
                const LIEF::Binary *binary,
                llvm::Module *module,
-               const std::set<llvm::AddressRange> &const_rva_ranges)
+               const std::set<llvm::AddressRange> &const_rva_ranges,
+               const std::set<llvm::AddressRange> &got_table_rva_ranges,
+               const llvm::Module *defs_module = nullptr,
+               const abi::CallingConvention *cc = nullptr)
             : Arch{arch},
               Intrinsics{arch->GetInstrinsicTable()},
               Binary{binary},
               Module{module},
               CleanModule{std::make_unique<llvm::Module>("clean_module", module->getContext())},
-              ConstMemoryRvaRanges{const_rva_ranges}
+              ConstMemoryRvaRanges{const_rva_ranges},
+              GotTableRvaRanges{got_table_rva_ranges},
+              DefsModule{defs_module},
+              DefaultCC{cc}
         {
         }
 
         LiftedBB LiftBB(uintptr_t id, std::optional<uintptr_t> stop_at = std::nullopt);
+        LiftedBB CreateRemoteCallSyntheticBB(bb_id_t id, std::optional<Callee> callee_info = std::nullopt);
 
         ResolvedTargetsResult ResolveTargets(const LiftedBB &BB);
 

@@ -36,6 +36,12 @@ add_executable(lifted
 
     "passes/analysis/stack_aa_pass.cpp"
     "passes/analysis/stack_aa_pass.hpp"
+
+    "abi/calling_convention.hpp"
+    "abi/calling_convention.cpp"
+    "abi/systemv_x64.hpp"
+    "abi/abi_utils.hpp"
+    "abi/abi_utils.cpp"
 )
 
 target_link_libraries(lifted PRIVATE remill LIEF::LIEF libklee Souper lifted-shared)

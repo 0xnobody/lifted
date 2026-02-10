@@ -35,6 +35,9 @@
 #include <llvm/Transforms/Scalar/SimplifyCFG.h>                // SimplifyCFGPass
 #include <llvm/Transforms/Scalar/ADCE.h>                       // AggressiveDCEPass
 
+#include "passes/pass_utils.hpp"
+#include "abi/abi_utils.hpp"
+
 namespace lifted
 {
     bool Lifter::IsExecutableSection(const uint64_t addr) const
@@ -213,7 +216,42 @@ namespace lifted
         return NewF;
     }
 
-    ResolvedTargetsResult HeuresticallyResolveTargets(llvm::Function &F)
+    ResolvedTargetsResult Lifter::HeuresticallyResolveIndirectTargets(llvm::Function &F)
+    {
+        // Match for:
+        //   %r = load i64, ptr getelementptr inbounds ([0 x i8], ptr @RAM, i64 0, i64 {offs})
+        //   ret i64 %r
+        // Extract the offset, if within GotTableRvaRanges, we know it's an indirect jump via GOT.
+
+        if (auto ret_inst = llvm::dyn_cast<llvm::ReturnInst>((--F.end())->getTerminator()))
+        {
+            if (auto load_inst = llvm::dyn_cast<llvm::LoadInst>(ret_inst->getReturnValue()))
+            {
+                if (auto GEPOp = passes::isRAMGEP(load_inst->getPointerOperand()))
+                {
+                    auto offset = GEPOp->getOperand(2);
+                    if (auto const_offset = llvm::dyn_cast<llvm::ConstantInt>(offset))
+                    {
+                        for (const auto &got_range : GotTableRvaRanges)
+                        {
+                            if (got_range.contains(const_offset->getZExtValue()))
+                            {
+                                DLOG(INFO) << "Heuristically resolved indirect target via GOT at offset " << std::hex << const_offset->getZExtValue() << std::dec;
+                                return ResolvedTargetsResult{
+                                    .Targets = {},
+                                    .IndirectTarget = Callee{} // We can fill in more callee info here if needed
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return ResolvedTargetsResult{.Targets = {}, .IndirectTarget = std::nullopt};
+    }
+
+    ResolvedTargetsResult Lifter::HeuresticallyResolveTargets(llvm::Function &F)
     {
         // TODO: use heurestics to find external targets too
 
@@ -387,16 +425,57 @@ namespace lifted
             }
             else
             {
-                llvm::SwitchInst *Switch = Builder.CreateSwitch(NextRIP, DeadEndBB, Successors.size());
+                // Classify successors by type and identify INDIRECT default
+                std::optional<bb_id_t> IndirectDefault;
+
+                // First pass: identify INDIRECT synthetic block for default case
                 for (bb_id_t succAddr : Successors)
                 {
-                    if (BlockSet.count(succAddr))
+                    auto synth_it = SyntheticBlocks.find(succAddr);
+                    if (synth_it != SyntheticBlocks.end() &&
+                        synth_it->second.Type == SyntheticBlockInfo::Type::INDIRECT)
                     {
-                        Switch->addCase(Builder.getInt64(succAddr), BlockMap[succAddr]);
+                        IndirectDefault = succAddr;
+                        break; // At most one INDIRECT edge per BB
+                    }
+                }
+
+                // Create switch with appropriate default
+                llvm::BasicBlock *DefaultBB = IndirectDefault.has_value()
+                                                  ? BlockMap[IndirectDefault.value()]
+                                                  : DeadEndBB;
+                llvm::SwitchInst *Switch = Builder.CreateSwitch(NextRIP, DefaultBB, Successors.size());
+
+                // Second pass: add cases for non-default successors
+                for (bb_id_t succAddr : Successors)
+                {
+                    // Skip if this is the INDIRECT default
+                    if (IndirectDefault.has_value() && succAddr == IndirectDefault.value())
+                        continue;
+
+                    if (!BlockSet.count(succAddr))
+                    {
+                        // Successor not in BlockSet - goes to dead end
+                        Switch->addCase(Builder.getInt64(succAddr), DeadEndBB);
+                        continue;
+                    }
+
+                    auto synth_it = SyntheticBlocks.find(succAddr);
+                    if (synth_it != SyntheticBlocks.end())
+                    {
+                        // Synthetic block
+                        if (synth_it->second.Type == SyntheticBlockInfo::Type::EXTERNAL)
+                        {
+                            // Use concrete external address as case value
+                            uint64_t externalAddr = synth_it->second.DestAddr.value();
+                            Switch->addCase(Builder.getInt64(externalAddr), BlockMap[succAddr]);
+                        }
+                        // INDIRECT type is handled as default, skip adding as case
                     }
                     else
                     {
-                        Switch->addCase(Builder.getInt64(succAddr), DeadEndBB);
+                        // Real block - use block ID as case value
+                        Switch->addCase(Builder.getInt64(succAddr), BlockMap[succAddr]);
                     }
                 }
             }
@@ -509,6 +588,12 @@ namespace lifted
             return resolved_targets;
         }
 
+        resolved_targets = HeuresticallyResolveIndirectTargets(*ConcretizedFnc);
+        if (resolved_targets)
+        {
+            return resolved_targets;
+        }
+
         // If we reach here, it is because we failed to resolve any concrete targets.
         // This can be due to two main reasons:
         // 1) Our heurestics failed to detect the targets (e.g. switch tables) or the rip expression
@@ -532,20 +617,6 @@ namespace lifted
         return ResolvedTargetsResult{
             .Targets = {},
             .IndirectTarget = std::nullopt};
-    }
-
-    void Lifter::issueExtCall(llvm::BasicBlock &BB, uintptr_t addr)
-    {
-        auto F = Module->getFunction("__lifted_issue_ext_call");
-
-        llvm::IRBuilder<> ir(&BB);
-        auto state_ptr = remill::LoadStatePointer(&BB);
-        auto pc = remill::LoadProgramCounterRef(&BB);
-        auto mem = remill::LoadMemoryPointer(&BB, *Intrinsics);
-
-        auto Call = ir.CreateCall(F, {state_ptr, ir.getInt64(addr), mem});
-
-        ir.CreateStore(Call, remill::LoadMemoryPointerRef(&BB));
     }
 
     void Lifter::runCFGPipeline(llvm::Function &F)
@@ -773,6 +844,7 @@ namespace lifted
         }
 
         LiftedBB BB;
+        BB.Type = LiftedBB::Type::REAL;
         BB.ID = addr;
         BB.FuncName = F->getName();
         BB.RVARange = llvm::AddressRange{addr, inst.next_pc};
@@ -781,9 +853,161 @@ namespace lifted
         return BB;
     }
 
+    llvm::FunctionType *Lifter::ResolveCalleeType(const Callee &callee) const
+    {
+        if (callee.OrigType)
+            return callee.OrigType;
+
+        // Fall back to the calling convention's default type.
+        const auto *CC = ResolveCC(callee);
+        if (CC)
+            return CC->getDefaultFunctionType(Module->getContext());
+
+        return nullptr;
+    }
+
+    llvm::Function *Lifter::GetOrCreateExternWrapper(llvm::Module *M, const Callee &callee)
+    {
+        llvm::FunctionType *ResolvedTy = ResolveCalleeType(callee);
+        assert(ResolvedTy && "GetOrCreateExternWrapper requires a resolvable type");
+
+        // Each callsite gets a unique wrapper to support variadic functions
+        // with different signatures at different call sites.
+        std::string BaseName = callee.FuncName.empty() ? "unknown" : callee.FuncName;
+        std::string WrapperName = BaseName + "_extern_" + std::to_string(NextWrapperID++);
+
+        // Build the Fn* signature: RetTy Fn*(UserParams..., i64 %addr, ptr %memory_ptr)
+        llvm::LLVMContext &Ctx = M->getContext();
+        llvm::Type *Int64Ty = llvm::Type::getInt64Ty(Ctx);
+        llvm::Type *PtrTy = llvm::PointerType::getUnqual(Ctx);
+
+        std::vector<llvm::Type *> WrapperParams;
+        for (unsigned i = 0; i < ResolvedTy->getNumParams(); ++i)
+        {
+            WrapperParams.push_back(ResolvedTy->getParamType(i));
+        }
+        WrapperParams.push_back(Int64Ty); // %addr
+        WrapperParams.push_back(PtrTy);   // %memory_ptr (ptr to Memory*)
+
+        // Never mark the wrapper as vararg — each callsite gets a concrete signature.
+        llvm::FunctionType *WrapperTy = llvm::FunctionType::get(
+            ResolvedTy->getReturnType(), WrapperParams, false);
+
+        llvm::Function *WrapperF = llvm::Function::Create(
+            WrapperTy, llvm::Function::ExternalLinkage, WrapperName, M);
+
+        // Name the extra parameters for readability.
+        unsigned NumOrigParams = ResolvedTy->getNumParams();
+        WrapperF->getArg(NumOrigParams)->setName("addr");
+        WrapperF->getArg(NumOrigParams + 1)->setName("memory_ptr");
+
+        // Name original params to match the defs module if available.
+        if (DefsModule && !callee.FuncName.empty())
+        {
+            if (auto *DefsFunc = DefsModule->getFunction(callee.FuncName))
+            {
+                for (unsigned i = 0; i < NumOrigParams && i < DefsFunc->arg_size(); ++i)
+                {
+                    if (DefsFunc->getArg(i)->hasName())
+                        WrapperF->getArg(i)->setName(DefsFunc->getArg(i)->getName());
+                }
+            }
+        }
+
+        return WrapperF;
+    }
+
+    LiftedBB Lifter::CreateRemoteCallSyntheticBB(bb_id_t id, std::optional<Callee> callee_info)
+    {
+        auto &Context = Module->getContext();
+
+        std::stringstream ss;
+        ss << "BB_" << std::hex << id << "_indr";
+
+        auto F = Arch->DeclareLiftedFunction(ss.str(), Module);
+
+        Arch->InitializeEmptyLiftedFunction(F);
+
+        auto state_ptr = NthArgument(F, remill::kStatePointerArgNum);
+        auto pc = remill::LoadProgramCounterArg(F);
+        auto mem = remill::LoadMemoryPointerArg(F);
+
+        llvm::IRBuilder<> ir(&F->getEntryBlock());
+
+        // Resolve per-callee CC and type. Falls back to DefaultCC's default type
+        // if the callee doesn't specify OrigType (conservative 6-arg default).
+        const abi::CallingConvention *CalleeCC = callee_info ? ResolveCC(*callee_info) : nullptr;
+        llvm::FunctionType *CalleeTy = callee_info ? ResolveCalleeType(*callee_info) : nullptr;
+
+        if (CalleeTy && CalleeCC)
+        {
+            // Get or create the Fn* declaration (unique per callsite).
+            llvm::Function *Wrapper = GetOrCreateExternWrapper(Module, *callee_info);
+
+            // 1. Extract arguments from State according to calling convention.
+            auto Args = abi::EmitArgExtraction(ir, *CalleeCC, state_ptr, mem, CalleeTy);
+
+            // 2. Append the extra Fn* parameters: addr and memory_ptr.
+            //    addr = pc (the program counter at this call site).
+            Args.push_back(pc);
+
+            //    memory_ptr = the %MEMORY alloca that Remill already created.
+            //    InitializeEmptyLiftedFunction creates %MEMORY and stores the
+            //    memory argument into it, so we reuse it rather than creating
+            //    a redundant alloca.
+            auto *MemAlloca = remill::LoadMemoryPointerRef(&F->getEntryBlock());
+            assert(MemAlloca && "Expected %MEMORY alloca from InitializeEmptyLiftedFunction");
+            Args.push_back(MemAlloca);
+
+            // 3. Call the Fn* wrapper.
+            llvm::Value *RetVal = ir.CreateCall(Wrapper, Args);
+
+            // 4. Write back return values to State.
+            abi::EmitReturnWriteback(ir, *CalleeCC, state_ptr, RetVal);
+
+            // 5. Clobber volatile registers with freeze(poison).
+            unsigned NumRetRegs = CalleeCC->getNumReturnRegisters(CalleeTy->getReturnType());
+            abi::EmitVolatileClobber(ir, *CalleeCC, state_ptr, NumRetRegs);
+
+            // 6. Reload memory from the alloca (callee may have updated it).
+            llvm::Value *UpdatedMem = ir.CreateLoad(mem->getType(), MemAlloca);
+
+            // 7. Pop return address and adjust stack.
+            abi::EmitRetAddrPop(ir, state_ptr, UpdatedMem);
+
+            // 8. Return the (possibly updated) memory pointer.
+            ir.CreateRet(UpdatedMem);
+
+            // Track the wrapper for later lowering.
+            ExternalWrappers[Wrapper] = *callee_info;
+        }
+        else
+        {
+            // Fallback: opaque external call via __lifted_issue_ext_call.
+            llvm::Function *extFunc = Module->getFunction("__lifted_issue_ext_call");
+            auto call = ir.CreateCall(extFunc, {state_ptr, pc, mem});
+            ir.CreateRet(call);
+        }
+
+        return LiftedBB{
+            .Type = LiftedBB::Type::SYNTHETIC,
+            .ID = id,
+            .FuncName = F->getName(),
+            .RVARange = std::nullopt,
+            .TerminatingCategory = std::nullopt};
+    }
+
     void Lifter::Lift(uint64_t addr)
     {
         InitialEntryPoint = (bb_id_t)addr;
+
+        // Link state-utils early so __extract_* and __store_* are available
+        // for typed synthetic BB construction.
+        if (DefaultCC)
+        {
+            helpers::link_state_utils(Module);
+            helpers::link_lifting_helpers(Module);
+        }
 
         Worklist.push_back((bb_id_t)addr);
         while (!Worklist.empty() || !Reprove.empty())
@@ -809,7 +1033,7 @@ namespace lifted
                 return std::find_if(Explored.begin(), Explored.end(), [&](const auto &pair)
                                     {
                     const auto &bb = pair.second;
-                    return !bb.isSynthetic() && addr >= bb.RVARange->start() && addr < bb.RVARange->end(); });
+                    return bb.Type == LiftedBB::Type::REAL && addr >= bb.RVARange->start() && addr < bb.RVARange->end(); });
             };
 
             if (!IsSynthetic(curr_id))
@@ -889,20 +1113,21 @@ namespace lifted
                     }
                 }
             }
-            else
-            {
-                // Synthetic BB.
-
-
-            }
 
             llvm::outs() << "[*] Analyzing BB 0x" << llvm::format_hex(curr_id, 16) << "\n";
 
             LiftedBB BB;
             if (!Explored.contains(curr_id))
             {
-                // TODO: check if curr_id is real or synthetic
-                BB = LiftBB(curr_id);
+                if (IsSynthetic(curr_id))
+                {
+                    const auto &synth_info = SyntheticBlocks.at(curr_id);
+                    BB = CreateRemoteCallSyntheticBB(curr_id, synth_info.CalleeInfo);
+                }
+                else
+                {
+                    BB = LiftBB(curr_id);
+                }
 
                 auto Func = Module->getFunction(BB.FuncName);
 

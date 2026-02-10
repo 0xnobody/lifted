@@ -1,8 +1,9 @@
-// memory_intrinsic_lowering_pass.cpp
-// LLVM-16+ FunctionPass using opaque pointers.
-// Replaces all loads/stores with calls to:
-//   __remill_read_memory_{8,16,32,64}(ptr, i64)
-//   __remill_write_memory_{8,16,32,64}(ptr, i64, iN)
+// redefine_external_calls_pass.cpp
+// Rewrites calls to external functions by extracting ABI arguments from
+// Remill's State struct and calling user-provided redefinitions.
+//
+// This pass uses the shared ABI utilities from abi/abi_utils.hpp for
+// register extraction, casting, and return value writeback.
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Constants.h"
@@ -16,6 +17,8 @@
 #include "llvm/Passes/PassPlugin.h"
 
 #include "redefine_external_calls_pass.hpp"
+#include "../abi/abi_utils.hpp"
+#include "../abi/systemv_x64.hpp"
 
 using namespace llvm;
 
@@ -27,145 +30,13 @@ struct ExternalFuncDef
     llvm::SmallVector<CallInst *, 8> CallSites;
 };
 
-enum class ABIRegister
-{
-    RDI,
-    RSI,
-    RDX,
-    RCX,
-    R8,
-    R9,
-    RSP
-};
-
-Value *GetRegisterValue(ABIRegister Reg, Value *State, IRBuilder<> &Builder)
-{
-    switch (Reg)
-    {
-    case ABIRegister::RDI:
-        return Builder.CreateCall(Builder.GetInsertBlock()->getModule()->getFunction("__extract_rdi"), {State});
-    case ABIRegister::RSI:
-        return Builder.CreateCall(Builder.GetInsertBlock()->getModule()->getFunction("__extract_rsi"), {State});
-    case ABIRegister::RDX:
-        return Builder.CreateCall(Builder.GetInsertBlock()->getModule()->getFunction("__extract_rdx"), {State});
-    case ABIRegister::RCX:
-        return Builder.CreateCall(Builder.GetInsertBlock()->getModule()->getFunction("__extract_rcx"), {State});
-    case ABIRegister::R8:
-        return Builder.CreateCall(Builder.GetInsertBlock()->getModule()->getFunction("__extract_r8"), {State});
-    case ABIRegister::R9:
-        return Builder.CreateCall(Builder.GetInsertBlock()->getModule()->getFunction("__extract_r9"), {State});
-    case ABIRegister::RSP:
-        return Builder.CreateCall(Builder.GetInsertBlock()->getModule()->getFunction("__extract_rsp"), {State});
-    default:
-        llvm_unreachable("Unsupported ABI register");
-    }
-}
-
-Value *CastToType(Value *Src, Type *DstTy, IRBuilder<> &Builder)
-{
-    if (Src->getType() == DstTy)
-        return Src;
-
-    auto DL = Builder.GetInsertBlock()->getModule()->getDataLayout();
-    auto PtrSize = DL.getPointerSizeInBits();
-
-    auto SrcSize = Src->getType()->getScalarSizeInBits();
-    auto DstSize = DstTy->isPointerTy() ? PtrSize : DstTy->getScalarSizeInBits();
-
-    if (SrcSize == DstSize)
-    {
-        return Builder.CreateBitOrPointerCast(Src, DstTy);
-    }
-    else if (DstTy->isIntegerTy())
-    {
-        if (SrcSize < DstSize)
-            return Builder.CreateZExt(Src, DstTy);
-        else
-            return Builder.CreateTrunc(Src, DstTy);
-    }
-    else
-    {
-        llvm_unreachable("Unsupported cast type");
-    }
-}
-
-void WriteRSP(Value *State, Value *RSPValue, IRBuilder<> &Builder)
-{
-    Builder.CreateCall(Builder.GetInsertBlock()->getModule()->getFunction("__store_rsp"), {State, RSPValue});
-}
-
-void ExtractStackArgs(IRBuilder<> &Builder, llvm::ArrayRef<Value *> StackArgs, Value *State, Value *Memory, llvm::SmallVector<Value *, 8> &CallArgs)
-{
-    Module *M = Builder.GetInsertBlock()->getModule();
-    const DataLayout &DL = M->getDataLayout();
-    LLVMContext &Ctx = M->getContext();
-
-    Type *Int64Ty = Type::getInt64Ty(Ctx);
-
-    for (int i = 0; i < StackArgs.size(); ++i)
-    {
-        Value *SP = Builder.CreateCall(M->getFunction("__extract_rsp"), {State});
-        Value *ArgOffset = Builder.CreateAdd(
-            SP,
-            ConstantInt::get(Int64Ty, (i + 1) * DL.getPointerSize(0))); // +1 to skip return address
-
-        Value *ArgValue = Builder.CreateCall(M->getFunction("__remill_read_memory_64"), {Memory, ArgOffset});
-
-        CallArgs.push_back(CastToType(ArgValue, StackArgs[i]->getType(), Builder));
-    }
-}
-
-void EmitCall_SystemV(IRBuilder<> &Builder, Function *Callee, Value *State, Value *Memory)
-{
-    llvm::SmallVector<Value *, 8> CallArgs;
-
-    // First six integer/pointer arguments are passed in registers.
-    static const ABIRegister ArgRegs[] = {
-        ABIRegister::RDI,
-        ABIRegister::RSI,
-        ABIRegister::RDX,
-        ABIRegister::RCX,
-        ABIRegister::R8,
-        ABIRegister::R9,
-    };
-
-    size_t NumArgs = Callee->arg_size();
-
-    size_t NumRegArgs = std::min(NumArgs, sizeof(ArgRegs) / sizeof(ABIRegister));
-    for (size_t i = 0; i < NumRegArgs; ++i)
-    {
-        CallArgs.push_back(CastToType(GetRegisterValue(ArgRegs[i], State, Builder), Callee->getArg(i)->getType(), Builder));
-    }
-
-    // Additional arguments are passed on the stack.
-    if (NumArgs > NumRegArgs)
-    {
-        llvm::SmallVector<Value *, 8> StackArgs;
-        for (size_t i = NumRegArgs; i < NumArgs; ++i)
-        {
-            StackArgs.push_back(Callee->getArg(i));
-        }
-        ExtractStackArgs(Builder, StackArgs, State, Memory, CallArgs);
-    }
-
-    // TODO: write back rax, rdx for return values.
-    Builder.CreateCall(Callee, CallArgs);
-
-    // Restore RSP (i.e. simulate 'ret' so our stack remains aligned)
-    // If we didn't do this, each call would push a return address onto the stack.
-    //
-    Value *RSP = GetRegisterValue(ABIRegister::RSP, State, Builder);
-    Value *NewRSP = Builder.CreateAdd(
-        RSP,
-        ConstantInt::get(Type::getInt64Ty(Memory->getContext()), 8)); // +8 for return address
-    WriteRSP(State, NewRSP, Builder);
-}
-
 PreservedAnalyses RedefineExternalCallsPass::run(Function &F, FunctionAnalysisManager &)
 {
     Module *M = F.getParent();
     LLVMContext &Ctx = M->getContext();
-    const DataLayout &DL = M->getDataLayout();
+
+    // TODO: Make the calling convention configurable via the pass constructor.
+    lifted::abi::SystemVx64CC CC;
 
     // Iterate through each external function call.
     //
@@ -226,7 +97,8 @@ PreservedAnalyses RedefineExternalCallsPass::run(Function &F, FunctionAnalysisMa
         CallStub->addFnAttr(Attribute::AlwaysInline);
         IRBuilder<> Builder(BasicBlock::Create(Ctx, "entry", CallStub));
 
-        EmitCall_SystemV(Builder, Ext.second.Redefinition, State, Memory);
+        // Use shared ABI utilities: extract args, call, write return, clobber, pop ret addr.
+        lifted::abi::EmitCall(Builder, CC, Ext.second.Redefinition, State, Memory);
 
         Builder.CreateRet(Memory);
 

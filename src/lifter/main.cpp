@@ -26,6 +26,8 @@
 
 #include "lifter2.hpp"
 
+#include "abi/systemv_x64.hpp"
+
 using namespace lifted;
 
 llvm::Expected<lifter::LiftingResult> lift_function(const remill::Arch &arch, std::filesystem::path path, const llvm::Module *defs_module)
@@ -45,14 +47,20 @@ llvm::Expected<lifter::LiftingResult> lift_function(const remill::Arch &arch, st
 
     auto lift_module = remill::LoadArchSemantics(&arch);
 
-    helpers::link_lifting_helpers(lift_module.get());
+    lifted::abi::SystemVx64CC CC;
 
     std::set<llvm::AddressRange> const_rva_ranges;
     const_rva_ranges.insert(llvm::AddressRange{0x4030, 0x4080});
+
+    std::set<llvm::AddressRange> got_table_rva_ranges;
+    got_table_rva_ranges.insert(llvm::AddressRange{0x4000, 0x4020});
     Lifter lifter(&arch,
                   binary.get(),
                   lift_module.get(),
-                  const_rva_ranges);
+                  const_rva_ranges,
+                  got_table_rva_ranges,
+                  nullptr,
+                  &CC);
 
     lifter.Lift(*rva);
 
@@ -151,7 +159,7 @@ llvm::Error test_klee(llvm::LLVMContext &context)
 
     std::filesystem::path path = EVAL_SYNTHETIC_LIBS_DIR;
     // path /= "libeval-branch-polaris.so";
-    path /= "libeval-loop-unbounded.so";
+    path /= "libeval-ext-call.so";
     // path /= "libeval-test-polaris.so";
     // path /= "libeval-loop-unbounded.so"; // test block splitting
 
