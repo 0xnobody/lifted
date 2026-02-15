@@ -15,4 +15,4 @@ set_target_properties(lifted-shared PROPERTIES
 
 target_include_directories(lifted-shared PUBLIC "include")
 
-target_link_libraries(lifted-shared PRIVATE LIEF::LIEF)
+target_link_libraries(lifted-shared PRIVATE remill LIEF::LIEF)

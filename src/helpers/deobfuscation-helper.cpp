@@ -65,13 +65,3 @@ HELPER Memory *__remill_write_memory_64(Memory *m, addr_t a, uint64_t v)
     std::memcpy((void *)&RAM[a], &v, sizeof(v));
     return m;
 }
-
-HELPER Memory *__lifted_ext_call(State *__restrict__, addr_t addr, Memory *);
-
-HELPER Memory *__lifted_issue_ext_call(State *__restrict__ s, addr_t addr, Memory *m)
-{
-    __lifted_ext_call(s, addr, m);
-    s->gpr.rip.qword = __remill_read_memory_64(m, s->gpr.rsp.qword);
-    s->gpr.rsp.qword += 8;
-    return m;
-}

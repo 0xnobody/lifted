@@ -10,6 +10,7 @@
 #include <remill/BC/Optimizer.h>
 
 #include <llvm/Transforms/IPO/AlwaysInliner.h>
+#include <llvm/Transforms/Utils/Cloning.h>
 
 #undef DEBUG
 #include <LIEF/LIEF.hpp>
@@ -23,6 +24,7 @@
 #include "opt.hpp"
 #include "helpers.hpp"
 #include "slicer.hpp"
+#include "tester.hpp"
 
 // Specific transformation passes
 #include <llvm/Transforms/Utils/Mem2Reg.h>                     // PromotePass
@@ -35,8 +37,9 @@
 #include <llvm/Transforms/Scalar/SimplifyCFG.h>                // SimplifyCFGPass
 #include <llvm/Transforms/Scalar/ADCE.h>                       // AggressiveDCEPass
 
+#include <lifted/shared.hpp>
+
 #include "passes/pass_utils.hpp"
-#include "abi/abi_utils.hpp"
 
 namespace lifted
 {
@@ -866,61 +869,80 @@ namespace lifted
         return nullptr;
     }
 
-    llvm::Function *Lifter::GetOrCreateExternWrapper(llvm::Module *M, const Callee &callee)
+    llvm::Function *Lifter::GetOrCreateCalleeStub(llvm::Module *M, const Callee &callee)
     {
-        llvm::FunctionType *ResolvedTy = ResolveCalleeType(callee);
-        assert(ResolvedTy && "GetOrCreateExternWrapper requires a resolvable type");
+        // Determine stub key — per callee name (or per unnamed indirect).
+        std::string Key = callee.FuncName.empty()
+                              ? ("indirect_" + std::to_string(NextIndirectStubID++))
+                              : callee.FuncName;
 
-        // Each callsite gets a unique wrapper to support variadic functions
-        // with different signatures at different call sites.
-        std::string BaseName = callee.FuncName.empty() ? "unknown" : callee.FuncName;
-        std::string WrapperName = BaseName + "_extern_" + std::to_string(NextWrapperID++);
-
-        // Build the Fn* signature: RetTy Fn*(UserParams..., i64 %addr, ptr %memory_ptr)
-        llvm::LLVMContext &Ctx = M->getContext();
-        llvm::Type *Int64Ty = llvm::Type::getInt64Ty(Ctx);
-        llvm::Type *PtrTy = llvm::PointerType::getUnqual(Ctx);
-
-        std::vector<llvm::Type *> WrapperParams;
-        for (unsigned i = 0; i < ResolvedTy->getNumParams(); ++i)
+        // Return existing stub if already created for this callee.
+        auto it = CalleeStubs.find(Key);
+        if (it != CalleeStubs.end())
         {
-            WrapperParams.push_back(ResolvedTy->getParamType(i));
-        }
-        WrapperParams.push_back(Int64Ty); // %addr
-        WrapperParams.push_back(PtrTy);   // %memory_ptr (ptr to Memory*)
-
-        // Never mark the wrapper as vararg — each callsite gets a concrete signature.
-        llvm::FunctionType *WrapperTy = llvm::FunctionType::get(
-            ResolvedTy->getReturnType(), WrapperParams, false);
-
-        llvm::Function *WrapperF = llvm::Function::Create(
-            WrapperTy, llvm::Function::ExternalLinkage, WrapperName, M);
-
-        // Name the extra parameters for readability.
-        unsigned NumOrigParams = ResolvedTy->getNumParams();
-        WrapperF->getArg(NumOrigParams)->setName("addr");
-        WrapperF->getArg(NumOrigParams + 1)->setName("memory_ptr");
-
-        // Name original params to match the defs module if available.
-        if (DefsModule && !callee.FuncName.empty())
-        {
-            if (auto *DefsFunc = DefsModule->getFunction(callee.FuncName))
+            if (auto *ExistingStub = M->getFunction(it->second.StubFuncName))
             {
-                for (unsigned i = 0; i < NumOrigParams && i < DefsFunc->arg_size(); ++i)
+                return ExistingStub;
+            }
+        }
+
+        const auto *CC = ResolveCC(callee);
+        assert(CC && "GetOrCreateCalleeStub requires a calling convention");
+
+        // The stub has the same signature as a lifted function:
+        //   ptr @__lifted_<abi>_call_<name>(ptr %state, i64 %addr, ptr %memory)
+        // This is the same as __lifted_systemv_call (State*, addr_t, Memory*) → Memory*
+
+        // Find the template stub function (linked from lifting-helper.ll).
+        std::string TemplateStubName = CC->getCallStubName().str();
+        llvm::Function *TemplateStub = M->getFunction(TemplateStubName);
+        assert(TemplateStub && ("Missing ABI stub template: " + TemplateStubName).c_str());
+
+        // Create a per-callee ext call declaration:
+        //   declare ptr @__lifted_ext_call_<name>(ptr, i64, ptr)
+        std::string ExtCallName = "__lifted_ext_call_" + Key;
+        llvm::Function *ExtCallDecl = M->getFunction(ExtCallName);
+        if (!ExtCallDecl)
+        {
+            // Same signature as __lifted_ext_call
+            llvm::Function *OrigExtCall = M->getFunction("__lifted_ext_call");
+            assert(OrigExtCall && "Missing __lifted_ext_call declaration");
+            ExtCallDecl = llvm::Function::Create(
+                OrigExtCall->getFunctionType(),
+                llvm::Function::ExternalLinkage,
+                ExtCallName, M);
+        }
+
+        // Clone the template stub → __lifted_<abi>_call_<name>
+        std::string StubName = TemplateStubName + "_" + Key;
+        llvm::ValueToValueMapTy VMap;
+        llvm::Function *Stub = llvm::CloneFunction(TemplateStub, VMap);
+        Stub->setName(StubName);
+
+        // Inside the cloned stub, replace calls to __lifted_ext_call with
+        // calls to __lifted_ext_call_<name>.
+        llvm::Function *OrigExtCall = M->getFunction("__lifted_ext_call");
+        for (auto &BB : *Stub)
+        {
+            for (auto &I : BB)
+            {
+                if (auto *CI = llvm::dyn_cast<llvm::CallInst>(&I))
                 {
-                    if (DefsFunc->getArg(i)->hasName())
-                        WrapperF->getArg(i)->setName(DefsFunc->getArg(i)->getName());
+                    if (CI->getCalledFunction() == OrigExtCall)
+                    {
+                        CI->setCalledFunction(ExtCallDecl);
+                    }
                 }
             }
         }
 
-        return WrapperF;
+        // Record the stub.
+        CalleeStubs[Key] = CalleeStubEntry{Stub->getName().str(), ExtCallDecl->getName().str(), callee};
+        return Stub;
     }
 
     LiftedBB Lifter::CreateRemoteCallSyntheticBB(bb_id_t id, std::optional<Callee> callee_info)
     {
-        auto &Context = Module->getContext();
-
         std::stringstream ss;
         ss << "BB_" << std::hex << id << "_indr";
 
@@ -934,52 +956,19 @@ namespace lifted
 
         llvm::IRBuilder<> ir(&F->getEntryBlock());
 
-        // Resolve per-callee CC and type. Falls back to DefaultCC's default type
-        // if the callee doesn't specify OrigType (conservative 6-arg default).
+        // Resolve per-callee CC.
         const abi::CallingConvention *CalleeCC = callee_info ? ResolveCC(*callee_info) : nullptr;
-        llvm::FunctionType *CalleeTy = callee_info ? ResolveCalleeType(*callee_info) : nullptr;
 
-        if (CalleeTy && CalleeCC)
+        if (CalleeCC && callee_info)
         {
-            // Get or create the Fn* declaration (unique per callsite).
-            llvm::Function *Wrapper = GetOrCreateExternWrapper(Module, *callee_info);
+            // Get or create the per-callee ABI stub.
+            // The stub saves non-volatile regs, calls opaque __lifted_ext_call_<name>,
+            // restores non-volatile regs, and pops the return address.
+            llvm::Function *Stub = GetOrCreateCalleeStub(Module, *callee_info);
 
-            // 1. Extract arguments from State according to calling convention.
-            auto Args = abi::EmitArgExtraction(ir, *CalleeCC, state_ptr, mem, CalleeTy);
-
-            // 2. Append the extra Fn* parameters: addr and memory_ptr.
-            //    addr = pc (the program counter at this call site).
-            Args.push_back(pc);
-
-            //    memory_ptr = the %MEMORY alloca that Remill already created.
-            //    InitializeEmptyLiftedFunction creates %MEMORY and stores the
-            //    memory argument into it, so we reuse it rather than creating
-            //    a redundant alloca.
-            auto *MemAlloca = remill::LoadMemoryPointerRef(&F->getEntryBlock());
-            assert(MemAlloca && "Expected %MEMORY alloca from InitializeEmptyLiftedFunction");
-            Args.push_back(MemAlloca);
-
-            // 3. Call the Fn* wrapper.
-            llvm::Value *RetVal = ir.CreateCall(Wrapper, Args);
-
-            // 4. Write back return values to State.
-            abi::EmitReturnWriteback(ir, *CalleeCC, state_ptr, RetVal);
-
-            // 5. Clobber volatile registers with freeze(poison).
-            unsigned NumRetRegs = CalleeCC->getNumReturnRegisters(CalleeTy->getReturnType());
-            abi::EmitVolatileClobber(ir, *CalleeCC, state_ptr, NumRetRegs);
-
-            // 6. Reload memory from the alloca (callee may have updated it).
-            llvm::Value *UpdatedMem = ir.CreateLoad(mem->getType(), MemAlloca);
-
-            // 7. Pop return address and adjust stack.
-            abi::EmitRetAddrPop(ir, state_ptr, UpdatedMem);
-
-            // 8. Return the (possibly updated) memory pointer.
-            ir.CreateRet(UpdatedMem);
-
-            // Track the wrapper for later lowering.
-            ExternalWrappers[Wrapper] = *callee_info;
+            // Call the stub: ptr @stub(ptr %state, i64 %addr, ptr %memory)
+            llvm::Value *Result = ir.CreateCall(Stub, {state_ptr, pc, mem});
+            ir.CreateRet(Result);
         }
         else
         {
@@ -1003,11 +992,8 @@ namespace lifted
 
         // Link state-utils early so __extract_* and __store_* are available
         // for typed synthetic BB construction.
-        if (DefaultCC)
-        {
-            helpers::link_state_utils(Module);
-            helpers::link_lifting_helpers(Module);
-        }
+        helpers::link_state_utils(Module);
+        helpers::link_lifting_helpers(Module);
 
         Worklist.push_back((bb_id_t)addr);
         while (!Worklist.empty() || !Reprove.empty())
@@ -1261,8 +1247,13 @@ namespace lifted
         // Finished. Build final CFG.
         auto M = llvm::CloneModule(*CleanModule);
 
+        //
+        // M IS NOW PREPARED FOR TESTING.
+        //
+
+        RunTests(M.get());
+
         helpers::link_deobfuscation_intrinsics(M.get());
-        helpers::link_symbolic_helpers(M.get());
 
         llvm::Function *FinalFunc = buildCFG(M.get());
 
@@ -1299,5 +1290,65 @@ namespace lifted
         opt::default_opt(M.get(), llvm::OptimizationLevel::O3);
 
         utils::output_to_file("/home/atlas/lifted/out/final_lifted.ll", M.get());
+    }
+
+    bool Lifter::RunTests(llvm::Module *M)
+    {
+        helpers::link_state_utils(M);
+
+        llvm::Function *FinalFunc = buildCFG(M);
+        if (!FinalFunc)
+        {
+            llvm::errs() << "RunTests: buildCFG returned null\n";
+            return false;
+        }
+
+        if (M->getFunction("__remill_function"))
+        {
+            M->getFunction("__remill_function")->eraseFromParent();
+        }
+
+        FinalFunc->setName("__remill_function");
+
+        if (auto err = helpers::link_verification_intrinsics(M))
+        {
+            llvm::errs() << "RunTests: failed to link verification intrinsics: " << llvm::toString(std::move(err)) << "\n";
+            return false;
+        }
+
+        // Rewrite per-callee external call declarations (__lifted_ext_call_<name>)
+        // back to generic __lifted_ext_call for verifier execution.
+        auto *extCallFunc = M->getFunction("__lifted_ext_call");
+        if (!extCallFunc)
+        {
+            llvm::errs() << "RunTests: missing __lifted_ext_call declaration\n";
+            return false;
+        }
+
+        for (auto &[_, entry] : CalleeStubs)
+        {
+            if (auto *F = M->getFunction(entry.ExtCallDeclName))
+            {
+                F->replaceAllUsesWith(extCallFunc);
+            }
+        }
+
+        std::shared_ptr<LIEF::Binary> binary_ref(
+            const_cast<LIEF::Binary *>(Binary),
+            [](LIEF::Binary *) {});
+
+        auto test_result = run_verifier_test(
+            FinalFunc,
+            1337,
+            std::move(binary_ref),
+            InitialEntryPoint);
+
+        if (!test_result)
+        {
+            llvm::errs() << "RunTests: " << llvm::toString(test_result.takeError()) << "\n";
+            return false;
+        }
+
+        return true;
     }
 }

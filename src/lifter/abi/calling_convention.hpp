@@ -21,6 +21,7 @@ namespace lifted::abi
     /// in state-utils.
     enum class ABIRegister
     {
+        // Volatile (caller-saved)
         RAX,
         RCX,
         RDX,
@@ -31,6 +32,13 @@ namespace lifted::abi
         R10,
         R11,
         RSP,
+        // Non-volatile (callee-saved)
+        RBX,
+        RBP,
+        R12,
+        R13,
+        R14,
+        R15,
     };
 
 } // namespace lifted::abi
@@ -74,6 +82,18 @@ namespace lifted::abi
             return "__extract_r11";
         case ABIRegister::RSP:
             return "__extract_rsp";
+        case ABIRegister::RBX:
+            return "__extract_rbx";
+        case ABIRegister::RBP:
+            return "__extract_rbp";
+        case ABIRegister::R12:
+            return "__extract_r12";
+        case ABIRegister::R13:
+            return "__extract_r13";
+        case ABIRegister::R14:
+            return "__extract_r14";
+        case ABIRegister::R15:
+            return "__extract_r15";
         }
         llvm_unreachable("Unknown ABI register");
     }
@@ -103,6 +123,18 @@ namespace lifted::abi
             return "__store_r11";
         case ABIRegister::RSP:
             return "__store_rsp";
+        case ABIRegister::RBX:
+            return "__store_rbx";
+        case ABIRegister::RBP:
+            return "__store_rbp";
+        case ABIRegister::R12:
+            return "__store_r12";
+        case ABIRegister::R13:
+            return "__store_r13";
+        case ABIRegister::R14:
+            return "__store_r14";
+        case ABIRegister::R15:
+            return "__store_r15";
         }
         llvm_unreachable("Unknown ABI register");
     }
@@ -127,6 +159,16 @@ namespace lifted::abi
         /// Caller-saved registers that are clobbered across a function call.
         /// After a call, these hold arbitrary values.
         virtual llvm::ArrayRef<ABIRegister> getVolatileRegisters() const = 0;
+
+        /// Callee-saved registers that are preserved across a function call.
+        /// The ABI stub saves these before the call and restores them after.
+        virtual llvm::ArrayRef<ABIRegister> getNonVolatileRegisters() const = 0;
+
+        /// Returns the name of the ABI-specific call stub helper.
+        /// E.g. "__lifted_systemv_call" for System V x64.
+        /// The stub saves non-volatile regs, calls __lifted_ext_call, restores them,
+        /// and pops the return address.
+        virtual llvm::StringRef getCallStubName() const = 0;
 
         /// Base offset from RSP where stack arguments begin.
         /// System V: 8 (skip return address)

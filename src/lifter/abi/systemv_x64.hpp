@@ -43,10 +43,6 @@ namespace lifted::abi
         llvm::ArrayRef<ABIRegister> getVolatileRegisters() const override
         {
             // All caller-saved registers.
-            // Note: RAX and RDX are also volatile, but they're handled
-            // separately by return value writeback. We still include them here
-            // so the EmitVolatileClobber utility can clobber everything, then
-            // overwrite the return registers with actual values.
             static constexpr std::array<ABIRegister, 9> Regs = {
                 ABIRegister::RAX,
                 ABIRegister::RCX,
@@ -59,6 +55,25 @@ namespace lifted::abi
                 ABIRegister::R11,
             };
             return Regs;
+        }
+
+        llvm::ArrayRef<ABIRegister> getNonVolatileRegisters() const override
+        {
+            // Callee-saved registers that must be preserved across calls.
+            static constexpr std::array<ABIRegister, 6> Regs = {
+                ABIRegister::RBX,
+                ABIRegister::RBP,
+                ABIRegister::R12,
+                ABIRegister::R13,
+                ABIRegister::R14,
+                ABIRegister::R15,
+            };
+            return Regs;
+        }
+
+        llvm::StringRef getCallStubName() const override
+        {
+            return "__lifted_systemv_call";
         }
 
         unsigned getStackArgBaseOffset() const override

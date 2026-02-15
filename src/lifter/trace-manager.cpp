@@ -3,7 +3,7 @@
 
 SimpleTraceManager::SimpleTraceManager(const remill::Arch *arch,
                                        llvm::Module *module,
-                                       Memory &memory,
+                                       memory_t &memory,
                                        const LIEF::Binary *binary,
                                        uint64_t entry,
                                        const llvm::Module *defs_module)

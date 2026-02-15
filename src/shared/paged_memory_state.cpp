@@ -1,7 +1,13 @@
 
 #include "paged_memory_state.hpp"
 
+#ifdef DEBUG
+#undef DEBUG
 #include <LIEF/LIEF.hpp>
+#define DEBUG
+#else
+#include <LIEF/LIEF.hpp>
+#endif
 
 // page_t constructors
 

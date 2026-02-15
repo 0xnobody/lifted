@@ -155,13 +155,17 @@ namespace lifted
         /// Default calling convention used when a Callee doesn't specify one.
         const abi::CallingConvention *DefaultCC = nullptr;
 
-        /// Counter for disambiguating Fn* wrapper names across callsites
-        /// with the same function name but different types (e.g., variadic calls).
-        unsigned NextWrapperID = 0;
-
-        /// Tracks Fn* wrapper declarations created for external calls.
-        /// Maps the wrapper function to its original Callee metadata.
-        std::map<llvm::Function *, Callee> ExternalWrappers;
+        /// Tracks per-callee stub functions created for external calls.
+        /// Maps the callee name to its stub function and original Callee metadata.
+        /// Each distinct callee (by name) gets one __lifted_<abi>_call_<name> stub.
+        struct CalleeStubEntry
+        {
+            std::string StubFuncName;
+            std::string ExtCallDeclName; // The __lifted_ext_call_<name> declaration
+            Callee Info;
+        };
+        std::map<std::string, CalleeStubEntry> CalleeStubs; // <name> (of) __lifted_ext_call_<name> -> CalleeStubEntry
+        unsigned NextIndirectStubID = 0;
 
         bb_id_t InitialEntryPoint;
         bb_id_t NextSyntheticID = 0xFFFF'0000'0000'0000; // Start of synthetic ID range
@@ -191,11 +195,10 @@ namespace lifted
         llvm::Function *buildPartialCFG(llvm::Module *Module, const LiftedBB &BB);
         llvm::Function *buildCFG(llvm::Module *Module);
 
-        /// Get or create an Fn* wrapper declaration for a typed external call.
-        /// Signature: RetTy funcname_extern_N(UserParams..., i64 %addr, ptr %memory_ptr)
-        /// Each callsite gets a unique wrapper (N is disambiguated) to support
-        /// variadic functions with different signatures at different sites.
-        llvm::Function *GetOrCreateExternWrapper(llvm::Module *M, const Callee &callee);
+        /// Get or create a per-callee ABI stub that saves non-volatile registers,
+        /// calls an opaque __lifted_ext_call_<name>, restores non-volatile registers,
+        /// and pops the return address. Returns the stub function.
+        llvm::Function *GetOrCreateCalleeStub(llvm::Module *M, const Callee &callee);
 
         /// Resolve the calling convention for a specific callee.
         /// Falls back to DefaultCC if the callee doesn't specify one.
@@ -274,6 +277,8 @@ namespace lifted
         LiftedBB CreateRemoteCallSyntheticBB(bb_id_t id, std::optional<Callee> callee_info = std::nullopt);
 
         ResolvedTargetsResult ResolveTargets(const LiftedBB &BB);
+
+        bool RunTests(llvm::Module *M);
 
         void Lift(uint64_t entry_point);
     };

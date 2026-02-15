@@ -8,6 +8,8 @@ add_executable(lifted
     "trace-manager.hpp"
     "verify.cpp"
     "verify.hpp"
+    "tester.cpp"
+    "tester.hpp"
     "helpers.cpp"
     "helpers.hpp"
     "utils.hpp"
@@ -44,7 +46,14 @@ add_executable(lifted
     "abi/abi_utils.cpp"
 )
 
-target_link_libraries(lifted PRIVATE remill LIEF::LIEF libklee Souper lifted-shared)
+target_link_libraries(lifted PRIVATE
+    remill
+    LIEF::LIEF
+    libklee
+    Souper
+    lifted-shared
+    LLVMOrcJIT
+)
 
 target_compile_definitions(lifted PRIVATE
     "HELPERS_DEOBFUSCATION_INTRINSICS_PATH=\"${HELPERS_DEOBFUSCATION_INTRINSICS_PATH}\""
@@ -59,4 +68,4 @@ target_compile_definitions(lifted PRIVATE
 )
 
 # Ensure Z3 is built before linking
-add_dependencies(lifted helpers z3_external)
+add_dependencies(lifted helpers z3_external lifted-shared)

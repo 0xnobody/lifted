@@ -142,7 +142,7 @@ namespace lifted::lifter
         remill::IntrinsicTable intrinsics(module.get());
         auto inst_lifter = arch.DefaultLifter(intrinsics);
 
-        Memory memory;
+        memory_t memory;
         auto trace_manager = SimpleTraceManager(&arch, module.get(), memory, &binary, rva, defs);
 
         remill::TraceLifter trace_lifter(&arch, &trace_manager);

@@ -18,13 +18,13 @@
 #include <LIEF/LIEF.hpp>
 #define DEBUG 1
 
-using Memory = std::map<uint64_t, uint8_t>;
+using memory_t = std::map<uint64_t, uint8_t>;
 
 struct SimpleTraceManager : remill::TraceManager
 {
     const remill::Arch *arch = nullptr;
     llvm::Module *module = nullptr;
-    Memory &memory;
+    memory_t &memory;
     const LIEF::Binary *binary = nullptr;
     uint64_t entry = 0;
     std::unordered_map<uint64_t, llvm::Function *> traces;
@@ -34,7 +34,7 @@ struct SimpleTraceManager : remill::TraceManager
 
     SimpleTraceManager(const remill::Arch *arch,
                        llvm::Module *module,
-                       Memory &memory,
+                       memory_t &memory,
                        const LIEF::Binary *binary,
                        uint64_t entry,
                        const llvm::Module *defs_module);
