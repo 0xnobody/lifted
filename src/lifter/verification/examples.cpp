@@ -252,8 +252,16 @@ namespace lifted::verification
         }
 
         // Generate custom test states
-        auto states = generate_custom_test_states<CheckpointVerifierState>(
+        auto custom_states = generate_custom_test_states<CheckpointVerifierState>(
             binary, entry_rva, 5, 0x1337);
+
+        // Convert to base type vector for run_single_executor
+        std::vector<std::unique_ptr<verifier_state>> states;
+        states.reserve(custom_states.size());
+        for (auto &state : custom_states)
+        {
+            states.push_back(std::move(state));
+        }
 
         // Run tests
         run_single_executor(**unicorn_exec, states);

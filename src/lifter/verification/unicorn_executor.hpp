@@ -36,10 +36,10 @@ namespace lifted::verification
 
         UnicornExecutor(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry)
             : binary(std::move(bin)),
+              external_rvas(ext_rvas),
               uc_eng(nullptr, uc_close),
               clean_ctx(nullptr, uc_context_free),
-              entry_rva(entry),
-              external_rvas(ext_rvas)
+              entry_rva(entry)
         {
         }
 

@@ -990,7 +990,7 @@ namespace lifted
             .TerminatingCategory = std::nullopt};
     }
 
-    void Lifter::Lift(uint64_t addr)
+    llvm::Expected<std::unique_ptr<llvm::Module>> Lifter::Lift(uint64_t addr)
     {
         InitialEntryPoint = (bb_id_t)addr;
 
@@ -1250,6 +1250,12 @@ namespace lifted
 
         // Finished. Build final CFG.
         auto M = llvm::CloneModule(*CleanModule);
+
+        helpers::link_state_utils(M.get());
+
+        llvm::Function *FinalFunc = buildCFG(M.get());
+
+        return std::move(M);
 
         //
         // M IS NOW PREPARED FOR TESTING.

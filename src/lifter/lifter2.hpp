@@ -280,6 +280,6 @@ namespace lifted
 
         bool RunTests(llvm::Module *M);
 
-        void Lift(uint64_t entry_point);
+        llvm::Expected<std::unique_ptr<llvm::Module>> Lift(uint64_t entry_point);
     };
 }
