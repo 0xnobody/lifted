@@ -41,7 +41,7 @@
 #include <llvm/Transforms/Scalar/SimplifyCFG.h>                // SimplifyCFGPass
 #include <llvm/Transforms/Scalar/ADCE.h>                       // AggressiveDCEPass
 
-#include <lifted/shared.hpp>
+// #include <lifted/shared.hpp>
 
 #include "passes/pass_utils.hpp"
 
@@ -556,7 +556,8 @@ namespace lifted
         auto M = llvm::CloneModule(*CleanModule);
 
         helpers::link_deobfuscation_intrinsics(M.get());
-        helpers::link_symbolic_helpers(M.get());
+        helpers::link_state_utils(M.get());
+        helpers::link_lifting_helpers(M.get());
 
         llvm::Function *F = buildPartialCFG(M.get(), BB);
 
@@ -990,7 +991,7 @@ namespace lifted
             .TerminatingCategory = std::nullopt};
     }
 
-    llvm::Expected<std::unique_ptr<llvm::Module>> Lifter::Lift(uint64_t addr)
+    llvm::Expected<std::pair<std::unique_ptr<llvm::Module>, llvm::Function *>> Lifter::Lift(uint64_t addr)
     {
         InitialEntryPoint = (bb_id_t)addr;
 
@@ -1255,12 +1256,13 @@ namespace lifted
 
         llvm::Function *FinalFunc = buildCFG(M.get());
 
-        return std::move(M);
+        return std::pair<std::unique_ptr<llvm::Module>, llvm::Function *>(std::move(M), FinalFunc);
 
         //
         // M IS NOW PREPARED FOR TESTING.
         //
 
+        /*
         RunTests(M.get());
 
         helpers::link_deobfuscation_intrinsics(M.get());
@@ -1300,10 +1302,12 @@ namespace lifted
         opt::default_opt(M.get(), llvm::OptimizationLevel::O3);
 
         utils::output_to_file("/home/atlas/lifted/out/final_lifted.ll", M.get());
+        */
     }
 
     bool Lifter::RunTests(llvm::Module *M)
     {
+        /*
         helpers::link_state_utils(M);
 
         llvm::Function *FinalFunc = buildCFG(M);
@@ -1358,6 +1362,7 @@ namespace lifted
             llvm::errs() << "RunTests: " << llvm::toString(test_result.takeError()) << "\n";
             return false;
         }
+        */
 
         return true;
     }

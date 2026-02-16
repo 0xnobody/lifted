@@ -16,3 +16,12 @@ using rptr1 = uint8_t *__restrict__;
 extern "C" Memory *__remill_function(State &state, addr_t address, Memory *memory);
 
 extern "C" Memory *__lifted_function(State &state, Memory *memory);
+
+HELPER uint8_t __remill_read_memory_8(Memory *m, addr_t a);
+HELPER uint16_t __remill_read_memory_16(Memory *m, addr_t a);
+HELPER uint32_t __remill_read_memory_32(Memory *m, addr_t a);
+HELPER uint64_t __remill_read_memory_64(Memory *m, addr_t a);
+HELPER Memory *__remill_write_memory_8(Memory *m, addr_t a, uint8_t v);
+HELPER Memory *__remill_write_memory_16(Memory *m, addr_t a, uint16_t v);
+HELPER Memory *__remill_write_memory_32(Memory *m, addr_t a, uint32_t v);
+HELPER Memory *__remill_write_memory_64(Memory *m, addr_t a, uint64_t v);

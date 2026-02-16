@@ -119,12 +119,3 @@ HELPER Memory *__remill_jump(State *__restrict__ state, addr_t pc, Memory *memor
     // Return the memory pointer
     return memory;
 }
-
-HELPER uint8_t __remill_read_memory_8(Memory *m, addr_t a);
-HELPER uint16_t __remill_read_memory_16(Memory *m, addr_t a);
-HELPER uint32_t __remill_read_memory_32(Memory *m, addr_t a);
-HELPER uint64_t __remill_read_memory_64(Memory *m, addr_t a);
-HELPER Memory *__remill_write_memory_8(Memory *m, addr_t a, uint8_t v);
-HELPER Memory *__remill_write_memory_16(Memory *m, addr_t a, uint16_t v);
-HELPER Memory *__remill_write_memory_32(Memory *m, addr_t a, uint32_t v);
-HELPER Memory *__remill_write_memory_64(Memory *m, addr_t a, uint64_t v);

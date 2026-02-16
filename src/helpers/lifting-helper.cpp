@@ -6,7 +6,7 @@
 #include <cstring>
 
 #include "types.hpp"
-#include "standard-intrinsics.hpp"
+// #include "standard-intrinsics.hpp"
 
 HELPER Memory *__lifted_ext_call(State *__restrict__, addr_t addr, Memory *);
 

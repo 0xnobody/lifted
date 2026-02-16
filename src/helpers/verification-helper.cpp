@@ -16,6 +16,8 @@ struct Memory
     verifier_context_t *__lifted_verifier_context;
 };
 
+HELPER Memory *__lifted_ext_call(State *__restrict__, addr_t addr, Memory *);
+
 HELPER uint8_t __remill_read_memory_8(Memory *m, addr_t a)
 {
     return m->__lifted_verifier_context->read8(m->__lifted_verifier_context->context, a);

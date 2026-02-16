@@ -10,7 +10,7 @@
 #include <llvm/Support/Error.h>
 
 #include <iostream>
-
+/*
 namespace lifted::verification
 {
 
@@ -271,3 +271,5 @@ namespace lifted::verification
     }
 
 } // namespace lifted::verification
+
+*/

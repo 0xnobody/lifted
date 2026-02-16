@@ -2,6 +2,8 @@
 
 #include <sstream>
 
+#include "nmd_assembly.h"
+
 namespace lifted::verification
 {
     struct unicorn_ctx_t
@@ -23,7 +25,7 @@ namespace lifted::verification
     {
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
 
-        if (ctx->executor->external_rvas.find(address) == ctx->executor->external_rvas.end())
+        if (ctx->executor->external_rvas.find(address) != ctx->executor->external_rvas.end())
         {
             ctx->state->context_ptr()->ext_call(ctx->state->context_ptr()->context, nullptr, address);
 
@@ -132,21 +134,33 @@ namespace lifted::verification
         }
     }
 
-    llvm::Expected<std::unique_ptr<UnicornExecutor>>
-    UnicornExecutor::create(const std::string &binary_path, std::set<uint64_t> ext_rvas, uint64_t entry_rva)
+    static void hook_code(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
     {
-        // Load binary
-        auto binary = LIEF::Parser::parse(binary_path);
-        if (!binary)
-        {
-            return llvm::make_error<llvm::StringError>(
-                "Failed to parse binary: " + binary_path,
-                llvm::inconvertibleErrorCode());
-        }
+        uint8_t code[15];
+        nmd_x86_instruction instruction;
+        char formatted[128];
 
+        // Read instruction bytes
+        uc_mem_read(uc, address, code, size);
+
+        // Decode and format
+        if (nmd_x86_decode(code, size, &instruction, NMD_X86_MODE_64, NMD_X86_DECODER_FLAGS_NONE))
+        {
+            nmd_x86_format(&instruction, formatted, address, NMD_X86_FORMAT_FLAGS_DEFAULT);
+            printf("0x%" PRIx64 ":\t%s\n", address, formatted);
+        }
+        else
+        {
+            printf("0x%" PRIx64 ":\t[invalid]\n", address);
+        }
+    }
+
+    llvm::Expected<std::unique_ptr<UnicornExecutor>>
+    UnicornExecutor::create(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry_rva)
+    {
         // Create executor (private constructor)
         auto executor = std::unique_ptr<UnicornExecutor>(
-            new UnicornExecutor(std::move(binary), ext_rvas, entry_rva));
+            new UnicornExecutor(bin, ext_rvas, entry_rva));
 
         // Run setup
         if (auto err = executor->setup_impl())
@@ -206,23 +220,28 @@ namespace lifted::verification
         }
 
         // Setup stack
-        State init_state_copy = state.get_initial_state();
-        if (auto stack_err = setup_unicorn_stack(uc_eng.get(), init_state_copy, STACK_MAGIC, FINISH_MAGIC))
-        {
-            return ExecutionResult::error(
-                StopReason::CRASH,
-                "Failed to setup stack");
-        }
+        // State init_state_copy = state.get_initial_state();
+        // if (auto stack_err = setup_unicorn_stack(uc_eng.get(), init_state_copy, STACK_MAGIC, FINISH_MAGIC))
+        //{
+        //    return ExecutionResult::error(
+        //        StopReason::CRASH,
+        //        "Failed to setup stack");
+        //}
 
         // Update RSP in Unicorn
-        uint64_t rsp = init_state_copy.gpr.rsp.qword;
-        uc_reg_write(uc_eng.get(), UC_X86_REG_RSP, &rsp);
+        // uint64_t rsp = init_state_copy.gpr.rsp.qword;
+        // uc_reg_write(uc_eng.get(), UC_X86_REG_RSP, &rsp);
 
         // Register hooks
-        uc_hook block_hook, mem_invalid_hook, mem_read_hook, mem_write_hook;
+        uc_hook block_hook, mem_invalid_hook, mem_read_hook, mem_write_hook, code_hook;
+
+        unicorn_ctx_t ctx = {
+            .executor = this,
+            .state = &state,
+        };
 
         err = uc_hook_add(uc_eng.get(), &block_hook, UC_HOOK_BLOCK,
-                          (void *)hook_block, &state, 1, 0);
+                          (void *)hook_block, &ctx, 1, 0);
         if (err != UC_ERR_OK)
         {
             return ExecutionResult::error(StopReason::CRASH, "Failed to add block hook");
@@ -230,24 +249,31 @@ namespace lifted::verification
 
         err = uc_hook_add(uc_eng.get(), &mem_invalid_hook,
                           UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_FETCH_UNMAPPED,
-                          (void *)hook_mem_invalid, &state, 1, 0);
+                          (void *)hook_mem_invalid, &ctx, 1, 0);
         if (err != UC_ERR_OK)
         {
             return ExecutionResult::error(StopReason::CRASH, "Failed to add mem_invalid hook");
         }
 
         err = uc_hook_add(uc_eng.get(), &mem_read_hook, UC_HOOK_MEM_READ,
-                          (void *)hook_mem_read, &state, 1, 0);
+                          (void *)hook_mem_read, &ctx, 1, 0);
         if (err != UC_ERR_OK)
         {
             return ExecutionResult::error(StopReason::CRASH, "Failed to add mem_read hook");
         }
 
         err = uc_hook_add(uc_eng.get(), &mem_write_hook, UC_HOOK_MEM_WRITE,
-                          (void *)hook_mem_write, &state, 1, 0);
+                          (void *)hook_mem_write, &ctx, 1, 0);
         if (err != UC_ERR_OK)
         {
             return ExecutionResult::error(StopReason::CRASH, "Failed to add mem_write hook");
+        }
+
+        err = uc_hook_add(uc_eng.get(), &code_hook, UC_HOOK_CODE,
+                          (void *)hook_code, nullptr, 1, 0);
+        if (err != UC_ERR_OK)
+        {
+            return ExecutionResult::error(StopReason::CRASH, "Failed to add code hook");
         }
 
         // Run emulation
@@ -259,6 +285,7 @@ namespace lifted::verification
         uc_hook_del(uc_eng.get(), mem_invalid_hook);
         uc_hook_del(uc_eng.get(), mem_read_hook);
         uc_hook_del(uc_eng.get(), mem_write_hook);
+        uc_hook_del(uc_eng.get(), code_hook);
 
         // Check emulation result
         if (err != UC_ERR_OK)

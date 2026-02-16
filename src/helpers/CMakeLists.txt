@@ -53,8 +53,6 @@ set(HELPER_SOURCES
     "${HELPER_DIR}/abi-helper.cpp"
     "${HELPER_DIR}/deobfuscation-helper.cpp"
     "${HELPER_DIR}/verification-helper.cpp"
-    "${HELPER_DIR}/verification-harness.cpp"
-    "${HELPER_DIR}/symbolic-helper.cpp"
     "${HELPER_DIR}/state-utils.cpp"
     "${HELPER_DIR}/lifting-helper.cpp"
 )

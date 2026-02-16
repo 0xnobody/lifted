@@ -2,12 +2,6 @@ project(lifted)
 
 add_executable(lifted 
     "main.cpp"
-    "lifter.cpp"
-    "lifter.hpp"
-    "trace-manager.cpp"
-    "trace-manager.hpp"
-    "verify.cpp"
-    "verify.hpp"
     "tester.cpp"
     "tester.hpp"
     "helpers.cpp"
@@ -67,6 +61,8 @@ add_executable(lifted
     "verification/runner.cpp"
     "verification/examples.hpp"
     "verification/examples.cpp"
+    "verification/nmd_assembly.h" # for testing
+    "verification/nmd_assembly.cpp"
 )
 
 target_link_libraries(lifted PRIVATE
@@ -82,11 +78,9 @@ target_link_libraries(lifted PRIVATE
 target_compile_definitions(lifted PRIVATE
     "HELPERS_DEOBFUSCATION_INTRINSICS_PATH=\"${HELPERS_DEOBFUSCATION_INTRINSICS_PATH}\""
     "HELPERS_VERIFICATION_INTRINSICS_PATH=\"${HELPERS_VERIFICATION_INTRINSICS_PATH}\""
-    "HELPERS_VERIFICATION_HARNESS_PATH=\"${HELPERS_VERIFICATION_HARNESS_PATH}\""
     "HELPERS_STATE_UTILS_PATH=\"${HELPERS_STATE_UTILS_PATH}\""
     "EVAL_SYNTHETIC_LIBS_DIR=\"${EVAL_SYNTHETIC_LIBS_DIR}\""
     "KLEE_RUNTIME_LIBRARY_PATH=\"${KLEE_RUNTIME_LIBRARY_PATH}\""
-    "HELPERS_SYMBOLIC_PATH=\"${HELPERS_SYMBOLIC_PATH}\""
     "HELPERS_ABI_PATH=\"${HELPERS_ABI_PATH}\""
     "HELPERS_LIFTING_PATH=\"${HELPERS_LIFTING_PATH}\""
 )

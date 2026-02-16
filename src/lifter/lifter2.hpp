@@ -11,7 +11,7 @@
 #include <map>
 #include <cstdint>
 
-#include <lifted/shared.hpp>
+// #include <lifted/shared.hpp>
 
 #include "utils.hpp"
 #include "opt.hpp"
@@ -280,6 +280,7 @@ namespace lifted
 
         bool RunTests(llvm::Module *M);
 
-        llvm::Expected<std::unique_ptr<llvm::Module>> Lift(uint64_t entry_point);
+        // TODO: Make some LiftResult which we pass later into verifier?
+        llvm::Expected<std::pair<std::unique_ptr<llvm::Module>, llvm::Function *>> Lift(uint64_t entry_point);
     };
 }

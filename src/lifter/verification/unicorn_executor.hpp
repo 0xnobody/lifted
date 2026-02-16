@@ -49,7 +49,7 @@ namespace lifted::verification
 
     public:
         static llvm::Expected<std::unique_ptr<UnicornExecutor>>
-        create(const std::string &binary_path, std::set<uint64_t> ext_rvas, uint64_t entry_rva);
+        create(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry_rva);
 
     private:
         static void hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);

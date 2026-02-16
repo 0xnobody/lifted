@@ -1,4 +1,4 @@
-#pragma once
+/*#pragma once
 
 #include <cstdint>
 #include <memory>
@@ -27,3 +27,4 @@ namespace lifted
         std::shared_ptr<LIEF::Binary> binary,
         uint64_t entry_addr);
 }
+*/

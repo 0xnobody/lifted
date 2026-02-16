@@ -5,6 +5,8 @@
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/Support/TargetSelect.h>
 
+#include "../utils.hpp"
+
 namespace lifted::verification
 {
 
@@ -32,6 +34,46 @@ namespace lifted::verification
             return err;
         }
 
+        auto *extCallFunc = module->getFunction("__lifted_ext_call");
+        if (!extCallFunc)
+        {
+            return llvm::make_error<llvm::StringError>(
+                "Missing __lifted_ext_call function declaration",
+                llvm::inconvertibleErrorCode());
+        }
+
+        // TODO: better interop between lifter and this
+        for (auto &F : module->functions())
+        {
+            if (F.getName().starts_with("__lifted_ext_call_"))
+            {
+                F.replaceAllUsesWith(extCallFunc);
+            }
+        }
+
+        utils::output_to_file("/home/atlas/lifted/out/jit_input.ll", module.get());
+
+        if (auto F = module->getFunction("__remill_function"))
+        {
+            if (auto Target = module->getFunction(function_name))
+            {
+                F->replaceAllUsesWith(Target);
+                F->eraseFromParent();
+            }
+            else
+            {
+                return llvm::make_error<llvm::StringError>(
+                    "Entry function not found: " + function_name,
+                    llvm::inconvertibleErrorCode());
+            }
+        }
+        else
+        {
+            return llvm::make_error<llvm::StringError>(
+                "__remill_function not found in module",
+                llvm::inconvertibleErrorCode());
+        }
+
         // Initialize native target for JIT
         llvm::InitializeNativeTarget();
         llvm::InitializeNativeTargetAsmPrinter();
@@ -44,6 +86,18 @@ namespace lifted::verification
             return jit_expected.takeError();
         }
         jit = std::move(*jit_expected);
+
+        // Expose symbols from the current process (e.g. libc memcpy/memset)
+        // to ORC so unresolved runtime symbols can be resolved.
+        llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
+        auto process_symbols_or_err = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+            jit->getDataLayout().getGlobalPrefix());
+        if (!process_symbols_or_err)
+        {
+            return process_symbols_or_err.takeError();
+        }
+
+        jit->getMainJITDylib().addGenerator(std::move(*process_symbols_or_err));
 
         // Add module to JIT
         auto &ctx = module->getContext();
