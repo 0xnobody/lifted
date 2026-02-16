@@ -44,6 +44,29 @@ add_executable(lifted
     "abi/systemv_x64.hpp"
     "abi/abi_utils.hpp"
     "abi/abi_utils.cpp"
+
+    # Verification framework
+    "verification/verifier_state.hpp"
+    "verification/verifier_context.hpp"
+    "verification/paged_memory_state.hpp"
+    "verification/paged_memory_state.cpp"
+    "verification/execution_result.hpp"
+    "verification/executor.hpp"
+    "verification/unicorn_executor.hpp"
+    "verification/unicorn_executor.cpp"
+    "verification/jit_executor.hpp"
+    "verification/jit_executor.cpp"
+    "verification/state_conversion.hpp"
+    "verification/state_conversion.cpp"
+    "verification/uc_raii.hpp"
+    "verification/comparator.hpp"
+    "verification/comparator.cpp"
+    "verification/test_generator.hpp"
+    "verification/test_generator.cpp"
+    "verification/runner.hpp"
+    "verification/runner.cpp"
+    "verification/examples.hpp"
+    "verification/examples.cpp"
 )
 
 target_link_libraries(lifted PRIVATE
@@ -53,6 +76,7 @@ target_link_libraries(lifted PRIVATE
     Souper
     lifted-shared
     LLVMOrcJIT
+    unicorn_external
 )
 
 target_compile_definitions(lifted PRIVATE

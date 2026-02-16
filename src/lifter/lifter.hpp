@@ -11,9 +11,13 @@
 
 #include <memory>
 
+#ifdef DEBUG
 #undef DEBUG
 #include <LIEF/LIEF.hpp>
-#define DEBUG 1
+#define DEBUG
+#else
+#include <LIEF/LIEF.hpp>
+#endif
 
 namespace lifted::lifter
 {

@@ -4,7 +4,12 @@
 #include <llvm/ADT/DenseMapInfo.h>
 #include <llvm/ADT/StringRef.h>
 
+#include <remill/Arch/X86/Runtime/State.h>
+
+#include <array>
 #include <cstdint>
+#include <tuple>
+#include <vector>
 
 namespace llvm
 {
@@ -98,6 +103,21 @@ namespace lifted::abi
         llvm_unreachable("Unknown ABI register");
     }
 
+    namespace detail
+    {
+        // All x86-64 GPRs for full register comparison
+        constexpr std::array<ABIRegister, 16> ALL_GPRS = {
+            ABIRegister::RAX, ABIRegister::RBX, ABIRegister::RCX,
+            ABIRegister::RDX, ABIRegister::RSI, ABIRegister::RDI,
+            ABIRegister::RSP, ABIRegister::RBP, ABIRegister::R8,
+            ABIRegister::R9, ABIRegister::R10, ABIRegister::R11,
+            ABIRegister::R12, ABIRegister::R13, ABIRegister::R14,
+            ABIRegister::R15};
+    } // namespace detail
+
+    /// Get register value from Remill State structure.
+    uint64_t get_register_value(const State &state, ABIRegister reg);
+
     /// Returns the name of the __store_<reg> helper for a given ABI register.
     inline llvm::StringRef getStoreHelperName(ABIRegister Reg)
     {
@@ -188,6 +208,42 @@ namespace lifted::abi
         /// by the callee just prevents dead-store elimination on those registers,
         /// but we still get volatile clobber and return writeback benefits.
         virtual llvm::FunctionType *getDefaultFunctionType(llvm::LLVMContext &Ctx) const = 0;
+
+        /// Compare return value registers between two states.
+        /// Returns true if all return registers match.
+        virtual bool compare_return_value(const State &lhs, const State &rhs) const;
+
+        /// Compare preserved (callee-saved) registers between two states.
+        /// Returns true if all preserved registers match.
+        virtual bool compare_preserved_registers(const State &lhs, const State &rhs) const;
+
+        /// Get list of all registers this ABI cares about for comparison.
+        /// Default: return + preserved registers.
+        virtual llvm::ArrayRef<ABIRegister> get_comparison_registers() const;
+
+        /// Get detailed list of divergent registers.
+        /// Returns vector of (register_name, lhs_value, rhs_value) tuples.
+        virtual std::vector<std::tuple<std::string, uint64_t, uint64_t>>
+        get_divergent_registers(const State &lhs, const State &rhs) const;
+    };
+
+    /// Special ABI for comparing ALL x86-64 general-purpose registers.
+    /// Useful for debugging or when ABI-specific comparison is too narrow.
+    class AllRegistersCC final : public CallingConvention
+    {
+    public:
+        // CallingConvention interface (most return empty/defaults)
+        llvm::ArrayRef<ABIRegister> getArgRegisters() const override;
+        llvm::ArrayRef<ABIRegister> getReturnRegisters() const override;
+        llvm::ArrayRef<ABIRegister> getVolatileRegisters() const override;
+        llvm::ArrayRef<ABIRegister> getNonVolatileRegisters() const override;
+        llvm::StringRef getCallStubName() const override;
+        unsigned getStackArgBaseOffset() const override;
+        unsigned getStackAlignment() const override;
+        llvm::FunctionType *getDefaultFunctionType(llvm::LLVMContext &Ctx) const override;
+
+        // Comparison methods (uses all GPRs)
+        llvm::ArrayRef<ABIRegister> get_comparison_registers() const override;
     };
 
 } // namespace lifted::abi

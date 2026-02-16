@@ -12,9 +12,13 @@
 #include <llvm/Transforms/IPO/AlwaysInliner.h>
 #include <llvm/Transforms/Utils/Cloning.h>
 
+#ifdef DEBUG
 #undef DEBUG
 #include <LIEF/LIEF.hpp>
 #define DEBUG
+#else
+#include <LIEF/LIEF.hpp>
+#endif
 
 #include <sstream>
 
