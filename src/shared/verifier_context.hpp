@@ -4,6 +4,9 @@
 
 #include <remill/Arch/X86/Runtime/State.h>
 
+#define LOAD_BASE 0x7ffff7000000ULL
+#define STACK_MAGIC 0x00007FFF00000000ULL
+
 using fn_read8 = uint8_t (*)(void *context, uint64_t addr);
 using fn_read16 = uint16_t (*)(void *context, uint64_t addr);
 using fn_read32 = uint32_t (*)(void *context, uint64_t addr);

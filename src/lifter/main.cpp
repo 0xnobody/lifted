@@ -26,6 +26,7 @@
 
 #include "verification/jit_executor.hpp"
 #include "verification/unicorn_executor.hpp"
+#include "verification/comparator.hpp"
 
 using namespace lifted;
 
@@ -90,6 +91,7 @@ llvm::Error lift_function(const remill::Arch &arch, std::filesystem::path path, 
         }
 
         verification::verifier_state state(0x1337, binary, *rva);
+        auto result = (*exec)->run_single(state);
 
         std::set<uint64_t> ext_calls_set;
         for (const auto &ext_call : state.external_calls())
@@ -97,12 +99,15 @@ llvm::Error lift_function(const remill::Arch &arch, std::filesystem::path path, 
             ext_calls_set.insert(ext_call);
         }
 
-        auto result = (*exec)->run_single(state);
-
         auto emu = verification::UnicornExecutor::create(binary, ext_calls_set, *rva);
 
         verification::verifier_state emu_state(0x1337, binary, *rva);
         auto emu_result = (*emu)->run_single(emu_state);
+
+        auto cmp_abi = lifted::abi::AllRegistersCC{};
+        auto cmp_config = verification::ComparisonConfig::default_config(&cmp_abi);
+        auto cmp_result = verification::compare_states(state, emu_state, cmp_config);
+        cmp_result.print(std::cout);
     }
 }
 

@@ -74,7 +74,7 @@ HELPER Memory *__lifted_ext_call(State *state, addr_t addr, Memory *m)
     return m;
 }
 
-extern "C" Memory *__remill_function(State &state, addr_t address, Memory *memory);
+extern "C" Memory *__lifted_rebuilt_cfg(State &state, addr_t rva, Memory *memory, uint64_t base);
 
 extern "C" void __lifter_verifier_begin(verifier_context_t *verifier_state)
 {
@@ -82,6 +82,6 @@ extern "C" void __lifter_verifier_begin(verifier_context_t *verifier_state)
 
     State state = verifier_state->initial_reg_state;
     Memory m = {.__lifted_verifier_context = verifier_state};
-    __remill_function(state, verifier_state->entry_rva, &m);
+    __lifted_rebuilt_cfg(state, verifier_state->entry_rva, &m, LOAD_BASE);
     verifier_state->final_reg_state = state;
 }

@@ -105,13 +105,12 @@ bool paged_memory_state::try_load_elf_page(uint64_t page_addr, std::array<uint8_
 bool paged_memory_state::try_load_pe_page(uint64_t page_addr, std::array<uint8_t, 4096> &out_data)
 {
     auto &pe = dynamic_cast<LIEF::PE::Binary &>(*binary_);
-    uint64_t pe_base = pe.imagebase();
     bool found = false;
     out_data.fill(0);
 
     for (auto &section : pe.sections())
     {
-        uint64_t sec_start = pe_base + section.virtual_address();
+        uint64_t sec_start = image_base_ + section.virtual_address();
         uint64_t sec_end = sec_start + section.virtual_size();
 
         uint64_t page_end = page_addr + 0x1000;

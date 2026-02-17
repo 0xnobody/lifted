@@ -22,17 +22,15 @@ namespace lifted::verification
     struct ComparisonConfig
     {
         bool compare_memory = true;
-        bool compare_return_value = true;
-        bool compare_preserved_regs = true;
-        bool compare_all_regs = false; // If true, use all GPRs
+        bool compare_regs = true;
         bool compare_traces = true;
         bool compare_ext_calls = true;
 
         std::vector<mem_range_t> excluded_memory_ranges;
 
-        const abi::CallingConvention *abi = nullptr; // Required for register comparison
+        const abi::CallingConvention *abi = nullptr;
 
-        static ComparisonConfig default_config(const abi::CallingConvention *abi_ptr)
+        static ComparisonConfig default_config(const abi::CallingConvention *abi_ptr = nullptr)
         {
             ComparisonConfig cfg;
             cfg.abi = abi_ptr;

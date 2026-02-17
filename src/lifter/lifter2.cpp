@@ -324,9 +324,10 @@ namespace lifted
         llvm::Type *PCTy = LiftedFnTy->getParamType(1);
         llvm::Type *MemPtrTy = LiftedFnTy->getParamType(2);
 
-        // Wrapper Signature: ptr (ptr %state, i64 %pc, ptr %memory)
-        llvm::FunctionType *WrapperTy = llvm::FunctionType::get(MemPtrTy, {StatePtrTy, PCTy, MemPtrTy}, false);
+        // Wrapper Signature: ptr (ptr %state, i64 %rva, ptr %memory, i64 %base)
+        llvm::FunctionType *WrapperTy = llvm::FunctionType::get(MemPtrTy, {StatePtrTy, PCTy, MemPtrTy, PCTy}, false);
         llvm::Function *WrapperFunc = llvm::Function::Create(WrapperTy, llvm::Function::ExternalLinkage, NewFuncName, Module);
+        WrapperFunc->addFnAttr(llvm::Attribute::AlwaysInline); // In case it has any callers later
 
         // TODO: Should we do this here? Or in BB_Func creation?
 
@@ -341,10 +342,12 @@ namespace lifted
         // Name arguments
         llvm::Argument *ArgState = WrapperFunc->getArg(0);
         ArgState->setName("state");
-        llvm::Argument *ArgPC = WrapperFunc->getArg(1);
-        ArgPC->setName("start_pc");
+        llvm::Argument *ArgRVA = WrapperFunc->getArg(1);
+        ArgRVA->setName("rva");
         llvm::Argument *ArgMem = WrapperFunc->getArg(2);
         ArgMem->setName("memory");
+        llvm::Argument *ArgBase = WrapperFunc->getArg(3);
+        ArgBase->setName("base");
 
         // Helper: __extract_rip
         llvm::Function *ExtractRipFunc = Module->getFunction("__extract_rip");
@@ -366,10 +369,13 @@ namespace lifted
         llvm::AllocaInst *PCVar = Builder.CreateAlloca(PCTy, nullptr, "pc_var");
 
         Builder.CreateStore(ArgMem, MemVar);
-        Builder.CreateStore(ArgPC, PCVar);
+        // Compute VA from RVA + base and store in pc_var
+        llvm::Value *EntryPC = Builder.CreateAdd(ArgRVA, ArgBase, "entry_pc");
+        Builder.CreateStore(EntryPC, PCVar);
 
         // --- ENTRY DISPATCH ---
-        llvm::SwitchInst *EntrySwitch = Builder.CreateSwitch(ArgPC, DeadEndBB, BlockSet.size());
+        // Entry dispatch switches on RVA directly (parameter)
+        llvm::SwitchInst *EntrySwitch = Builder.CreateSwitch(ArgRVA, DeadEndBB, BlockSet.size());
         for (bb_id_t id : BlockSet)
         {
             EntrySwitch->addCase(Builder.getInt64(id), BlockMap[id]);
@@ -398,6 +404,7 @@ namespace lifted
             llvm::Function *SourceFunc = Module->getFunction(Explored.at(id).FuncName);
 
             llvm::Value *CurrMem = Builder.CreateLoad(MemPtrTy, MemVar);
+            // Load VA from pc_var (it stores absolute addresses)
             llvm::Value *CurrPC = Builder.CreateLoad(PCTy, PCVar);
 
             // Call & Inline
@@ -414,7 +421,10 @@ namespace lifted
 
             // 2. Calculate Next Jump
             llvm::Value *NextRIP = Builder.CreateCall(ExtractRipFunc, {ArgState});
+            // Store VA in pc_var for next iteration
             Builder.CreateStore(NextRIP, PCVar);
+            // Convert VA to RVA for switch dispatch
+            llvm::Value *NextRVA = Builder.CreateSub(NextRIP, ArgBase, "next_rva");
 
             std::vector<uintptr_t> Successors;
             for (const auto &edge : Edges)
@@ -451,7 +461,7 @@ namespace lifted
                 llvm::BasicBlock *DefaultBB = IndirectDefault.has_value()
                                                   ? BlockMap[IndirectDefault.value()]
                                                   : DeadEndBB;
-                llvm::SwitchInst *Switch = Builder.CreateSwitch(NextRIP, DefaultBB, Successors.size());
+                llvm::SwitchInst *Switch = Builder.CreateSwitch(NextRVA, DefaultBB, Successors.size());
 
                 // Second pass: add cases for non-default successors
                 for (bb_id_t succAddr : Successors)
@@ -487,6 +497,66 @@ namespace lifted
                 }
             }
         }
+
+        return WrapperFunc;
+    }
+
+    llvm::Function *Lifter::concretizeCFGBase(llvm::Function *BasedFunc, uint64_t ConcreteBase, llvm::StringRef ConcreteName)
+    {
+        llvm::Module *Module = BasedFunc->getParent();
+        llvm::LLVMContext &Ctx = Module->getContext();
+
+        // Get the based function's type: ptr (ptr, i64, ptr, i64)
+        llvm::FunctionType *BasedFnTy = BasedFunc->getFunctionType();
+        if (BasedFnTy->getNumParams() != 4)
+            return nullptr; // Not a based CFG function
+
+        llvm::Type *StatePtrTy = BasedFnTy->getParamType(0);
+        llvm::Type *RVATy = BasedFnTy->getParamType(1);
+        llvm::Type *MemPtrTy = BasedFnTy->getParamType(2);
+
+        // Create wrapper with 3-parameter signature: ptr (ptr %state, i64 %rva, ptr %memory)
+        llvm::FunctionType *WrapperTy = llvm::FunctionType::get(MemPtrTy, {StatePtrTy, RVATy, MemPtrTy}, false);
+
+        // Generate wrapper name
+        std::string WrapperName;
+        if (ConcreteName.empty())
+        {
+            WrapperName = BasedFunc->getName().str() + "_concrete";
+        }
+        else
+        {
+            WrapperName = ConcreteName.str();
+        }
+
+        llvm::Function *WrapperFunc = llvm::Function::Create(WrapperTy, llvm::Function::ExternalLinkage, WrapperName, Module);
+
+        // Add same attributes as based function
+        WrapperFunc->addParamAttr(0, llvm::Attribute::NoAlias);   // %state
+        WrapperFunc->addParamAttr(2, llvm::Attribute::NoAlias);   // %memory
+        WrapperFunc->addParamAttr(0, llvm::Attribute::NoCapture); // %state
+        WrapperFunc->addParamAttr(2, llvm::Attribute::NoCapture); // %memory
+
+        // Name arguments
+        llvm::Argument *ArgState = WrapperFunc->getArg(0);
+        ArgState->setName("state");
+        llvm::Argument *ArgRVA = WrapperFunc->getArg(1);
+        ArgRVA->setName("rva");
+        llvm::Argument *ArgMem = WrapperFunc->getArg(2);
+        ArgMem->setName("memory");
+
+        // Build wrapper body
+        llvm::BasicBlock *EntryBB = llvm::BasicBlock::Create(Ctx, "entry", WrapperFunc);
+        llvm::IRBuilder<> Builder(EntryBB);
+
+        // Create constant for concrete base
+        llvm::Value *ConcreteBaseVal = Builder.getInt64(ConcreteBase);
+
+        // Call based function with concrete base
+        llvm::Value *Result = Builder.CreateCall(BasedFunc, {ArgState, ArgRVA, ArgMem, ConcreteBaseVal});
+
+        // Return memory pointer
+        Builder.CreateRet(Result);
 
         return WrapperFunc;
     }
@@ -546,7 +616,7 @@ namespace lifted
         // Name: rebuilt_cfg
         // TargetAddr: 0 (Don't stop at any specific block, run until natural exit)
         // DeadEnd: Unreachable (But terminating blocks will return naturally)
-        return stitchCFG(Module, AllBlocks, "rebuilt_cfg", 0, true);
+        return stitchCFG(Module, AllBlocks, "__lifted_rebuilt_cfg", 0, true);
     }
 
     ResolvedTargetsResult Lifter::ResolveTargets(const LiftedBB &BB)
@@ -559,7 +629,8 @@ namespace lifted
         helpers::link_state_utils(M.get());
         helpers::link_lifting_helpers(M.get());
 
-        llvm::Function *F = buildPartialCFG(M.get(), BB);
+        llvm::Function *F_CFG = buildPartialCFG(M.get(), BB);
+        llvm::Function *F = concretizeCFGBase(F_CFG, 0, F_CFG->getName().str() + "_rva_based");
 
         utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
 
@@ -991,16 +1062,16 @@ namespace lifted
             .TerminatingCategory = std::nullopt};
     }
 
-    llvm::Expected<std::pair<std::unique_ptr<llvm::Module>, llvm::Function *>> Lifter::Lift(uint64_t addr)
+    llvm::Expected<std::pair<std::unique_ptr<llvm::Module>, llvm::Function *>> Lifter::Lift(uint64_t entry_rva)
     {
-        InitialEntryPoint = (bb_id_t)addr;
+        InitialEntryPoint = (bb_id_t)entry_rva;
 
         // Link state-utils early so __extract_* and __store_* are available
         // for typed synthetic BB construction.
         helpers::link_state_utils(Module);
         helpers::link_lifting_helpers(Module);
 
-        Worklist.push_back((bb_id_t)addr);
+        Worklist.push_back((bb_id_t)entry_rva);
         while (!Worklist.empty() || !Reprove.empty())
         {
             dumpLifterState();

@@ -9,9 +9,6 @@
 #include <vector>
 #include <random>
 
-#define LOAD_BASE 0x7ffff7000000ULL
-#define STACK_MAGIC 0x00007FFF00000000ULL
-
 class verifier_state
 {
 private:

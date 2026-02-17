@@ -192,6 +192,14 @@ namespace lifted
             bool DeadEndIsUnreachable // true for slicing, false for full CFG
         );
 
+        /// Create a concrete wrapper for a position-independent CFG function.
+        /// Takes a 4-parameter CFG function (state, rva, memory, base) and returns
+        /// a 3-parameter wrapper (state, rva, memory) that calls it with a concrete base.
+        llvm::Function *concretizeCFGBase(
+            llvm::Function *BasedFunc,
+            uint64_t ConcreteBase,
+            llvm::StringRef ConcreteName = "");
+
         llvm::Function *buildPartialCFG(llvm::Module *Module, const LiftedBB &BB);
         llvm::Function *buildCFG(llvm::Module *Module);
 
@@ -281,6 +289,6 @@ namespace lifted
         bool RunTests(llvm::Module *M);
 
         // TODO: Make some LiftResult which we pass later into verifier?
-        llvm::Expected<std::pair<std::unique_ptr<llvm::Module>, llvm::Function *>> Lift(uint64_t entry_point);
+        llvm::Expected<std::pair<std::unique_ptr<llvm::Module>, llvm::Function *>> Lift(uint64_t entry_rva);
     };
 }

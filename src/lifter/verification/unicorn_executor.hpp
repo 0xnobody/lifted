@@ -31,9 +31,6 @@ namespace lifted::verification
         std::unique_ptr<uc_context, decltype(&uc_context_free)> clean_ctx;
         uint64_t entry_rva;
 
-        // FINISH_MAGIC address where execution should stop
-        static constexpr uint64_t FINISH_MAGIC = 0x0000600000000000ULL;
-
         UnicornExecutor(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry)
             : binary(std::move(bin)),
               external_rvas(ext_rvas),

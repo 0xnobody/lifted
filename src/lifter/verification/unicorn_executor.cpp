@@ -23,9 +23,11 @@ namespace lifted::verification
     // Hook callbacks
     void UnicornExecutor::hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
     {
+        printf("block: 0x%016lx\n", address);
+
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
 
-        if (ctx->executor->external_rvas.find(address) != ctx->executor->external_rvas.end())
+        if (ctx->executor->external_rvas.contains(address))
         {
             ctx->state->context_ptr()->ext_call(ctx->state->context_ptr()->context, nullptr, address);
 
@@ -36,7 +38,9 @@ namespace lifted::verification
             // Skip by jumping to [rsp]
             uint64_t rsp;
             uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
-            uc_reg_write(uc, UC_X86_REG_RIP, &rsp);
+
+            uint64_t retaddr = ctx->state->memory().read64(rsp);
+            uc_reg_write(uc, UC_X86_REG_RIP, &retaddr);
 
             // Adjust rsp to restore stack
             rsp += 8;
@@ -219,19 +223,6 @@ namespace lifted::verification
                 "Failed to set initial state");
         }
 
-        // Setup stack
-        // State init_state_copy = state.get_initial_state();
-        // if (auto stack_err = setup_unicorn_stack(uc_eng.get(), init_state_copy, STACK_MAGIC, FINISH_MAGIC))
-        //{
-        //    return ExecutionResult::error(
-        //        StopReason::CRASH,
-        //        "Failed to setup stack");
-        //}
-
-        // Update RSP in Unicorn
-        // uint64_t rsp = init_state_copy.gpr.rsp.qword;
-        // uc_reg_write(uc_eng.get(), UC_X86_REG_RSP, &rsp);
-
         // Register hooks
         uc_hook block_hook, mem_invalid_hook, mem_read_hook, mem_write_hook, code_hook;
 
@@ -277,8 +268,7 @@ namespace lifted::verification
         }
 
         // Run emulation
-        uint64_t start_addr = LOAD_BASE + entry_rva;
-        err = uc_emu_start(uc_eng.get(), start_addr, FINISH_MAGIC, 0, 0);
+        err = uc_emu_start(uc_eng.get(), state.get_initial_state().gpr.rip.qword, verifier_state::FINISH_SENTINEL, 0, 0);
 
         // Cleanup hooks
         uc_hook_del(uc_eng.get(), block_hook);
@@ -297,7 +287,7 @@ namespace lifted::verification
 
         // Read final state from Unicorn
         State final_state = unicorn_to_state(uc_eng.get());
-        state.set_final_state(final_state);
+        state.context_ptr()->final_reg_state = final_state;
 
         // TODO: Track instruction count
         return ExecutionResult::ok(0);

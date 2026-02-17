@@ -83,31 +83,4 @@ namespace lifted::verification
 
         return state;
     }
-
-    llvm::Error setup_unicorn_stack(uc_engine *uc, State &init_state, uint64_t stack_magic, uint64_t finish_magic)
-    {
-        constexpr uint64_t STACK_SIZE = 1024 * 1024; // 1 MB
-        uint64_t stack_base = stack_magic - STACK_SIZE;
-
-        // Map stack region
-        uc_err err = uc_mem_map(uc, stack_base, STACK_SIZE, UC_PROT_ALL);
-        if (err != UC_ERR_OK)
-        {
-            return uc_error("uc_mem_map (stack)", err);
-        }
-
-        // Write return address at [stack_magic - 8]
-        uint64_t ret_addr_location = stack_magic - 8;
-        err = uc_mem_write(uc, ret_addr_location, &finish_magic, sizeof(finish_magic));
-        if (err != UC_ERR_OK)
-        {
-            return uc_error("uc_mem_write (return address)", err);
-        }
-
-        // Set RSP in initial state
-        init_state.gpr.rsp.qword = ret_addr_location;
-
-        return llvm::Error::success();
-    }
-
 } // namespace lifted::verification

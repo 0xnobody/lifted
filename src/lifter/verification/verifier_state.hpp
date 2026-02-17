@@ -20,9 +20,10 @@ namespace lifted::verification
     /// (e.g., add checkpoints, mutate state on external calls, coverage tracking).
     class verifier_state
     {
+    public:
+        static constexpr uint64_t FINISH_SENTINEL = 0x0000600000000000ULL;
+
     protected:
-        State initial_state;
-        State final_state;
         paged_memory_state mem_state;
         std::vector<uint64_t> bbs_entered;
         std::vector<uint64_t> ext_calls;
@@ -137,31 +138,17 @@ namespace lifted::verification
             from_context(context)->on_ext_call(state, addr);
         }
 
-        void initialize_context(uint64_t entry_rva)
-        {
-            verifier_context.read8 = &read8_proxy;
-            verifier_context.read16 = &read16_proxy;
-            verifier_context.read32 = &read32_proxy;
-            verifier_context.read64 = &read64_proxy;
-
-            verifier_context.write8 = &write8_proxy;
-            verifier_context.write16 = &write16_proxy;
-            verifier_context.write32 = &write32_proxy;
-            verifier_context.write64 = &write64_proxy;
-
-            verifier_context.bb_entered = &bb_entered_proxy;
-            verifier_context.ext_call = &ext_call_proxy;
-
-            verifier_context.entry_rva = entry_rva;
-            verifier_context.context = this;
-            verifier_context.initial_reg_state = initial_state;
-            verifier_context.final_reg_state = final_state;
-        }
-
         void initialize_initial_state(uint64_t seed, uint64_t entry_rva)
         {
+            State &initial_state = verifier_context.initial_reg_state;
+
             initial_state.gpr.rip.qword = LOAD_BASE + entry_rva;
+
+            // Setup stack. We begin it at a fixed stack address.
+            // We also write the 'emulation finished' sentinel return address, which allows us to see if we finished
+            // execution correctly (if we don't have a specific end address).
             initial_state.gpr.rsp.qword = STACK_MAGIC;
+            mem_state.write64(STACK_MAGIC, FINISH_SENTINEL);
 
             std::mt19937_64 rng(seed);
             std::uniform_int_distribution<uint64_t> reg_dis(0, UINT64_MAX);
@@ -184,17 +171,34 @@ namespace lifted::verification
             initial_state.rflag.flat = 0x202; // default reserved bits
         }
 
+        void initialize_context(uint64_t seed, uint64_t entry_rva)
+        {
+            verifier_context.read8 = &read8_proxy;
+            verifier_context.read16 = &read16_proxy;
+            verifier_context.read32 = &read32_proxy;
+            verifier_context.read64 = &read64_proxy;
+
+            verifier_context.write8 = &write8_proxy;
+            verifier_context.write16 = &write16_proxy;
+            verifier_context.write32 = &write32_proxy;
+            verifier_context.write64 = &write64_proxy;
+
+            verifier_context.bb_entered = &bb_entered_proxy;
+            verifier_context.ext_call = &ext_call_proxy;
+
+            verifier_context.entry_rva = entry_rva;
+            verifier_context.context = this;
+            initialize_initial_state(seed, entry_rva);
+        }
+
     public:
         verifier_state(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t entry_rva = 0)
-            : initial_state(),
-              final_state(),
-              mem_state(seed ^ 0xFEEDFEEDFEEDFEED, std::move(binary), LOAD_BASE),
+            : mem_state(seed ^ 0xFEEDFEEDFEEDFEED, std::move(binary), LOAD_BASE),
               bbs_entered(),
               ext_calls(),
               verifier_context()
         {
-            initialize_context(entry_rva);
-            initialize_initial_state(seed, entry_rva);
+            initialize_context(seed, entry_rva);
         }
 
         virtual ~verifier_state() = default;
@@ -209,34 +213,14 @@ namespace lifted::verification
             return &verifier_context;
         }
 
-        /// Reset state for next test run (clears traces, resets final_state)
-        void reset_for_next_run()
-        {
-            bbs_entered.clear();
-            ext_calls.clear();
-            final_state = State{}; // Reset to zero
-        }
-
-        /// Synchronize final state from context (used by JIT executor)
-        void sync_final_state_from_context()
-        {
-            final_state = verifier_context.final_reg_state;
-        }
-
-        /// Set final state directly (used by Unicorn executor)
-        void set_final_state(const State &s)
-        {
-            final_state = s;
-        }
-
         const State &get_initial_state() const
         {
-            return initial_state;
+            return context_ptr()->initial_reg_state;
         }
 
         const State &get_final_state() const
         {
-            return final_state;
+            return context_ptr()->final_reg_state;
         }
 
         paged_memory_state &memory()

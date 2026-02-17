@@ -53,27 +53,6 @@ namespace lifted::verification
 
         utils::output_to_file("/home/atlas/lifted/out/jit_input.ll", module.get());
 
-        if (auto F = module->getFunction("__remill_function"))
-        {
-            if (auto Target = module->getFunction(function_name))
-            {
-                F->replaceAllUsesWith(Target);
-                F->eraseFromParent();
-            }
-            else
-            {
-                return llvm::make_error<llvm::StringError>(
-                    "Entry function not found: " + function_name,
-                    llvm::inconvertibleErrorCode());
-            }
-        }
-        else
-        {
-            return llvm::make_error<llvm::StringError>(
-                "__remill_function not found in module",
-                llvm::inconvertibleErrorCode());
-        }
-
         // Initialize native target for JIT
         llvm::InitializeNativeTarget();
         llvm::InitializeNativeTargetAsmPrinter();
@@ -126,9 +105,6 @@ namespace lifted::verification
     {
         // Call JIT function with verifier context
         entry_fn(state.context_ptr());
-
-        // Sync final state from context
-        state.sync_final_state_from_context();
 
         // TODO: Track instruction count
         return ExecutionResult::ok(0);

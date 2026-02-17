@@ -66,7 +66,7 @@ namespace lifted::verification
         }
 
         // Register comparison
-        if (cfg.abi && (cfg.compare_return_value || cfg.compare_preserved_regs || cfg.compare_all_regs))
+        if (cfg.abi && cfg.compare_regs)
         {
             const State &lhs_state = lhs.get_final_state();
             const State &rhs_state = rhs.get_final_state();
