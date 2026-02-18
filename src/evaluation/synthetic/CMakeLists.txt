@@ -3,8 +3,8 @@ project("lifter-eval-synthetic")
 function(set_optimized_target target_name)
     add_library(eval-${target_name} SHARED ${target_name}.cpp)
     target_compile_options(eval-${target_name} PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang>:-O2 -DNDEBUG>
-        $<$<CXX_COMPILER_ID:MSVC>:/O2 /DNDEBUG>
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-O0 -DNDEBUG>
+        $<$<CXX_COMPILER_ID:MSVC>:/O0 /DNDEBUG>
         -fno-stack-protector
         -fno-tree-vectorize
     )

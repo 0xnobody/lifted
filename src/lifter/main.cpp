@@ -63,49 +63,84 @@ llvm::Error lift_function(const remill::Arch &arch, std::filesystem::path path, 
     lifted::abi::SystemVx64CC CC;
 
     std::set<llvm::AddressRange> const_rva_ranges;
-    const_rva_ranges.insert(llvm::AddressRange{0x4030, 0x4080});
+    const_rva_ranges.insert(llvm::AddressRange{0x4030, 0x4080}); // obfuscator dependant
 
     std::set<llvm::AddressRange> got_table_rva_ranges;
-    got_table_rva_ranges.insert(llvm::AddressRange{0x4000, 0x4020});
+    got_table_rva_ranges.insert(llvm::AddressRange{0x4000, 0x4028}); // .got
+
+    std::set<llvm::AddressRange> ext_func_rva_ranges;
+    ext_func_rva_ranges.insert(llvm::AddressRange{0x1060, 0x1080}); // .plt.sec
+
     Lifter lifter(&arch,
                   binary.get(),
                   lift_module.get(),
                   const_rva_ranges,
                   got_table_rva_ranges,
+                  ext_func_rva_ranges,
                   nullptr,
                   &CC);
 
-    auto lifted = lifter.Lift(*rva);
+    auto lift_result = lifter.Lift(*rva, true);
 
-    if (lifted)
+    if (lift_result)
     {
-        auto &[M, entry_fn] = *lifted;
+        utils::output_to_file("/home/atlas/lifted/out/lifted.ll", lift_result->Module.get());
 
-        utils::output_to_file("/home/atlas/lifted/out/lifted.ll", M.get());
+        // Capture edges before the module is moved into the JIT.
+        auto lift_edges = std::move(lift_result->Edges);
 
-        auto exec = verification::JITExecutor::create(std::move(M), entry_fn->getName().str());
-
+        auto exec = verification::JITExecutor::create(std::move(lift_result->Module), lift_result->LiftedFunction->getName().str());
         if (!exec)
         {
             return exec.takeError();
         }
 
-        verification::verifier_state state(0x1337, binary, *rva);
+        auto state = verification::verifier_state(0x1337, binary, *rva);
         auto result = (*exec)->run_single(state);
 
+        llvm::outs() << "JIT blocks:\n";
+        for (const auto &bb : state.entered_blocks())
+        {
+            llvm::outs() << "\t0x" << llvm::format_hex(bb, 16) << "\n";
+        }
+
+        llvm::outs() << "External calls:\n";
         std::set<uint64_t> ext_calls_set;
         for (const auto &ext_call : state.external_calls())
         {
             ext_calls_set.insert(ext_call);
+
+            llvm::outs() << "\t0x" << llvm::format_hex(ext_call, 16) << "\n";
         }
 
         auto emu = verification::UnicornExecutor::create(binary, ext_calls_set, *rva);
-
-        verification::verifier_state emu_state(0x1337, binary, *rva);
+        auto emu_state = verification::verifier_state(0x1337, binary, *rva);
         auto emu_result = (*emu)->run_single(emu_state);
+
+        llvm::outs() << "Unicorn blocks:\n";
+        for (const auto &bb : emu_state.entered_blocks())
+        {
+            llvm::outs() << "\t0x" << llvm::format_hex(bb, 16) << "\n";
+        }
 
         auto cmp_abi = lifted::abi::AllRegistersCC{};
         auto cmp_config = verification::ComparisonConfig::default_config(&cmp_abi);
+
+        // Populate fallthrough edges from the lift result so the comparator can
+        // normalize traces recorded by the JIT (which crosses lifter-introduced
+        // split boundaries) against those from Unicorn (which does not).
+        llvm::outs() << "Lifter-introduced fallthrough edges:\n";
+        for (const auto &edge : lift_edges)
+        {
+            if (edge.Type == lifted::Edge::Type::FALLTHROUGH)
+            {
+                cmp_config.fallthrough_edges.emplace(edge.Source, edge.Dest);
+
+                llvm::outs() << "\t0x" << llvm::format_hex(edge.Source, 16)
+                             << " -> 0x" << llvm::format_hex(edge.Dest, 16) << "\n";
+            }
+        }
+
         auto cmp_result = verification::compare_states(state, emu_state, cmp_config);
         cmp_result.print(std::cout);
     }
@@ -118,7 +153,9 @@ int main(int argc, char **argv)
 
     std::filesystem::path path = EVAL_SYNTHETIC_LIBS_DIR;
     // path /= "libeval-branch-polaris.so";
-    path /= "libeval-ext-call.so";
+    // path /= "libeval-ext-call.so";
+    path /= "libeval-test.so";
+    // path /= "libeval-branch.so";
     // path /= "libeval-test-polaris.so";
     // path /= "libeval-loop-unbounded.so"; // test block splitting
 

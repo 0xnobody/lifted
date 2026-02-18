@@ -61,8 +61,8 @@ add_executable(lifted
     "verification/runner.cpp"
     "verification/examples.hpp"
     "verification/examples.cpp"
-    "verification/nmd_assembly.h" # for testing
-    "verification/nmd_assembly.cpp"
+    "third-party/nmd_assembly.h" # for testing
+    "third-party/nmd_assembly.cpp"
 )
 
 target_link_libraries(lifted PRIVATE

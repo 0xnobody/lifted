@@ -4,8 +4,10 @@
 #include "../abi/calling_convention.hpp"
 
 #include <iostream>
+#include <set>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace lifted::verification
@@ -27,6 +29,11 @@ namespace lifted::verification
         bool compare_ext_calls = true;
 
         std::vector<mem_range_t> excluded_memory_ranges;
+
+        /// Fallthrough edges (src_rva, dst_rva) introduced by the lifter's block-splitting.
+        /// Trace entries reachable only via a fallthrough edge are stripped from both traces
+        /// before comparison, making JIT and emulator traces semantically comparable.
+        std::set<std::pair<uint64_t, uint64_t>> fallthrough_edges;
 
         const abi::CallingConvention *abi = nullptr;
 

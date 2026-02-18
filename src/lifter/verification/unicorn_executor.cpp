@@ -1,8 +1,8 @@
 #include "unicorn_executor.hpp"
 
-#include <sstream>
+#include "../utils.hpp"
 
-#include "nmd_assembly.h"
+#include <sstream>
 
 namespace lifted::verification
 {
@@ -51,7 +51,7 @@ namespace lifted::verification
             // Invoke verifier_state callback
             // Note: We don't have direct access to State* here in Unicorn,
             // so we pass nullptr for now (can be extended later if needed)
-            ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, nullptr, address);
+            ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, nullptr, address - LOAD_BASE);
         }
     }
 
@@ -141,22 +141,9 @@ namespace lifted::verification
     static void hook_code(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
     {
         uint8_t code[15];
-        nmd_x86_instruction instruction;
-        char formatted[128];
-
-        // Read instruction bytes
         uc_mem_read(uc, address, code, size);
 
-        // Decode and format
-        if (nmd_x86_decode(code, size, &instruction, NMD_X86_MODE_64, NMD_X86_DECODER_FLAGS_NONE))
-        {
-            nmd_x86_format(&instruction, formatted, address, NMD_X86_FORMAT_FLAGS_DEFAULT);
-            printf("0x%" PRIx64 ":\t%s\n", address, formatted);
-        }
-        else
-        {
-            printf("0x%" PRIx64 ":\t[invalid]\n", address);
-        }
+        printf("%s\n", utils::insn_bytes_to_str(code, address).c_str());
     }
 
     llvm::Expected<std::unique_ptr<UnicornExecutor>>

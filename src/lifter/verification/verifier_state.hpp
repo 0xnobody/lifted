@@ -14,7 +14,6 @@
 
 namespace lifted::verification
 {
-
     /// Verifier state encapsulates execution state and trace recording.
     /// The virtual on_* methods define the execution contract - subclass to customize behavior
     /// (e.g., add checkpoints, mutate state on external calls, coverage tracking).
@@ -25,7 +24,7 @@ namespace lifted::verification
 
     protected:
         paged_memory_state mem_state;
-        std::vector<uint64_t> bbs_entered;
+        std::vector<uint64_t> bbs_entered_rvas;
         std::vector<uint64_t> ext_calls;
 
         verifier_context_t verifier_context;
@@ -78,7 +77,7 @@ namespace lifted::verification
 
         virtual void on_bb_entered(State *state, uint64_t rva)
         {
-            bbs_entered.push_back(rva);
+            bbs_entered_rvas.push_back(rva);
         }
 
         virtual void on_ext_call(State *state, uint64_t addr)
@@ -194,7 +193,7 @@ namespace lifted::verification
     public:
         verifier_state(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t entry_rva = 0)
             : mem_state(seed ^ 0xFEEDFEEDFEEDFEED, std::move(binary), LOAD_BASE),
-              bbs_entered(),
+              bbs_entered_rvas(),
               ext_calls(),
               verifier_context()
         {
@@ -235,7 +234,7 @@ namespace lifted::verification
 
         const std::vector<uint64_t> &entered_blocks() const
         {
-            return bbs_entered;
+            return bbs_entered_rvas;
         }
 
         const std::vector<uint64_t> &external_calls() const

@@ -9,71 +9,104 @@
 #include <llvm/AsmParser/Parser.h>
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/Linker/Linker.h>
+#include <llvm/Support/FormatVariadic.h>
+
+#include "third-party/nmd_assembly.h"
 
 namespace lifted::utils
 {
-    
-std::error_code output_to_file(std::filesystem::path path, llvm::Module *module)
-{
-    std::error_code ec;
-    llvm::raw_fd_ostream raw(path.string(), ec, llvm::sys::fs::OF_Text);
-    if (ec)
+
+    std::error_code output_to_file(std::filesystem::path path, llvm::Module *module)
     {
-        return ec;
+        std::error_code ec;
+        llvm::raw_fd_ostream raw(path.string(), ec, llvm::sys::fs::OF_Text);
+        if (ec)
+        {
+            return ec;
+        }
+
+        module->print(raw, nullptr);
+
+        return {};
     }
 
-    module->print(raw, nullptr);
-
-    return {};
-}
-
-llvm::Error link_from_file(llvm::Module *module, std::filesystem::path helpers_path)
-{
-    llvm::LLVMContext &context = module->getContext();
-    llvm::SMDiagnostic error;
-    auto helpers_module = llvm::parseAssemblyFile(helpers_path.string(), error, context);
-    if (!helpers_module)
+    llvm::Error link_from_file(llvm::Module *module, std::filesystem::path helpers_path)
     {
-        return llvm::make_error<llvm::StringError>(
-            "Failed to load helpers module from file: " + helpers_path.string(),
-            llvm::inconvertibleErrorCode());
+        llvm::LLVMContext &context = module->getContext();
+        llvm::SMDiagnostic error;
+        auto helpers_module = llvm::parseAssemblyFile(helpers_path.string(), error, context);
+        if (!helpers_module)
+        {
+            return llvm::make_error<llvm::StringError>(
+                "Failed to load helpers module from file: " + helpers_path.string(),
+                llvm::inconvertibleErrorCode());
+        }
+
+        // Link the helpers module with the main module
+        if (llvm::Linker::linkModules(*module, std::move(helpers_module)))
+        {
+            return llvm::make_error<llvm::StringError>(
+                "Failed to link helpers module with main module",
+                llvm::inconvertibleErrorCode());
+        }
+
+        return llvm::Error::success();
     }
 
-    // Link the helpers module with the main module
-    if (llvm::Linker::linkModules(*module, std::move(helpers_module)))
+    llvm::Expected<std::unique_ptr<llvm::Module>> load_module_from_file(std::filesystem::path path, llvm::LLVMContext &ctx)
     {
-        return llvm::make_error<llvm::StringError>(
-            "Failed to link helpers module with main module",
-            llvm::inconvertibleErrorCode());
+        // Try to open the file into a MemoryBuffer
+        auto bufferOrErr = llvm::MemoryBuffer::getFile(path.string());
+        if (!bufferOrErr)
+        {
+            return llvm::errorCodeToError(bufferOrErr.getError());
+        }
+
+        auto &buffer = *bufferOrErr;
+
+        // Try to parse bitcode first
+        auto bitcodeOrErr = llvm::parseBitcodeFile(buffer->getMemBufferRef(), ctx);
+        if (bitcodeOrErr)
+        {
+            return std::move(*bitcodeOrErr);
+        }
+
+        // If bitcode parsing failed, try textual IR (.ll)
+        llvm::SMDiagnostic err;
+        auto module = llvm::parseAssemblyFile(path.string(), err, ctx);
+        if (!module)
+        {
+            return llvm::make_error<llvm::StringError>(
+                "Failed to parse module from file: " + path.string(),
+                llvm::inconvertibleErrorCode());
+        }
+
+        return module;
     }
 
-    return llvm::Error::success();
-}
+    std::string insn_bytes_to_str(std::span<const uint8_t> bytes, uintptr_t addr)
+    {
+        nmd_x86_instruction instruction;
+        std::string formatted;
+        formatted.resize(128);
 
-llvm::Expected<std::unique_ptr<llvm::Module>> load_module_from_file(std::filesystem::path path, llvm::LLVMContext &ctx) {
-    // Try to open the file into a MemoryBuffer
-    auto bufferOrErr = llvm::MemoryBuffer::getFile(path.string());
-    if (!bufferOrErr) {
-        return llvm::errorCodeToError(bufferOrErr.getError());
+        // Decode and format
+        if (nmd_x86_decode(bytes.data(), bytes.size(), &instruction, NMD_X86_MODE_64, NMD_X86_DECODER_FLAGS_NONE))
+        {
+            // UNSAFE
+            nmd_x86_format(&instruction, formatted.data(), addr, NMD_X86_FORMAT_FLAGS_DEFAULT);
+        }
+        else
+        {
+            formatted = "<invalid instruction>";
+        }
+
+        if (addr)
+        {
+            return llvm::formatv("{0:x16}: {1}", addr, formatted).str();
+        }
+
+        return formatted;
     }
 
-    auto &buffer = *bufferOrErr;
-
-    // Try to parse bitcode first
-    auto bitcodeOrErr = llvm::parseBitcodeFile(buffer->getMemBufferRef(), ctx);
-    if (bitcodeOrErr) {
-        return std::move(*bitcodeOrErr);
-    }
-
-    // If bitcode parsing failed, try textual IR (.ll)
-    llvm::SMDiagnostic err;
-    auto module = llvm::parseAssemblyFile(path.string(), err, ctx);
-    if (!module) {
-        return llvm::make_error<llvm::StringError>(
-            "Failed to parse module from file: " + path.string(),
-            llvm::inconvertibleErrorCode());
-    }
-
-    return module;
-}
 } // namespace lifted::utils

@@ -79,8 +79,25 @@ namespace lifted::verification
         // Trace comparison
         if (cfg.compare_traces)
         {
-            const auto &lhs_trace = lhs.entered_blocks();
-            const auto &rhs_trace = rhs.entered_blocks();
+            // Strip fallthrough-linked entries from both traces so that artificial
+            // block splits introduced by the lifter don't cause false divergences.
+            auto normalize = [&](const std::vector<uint64_t> &trace) -> std::vector<uint64_t>
+            {
+                if (cfg.fallthrough_edges.empty())
+                    return trace;
+                std::vector<uint64_t> out;
+                out.reserve(trace.size());
+                for (size_t i = 0; i < trace.size(); ++i)
+                {
+                    if (i > 0 && cfg.fallthrough_edges.count({trace[i - 1], trace[i]}))
+                        continue;
+                    out.push_back(trace[i]);
+                }
+                return out;
+            };
+
+            const auto lhs_trace = normalize(lhs.entered_blocks());
+            const auto rhs_trace = normalize(rhs.entered_blocks());
 
             size_t min_len = std::min(lhs_trace.size(), rhs_trace.size());
             for (size_t i = 0; i < min_len; ++i)

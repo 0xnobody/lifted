@@ -9,6 +9,7 @@
 // #include "standard-intrinsics.hpp"
 
 HELPER Memory *__lifted_ext_call(State *__restrict__, addr_t addr, Memory *);
+HELPER Memory *__lifted_bb_entered(State *state, addr_t a, Memory *m);
 
 HELPER Memory *__lifted_issue_ext_call(State *__restrict__ s, addr_t addr, Memory *m) // TODO: what to do with you
 {
@@ -30,6 +31,25 @@ HELPER Memory *__lifted_issue_ext_call(State *__restrict__ s, addr_t addr, Memor
 /// Also pops the return address (RIP = [RSP]; RSP += 8).
 HELPER Memory *__lifted_systemv_call(State *__restrict__ s, addr_t addr, Memory *m)
 {
+  // HACK: LLVM passes don't know what memory the external call might modify.
+  // So it is pessimistic, and assumes it can modify anything. This is a big
+  // optimization barrier.
+  //
+  // In the future we want to use custom aliasing passes to specify what a given
+  // function can alias based on:
+  //   1) its params (no stack refs passed? can't modify caller's stack)
+  //   2) its convention (well-formed functions are assumed to not be able to
+  //      write below their stack refs (e.g. buf[-1] = x is not well-formed))
+  //   3) user-provided into (e.g. pointer param X is of max size A, pointer
+  //      param Y is of max size of the value of integer param Z)
+  //
+  // This has to be implemented as proper stack aliasing passes/analysis. But for
+  // now, in order to progress in BB exploration, we just tell LLVM that the return
+  // address is not changed across the call, in the same manner that we preserve
+  // non-volatile registers.
+  //
+  uint64_t retaddr = __remill_read_memory_64(m, s->gpr.rsp.qword);
+
   // Save non-volatile registers
   uint64_t saved_rbx = s->gpr.rbx.qword;
   uint64_t saved_rbp = s->gpr.rbp.qword;
@@ -52,7 +72,7 @@ HELPER Memory *__lifted_systemv_call(State *__restrict__ s, addr_t addr, Memory 
   s->gpr.rsp.qword = saved_rsp;
 
   // Pop return address: RIP = [RSP]; RSP += 8
-  s->gpr.rip.qword = __remill_read_memory_64(m, s->gpr.rsp.qword);
+  s->gpr.rip.qword = retaddr; //__remill_read_memory_64(m, s->gpr.rsp.qword);
   s->gpr.rsp.qword += 8;
 
   return m;

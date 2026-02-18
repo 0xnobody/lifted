@@ -29,6 +29,7 @@
 #include "helpers.hpp"
 #include "slicer.hpp"
 #include "tester.hpp"
+#include "utils.hpp"
 
 // Specific transformation passes
 #include <llvm/Transforms/Utils/Mem2Reg.h>                     // PromotePass
@@ -268,11 +269,29 @@ namespace lifted
 
         std::vector<ResolvedTarget> targets;
 
+        auto is_external = [this](uint64_t rva)
+        {
+            for (const auto &ext_range : ExtFuncRvaRanges)
+            {
+                if (ext_range.contains(rva))
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
+
         if (auto ret_inst = llvm::dyn_cast<llvm::ReturnInst>((--F.end())->getTerminator()))
         {
             if (auto const_ret = llvm::dyn_cast<llvm::ConstantInt>(ret_inst->getReturnValue()))
             {
-                targets.push_back(ResolvedTarget{ResolvedTarget::Type::INTERNAL, static_cast<bb_id_t>(const_ret->getZExtValue()), std::nullopt});
+                uint64_t rva = const_ret->getZExtValue();
+
+                targets.push_back(ResolvedTarget{
+                    .Type = is_external(rva) ? ResolvedTarget::Type::EXTERNAL : ResolvedTarget::Type::INTERNAL,
+                    .Dest = rva,
+                    .CalleeInfo = Callee{}});
+
                 return ResolvedTargetsResult{targets, std::nullopt};
             }
         }
@@ -293,8 +312,18 @@ namespace lifted
                 {
                     if (auto const_false = llvm::dyn_cast<llvm::ConstantInt>(false_val))
                     {
-                        targets.push_back(ResolvedTarget{ResolvedTarget::Type::INTERNAL, static_cast<bb_id_t>(const_true->getZExtValue()), std::nullopt});
-                        targets.push_back(ResolvedTarget{ResolvedTarget::Type::INTERNAL, static_cast<bb_id_t>(const_false->getZExtValue()), std::nullopt});
+                        uint64_t rva_true = const_true->getZExtValue();
+                        uint64_t rva_false = const_false->getZExtValue();
+
+                        targets.push_back(ResolvedTarget{
+                            .Type = is_external(rva_true) ? ResolvedTarget::Type::EXTERNAL : ResolvedTarget::Type::INTERNAL,
+                            .Dest = rva_true,
+                            .CalleeInfo = Callee{}});
+                        targets.push_back(ResolvedTarget{
+                            .Type = is_external(rva_false) ? ResolvedTarget::Type::EXTERNAL : ResolvedTarget::Type::INTERNAL,
+                            .Dest = rva_false,
+                            .CalleeInfo = Callee{}});
+
                         return ResolvedTargetsResult{targets, std::nullopt};
                     }
                 }
@@ -309,7 +338,8 @@ namespace lifted
         const std::set<bb_id_t> &BlockSet,
         llvm::StringRef NewFuncName,
         bb_id_t TargetID,
-        bool DeadEndIsUnreachable)
+        bool DeadEndIsUnreachable,
+        bool InstrumentBasicBlockEntry)
     {
         llvm::LLVMContext &Ctx = Module->getContext();
 
@@ -349,10 +379,24 @@ namespace lifted
         llvm::Argument *ArgBase = WrapperFunc->getArg(3);
         ArgBase->setName("base");
 
-        // Helper: __extract_rip
+        // Helpers: __extract_rip, __store_rip
         llvm::Function *ExtractRipFunc = Module->getFunction("__extract_rip");
-        if (!ExtractRipFunc)
+        llvm::Function *StoreRipFunc = Module->getFunction("__store_rip");
+        if (!ExtractRipFunc || !StoreRipFunc)
             return nullptr;
+
+        // Helper: __lifted_bb_entered (for instrumentation)
+        llvm::Function *BBEnteredFunc = nullptr;
+        if (InstrumentBasicBlockEntry)
+        {
+            BBEnteredFunc = Module->getFunction("__lifted_bb_entered");
+            if (!BBEnteredFunc)
+            {
+                llvm::FunctionType *BBEnteredTy = llvm::FunctionType::get(StatePtrTy, {StatePtrTy, PCTy, MemPtrTy}, false);
+                BBEnteredFunc = llvm::Function::Create(BBEnteredTy, llvm::Function::ExternalLinkage, "__lifted_bb_entered", Module);
+                BBEnteredFunc->addFnAttr(llvm::Attribute::AlwaysInline);
+            }
+        }
 
         // --- BLOCKS & ALLOCAS ---
         llvm::BasicBlock *EntryBB = llvm::BasicBlock::Create(Ctx, "entry", WrapperFunc);
@@ -401,11 +445,38 @@ namespace lifted
             llvm::BasicBlock *CurrentBB = BlockMap[id];
             Builder.SetInsertPoint(CurrentBB);
 
+            // Set CurrPC & RIP here to the block's address (if not synthetic)
+            //
+            // This shouldn't really be needed (LLVM opts should be able to infer the PC from the
+            // switch cases), but it might help optimization here. Although it's more of a bandaid
+            // fix -- the true fix is creating a pass pipeline which propagates this information
+            // backwards properly.
+            //
+            // This should be based (not RVA) as we are working with actual addresses not BB IDs.
+            //
+            if (!IsSynthetic(id))
+            {
+                llvm::Value *BlockRVA = Builder.getInt64(id);
+                llvm::Value *BlockPC = Builder.CreateAdd(BlockRVA, ArgBase, "block_pc");
+                Builder.CreateStore(BlockPC, PCVar);
+                Builder.CreateCall(StoreRipFunc, {ArgState, BlockPC});
+            }
+
             llvm::Function *SourceFunc = Module->getFunction(Explored.at(id).FuncName);
 
             llvm::Value *CurrMem = Builder.CreateLoad(MemPtrTy, MemVar);
             // Load VA from pc_var (it stores absolute addresses)
             llvm::Value *CurrPC = Builder.CreateLoad(PCTy, PCVar);
+
+            // Instrument REAL basic blocks if enabled
+            if (InstrumentBasicBlockEntry && BBEnteredFunc)
+            {
+                // Check if this is a REAL block (not synthetic)
+                if (!IsSynthetic(id))
+                {
+                    Builder.CreateCall(BBEnteredFunc, {ArgState, Builder.getInt64(id), CurrMem});
+                }
+            }
 
             // Call & Inline
             llvm::CallInst *Call = Builder.CreateCall(SourceFunc, {ArgState, CurrPC, CurrMem});
@@ -429,8 +500,8 @@ namespace lifted
             std::vector<uintptr_t> Successors;
             for (const auto &edge : Edges)
             {
-                if (edge.first == id)
-                    Successors.push_back(edge.second);
+                if (edge.Source == id)
+                    Successors.push_back(edge.Dest);
             }
 
             if (Successors.empty())
@@ -561,30 +632,28 @@ namespace lifted
         return WrapperFunc;
     }
 
-    llvm::Function *Lifter::buildPartialCFG(llvm::Module *Module, const LiftedBB &TargetBB)
+    llvm::Function *Lifter::buildBackwardSliceCFG(llvm::Module *Module, bb_id_t TargetID, llvm::StringRef Name,
+                                                  bool InstrumentBasicBlockEntry)
     {
-        bb_id_t ID = TargetBB.ID;
-
-        // 1. COMPUTE BACKWARD SLICE
+        // Compute all blocks that can reach TargetID by walking predecessor edges.
         std::set<bb_id_t> ReachingSet;
         std::vector<bb_id_t> Worklist;
 
-        ReachingSet.insert(ID);
-        Worklist.push_back(ID);
+        ReachingSet.insert(TargetID);
+        Worklist.push_back(TargetID);
 
         std::map<bb_id_t, std::vector<bb_id_t>> Predecessors;
         for (const auto &edge : Edges)
-        {
-            Predecessors[edge.second].push_back(edge.first);
-        }
+            Predecessors[edge.Dest].push_back(edge.Source);
 
         size_t head = 0;
         while (head < Worklist.size())
         {
-            uintptr_t curr = Worklist[head++];
-            if (Predecessors.count(curr))
+            bb_id_t curr = Worklist[head++];
+            auto it = Predecessors.find(curr);
+            if (it != Predecessors.end())
             {
-                for (bb_id_t predID : Predecessors[curr])
+                for (bb_id_t predID : it->second)
                 {
                     if (Explored.count(predID) && !ReachingSet.count(predID))
                     {
@@ -595,41 +664,79 @@ namespace lifted
             }
         }
 
-        // 2. DELEGATE TO HELPER
-        // Name: partial_cfg_slice_ADDR
-        // TargetAddr: ADDR (Stop when reached)
-        // DeadEnd: Unreachable (Strict slicing)
-        std::string FuncName = "partial_cfg_" + llvm::utohexstr(ID);
-        return stitchCFG(Module, ReachingSet, FuncName, ID, true);
+        // Stitch: intercept execution at TargetID (so callers can read the resulting PC).
+        // Dead ends are unreachable — paths that don't reach TargetID are invalid.
+        return stitchCFG(Module, ReachingSet, Name, TargetID, /*DeadEndIsUnreachable=*/true, InstrumentBasicBlockEntry);
     }
 
-    llvm::Function *Lifter::buildCFG(llvm::Module *Module)
+    llvm::Function *Lifter::buildForwardCFG(llvm::Module *Module, bb_id_t RootID, llvm::StringRef Name,
+                                            bool InstrumentBasicBlockEntry,
+                                            std::set<Edge> *OutEdges, std::set<LiftedBB> *OutBlocks)
     {
-        // 1. GATHER ALL BLOCKS
-        std::set<bb_id_t> AllBlocks;
-        for (const auto &pair : Explored)
+        // Compute all blocks reachable FROM RootID by following successor edges.
+        std::set<bb_id_t> ReachableSet;
+        std::vector<bb_id_t> Worklist;
+
+        ReachableSet.insert(RootID);
+        Worklist.push_back(RootID);
+
+        // Build successors map for efficient lookup.
+        std::map<bb_id_t, std::vector<bb_id_t>> Successors;
+        for (const auto &edge : Edges)
+            Successors[edge.Source].push_back(edge.Dest);
+
+        size_t head = 0;
+        while (head < Worklist.size())
         {
-            AllBlocks.insert(pair.first);
+            bb_id_t curr = Worklist[head++];
+            auto it = Successors.find(curr);
+            if (it != Successors.end())
+            {
+                for (bb_id_t succID : it->second)
+                {
+                    if (Explored.count(succID) && !ReachableSet.count(succID))
+                    {
+                        ReachableSet.insert(succID);
+                        Worklist.push_back(succID);
+                    }
+                }
+            }
         }
 
-        // 2. DELEGATE TO HELPER
-        // Name: rebuilt_cfg
-        // TargetAddr: 0 (Don't stop at any specific block, run until natural exit)
-        // DeadEnd: Unreachable (But terminating blocks will return naturally)
-        return stitchCFG(Module, AllBlocks, "__lifted_rebuilt_cfg", 0, true);
+        // Populate optional outputs.
+        if (OutBlocks)
+        {
+            OutBlocks->clear();
+            for (bb_id_t id : ReachableSet)
+            {
+                auto it = Explored.find(id);
+                if (it != Explored.end())
+                    OutBlocks->insert(it->second);
+            }
+        }
+        if (OutEdges)
+        {
+            OutEdges->clear();
+            for (const auto &edge : Edges)
+            {
+                if (ReachableSet.count(edge.Source) && ReachableSet.count(edge.Dest))
+                    OutEdges->insert(edge);
+            }
+        }
+
+        // Stitch: no intercept target, dead ends return current memory (natural function exits).
+        return stitchCFG(Module, ReachableSet, Name, /*TargetID=*/0, /*DeadEndIsUnreachable=*/false, InstrumentBasicBlockEntry);
     }
 
-    ResolvedTargetsResult Lifter::ResolveTargets(const LiftedBB &BB)
+    ResolvedTargetsResult Lifter::ResolveTargets(const LiftedBB &BB, uint64_t entry_rva)
     {
-        // TODO: add support for external targets and indirect targets
-
         auto M = llvm::CloneModule(*CleanModule);
 
         helpers::link_deobfuscation_intrinsics(M.get());
         helpers::link_state_utils(M.get());
         helpers::link_lifting_helpers(M.get());
 
-        llvm::Function *F_CFG = buildPartialCFG(M.get(), BB);
+        llvm::Function *F_CFG = buildBackwardSliceCFG(M.get(), BB.ID, "__lifted_partial_cfg_" + llvm::utohexstr(BB.ID));
         llvm::Function *F = concretizeCFGBase(F_CFG, 0, F_CFG->getName().str() + "_rva_based");
 
         utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
@@ -648,7 +755,7 @@ namespace lifted
         utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
 
         llvm::Function *SliceRipFnc = M->getFunction("__slice_rip");
-        llvm::Function *ConcretizedFnc = ConcretizeEntryPC(SliceRipFnc, 2, InitialEntryPoint);
+        llvm::Function *ConcretizedFnc = ConcretizeEntryPC(SliceRipFnc, 2, entry_rva);
         SliceRipFnc->addFnAttr(llvm::Attribute::AlwaysInline);
 
         utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
@@ -657,6 +764,8 @@ namespace lifted
 
         utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
 
+        opt::default_opt(M.get(), llvm::OptimizationLevel::O2);
+        opt::default_opt(M.get(), llvm::OptimizationLevel::O2);
         opt::default_opt(M.get(), llvm::OptimizationLevel::O2);
 
         utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
@@ -696,6 +805,42 @@ namespace lifted
         return ResolvedTargetsResult{
             .Targets = {},
             .IndirectTarget = std::nullopt};
+    }
+
+    void Lifter::reproveSubtree(bb_id_t root)
+    {
+        // BFS over the partial CFG from `root`, inserting every reachable block
+        // (including root itself) into Reprove. Called whenever a new predecessor
+        // edge is added to an already-explored block.
+        std::set<bb_id_t> visited;
+        std::vector<bb_id_t> stack = {root};
+        while (!stack.empty())
+        {
+            bb_id_t curr = stack.back();
+            stack.pop_back();
+            if (!visited.insert(curr).second)
+                continue;
+            Reprove.insert(curr);
+            for (const auto &edge : Edges)
+            {
+                if (edge.Source == curr && !visited.count(edge.Dest))
+                    stack.push_back(edge.Dest);
+            }
+        }
+    }
+
+    std::optional<bb_id_t> Lifter::findNextExploredRealBB(bb_id_t curr_id) const
+    {
+        // Explored is a std::map<bb_id_t, LiftedBB> ordered by start address.
+        // upper_bound gives us the first entry with ID > curr_id in O(log n).
+        auto it = Explored.upper_bound(curr_id);
+        while (it != Explored.end())
+        {
+            if (it->second.Type == LiftedBB::Type::REAL)
+                return it->first;
+            ++it;
+        }
+        return std::nullopt;
     }
 
     void Lifter::runCFGPipeline(llvm::Function &F)
@@ -755,6 +900,8 @@ namespace lifted
 
     LiftedBB Lifter::LiftBB(uintptr_t addr, std::optional<uintptr_t> stop_at)
     {
+        // DLOG(INFO) << "Lifting BB at address " << std::hex << addr << std::dec;
+
         auto &Context = Module->getContext();
 
         std::stringstream ss;
@@ -842,6 +989,8 @@ namespace lifted
 
             std::ignore = Arch->DecodeInstruction(inst_addr, inst_bytes, inst, Arch->CreateInitialContext());
 
+            // DLOG(INFO) << utils::insn_bytes_to_str(std::span<const uint8_t>((const uint8_t *)inst_bytes.data(), inst_bytes.size()), inst_addr);
+
             auto lift_status = inst.GetLifter()->LiftIntoBlock(inst, block, state_ptr);
             if (remill::kLiftedInstruction != lift_status)
             {
@@ -921,6 +1070,10 @@ namespace lifted
                 break;
             }
         }
+
+        // DLOG(INFO) << "Finished lifting BB at address " << std::hex << addr << std::dec << ":";
+        // DLOG(INFO) << "\tRVA Range: [" << std::hex << addr << ", " << inst.next_pc << std::dec << ")";
+        // DLOG(INFO) << "\tTerminating Category: " << inst.category;
 
         LiftedBB BB;
         BB.Type = LiftedBB::Type::REAL;
@@ -1033,9 +1186,9 @@ namespace lifted
         llvm::IRBuilder<> ir(&F->getEntryBlock());
 
         // Resolve per-callee CC.
-        const abi::CallingConvention *CalleeCC = callee_info ? ResolveCC(*callee_info) : nullptr;
+        const abi::CallingConvention *CalleeCC = ResolveCC(callee_info);
 
-        if (CalleeCC && callee_info)
+        if (CalleeCC)
         {
             // Get or create the per-callee ABI stub.
             // The stub saves non-volatile regs, calls opaque __lifted_ext_call_<name>,
@@ -1062,10 +1215,8 @@ namespace lifted
             .TerminatingCategory = std::nullopt};
     }
 
-    llvm::Expected<std::pair<std::unique_ptr<llvm::Module>, llvm::Function *>> Lifter::Lift(uint64_t entry_rva)
+    llvm::Expected<LiftResult> Lifter::Lift(uint64_t entry_rva, bool InstrumentBasicBlockEntry)
     {
-        InitialEntryPoint = (bb_id_t)entry_rva;
-
         // Link state-utils early so __extract_* and __store_* are available
         // for typed synthetic BB construction.
         helpers::link_state_utils(Module);
@@ -1146,15 +1297,16 @@ namespace lifted
                         utils::output_to_file("/home/atlas/lifted/out/split.ll", CleanModule.get());
 
                         // 3. Update edges: redirect outgoing edges from original_start to current_addr
-                        std::vector<std::pair<bb_id_t, bb_id_t>> edges_to_remove;
-                        std::vector<std::pair<bb_id_t, bb_id_t>> edges_to_add;
+                        std::vector<Edge> edges_to_remove;
+                        std::vector<Edge> edges_to_add;
 
                         for (const auto &edge : Edges)
                         {
-                            if (edge.first == original_bb_id)
+                            if (edge.Source == original_bb_id)
                             {
                                 edges_to_remove.push_back(edge);
-                                edges_to_add.push_back({bb_end.ID, edge.second});
+                                // Preserve edge type when redirecting
+                                edges_to_add.push_back(Edge{bb_end.ID, edge.Dest, edge.Type});
                             }
                         }
 
@@ -1168,7 +1320,7 @@ namespace lifted
                         }
 
                         // 4. Add fallthrough edge from bb_start to bb_end
-                        Edges.insert({bb_start.ID, bb_end.ID});
+                        Edges.insert(Edge{bb_start.ID, bb_end.ID, Edge::Type::FALLTHROUGH});
 
                         // 5. Mark bb_start for reprove (it has a new outgoing edge)
                         Reprove.insert(bb_start.ID);
@@ -1179,6 +1331,7 @@ namespace lifted
             llvm::outs() << "[*] Analyzing BB 0x" << llvm::format_hex(curr_id, 16) << "\n";
 
             LiftedBB BB;
+            std::optional<bb_id_t> maybe_stop;
             if (!Explored.contains(curr_id))
             {
                 if (IsSynthetic(curr_id))
@@ -1188,7 +1341,11 @@ namespace lifted
                 }
                 else
                 {
-                    BB = LiftBB(curr_id);
+                    // Clamp the lift to the nearest already-explored real block so we
+                    // don't overrun a block that was discovered before us (e.g. BB1
+                    // discovered before BB0 which falls through into it).
+                    maybe_stop = findNextExploredRealBB(curr_id);
+                    BB = LiftBB(curr_id, maybe_stop);
                 }
 
                 auto Func = Module->getFunction(BB.FuncName);
@@ -1197,6 +1354,22 @@ namespace lifted
 
                 remill::MoveFunctionIntoModule(Func, CleanModule.get()); // maybe need to remove old?
                 Explored.insert({curr_id, BB});
+
+                // If the lift was truncated by an already-explored block, record a
+                // FALLTHROUGH edge and reprove the target's subtree (new predecessor
+                // may change its backward slice). Skip ResolveTargets — the only
+                // outgoing edge is the FALLTHROUGH we just recorded.
+                if (!IsSynthetic(curr_id) &&
+                    maybe_stop.has_value() &&
+                    BB.RVARange.has_value() &&
+                    BB.RVARange->end() == *maybe_stop)
+                {
+                    llvm::outs() << "    [FALLTHROUGH] BB 0x" << llvm::format_hex(curr_id, 16)
+                                 << " -> 0x" << llvm::format_hex(*maybe_stop, 16) << "\n";
+                    Edges.insert(Edge{curr_id, *maybe_stop, Edge::Type::FALLTHROUGH});
+                    reproveSubtree(*maybe_stop);
+                    continue;
+                }
             }
             else
             {
@@ -1205,12 +1378,12 @@ namespace lifted
 
             utils::output_to_file("/home/atlas/lifted/out/lifted_module.ll", CleanModule.get());
 
-            ResolvedTargetsResult targets_result = ResolveTargets(BB);
+            ResolvedTargetsResult targets_result = ResolveTargets(BB, entry_rva);
 
-            llvm::outs() << "    Resolved targets:\n";
+            llvm::outs() << "Resolved targets for 0x" << llvm::format_hex(BB.ID, 16) << ":\n";
             for (auto target : targets_result.Targets)
             {
-                llvm::outs() << "      " << target << "\n";
+                llvm::outs() << "\t" << target << "\n";
             }
 
             for (auto target : targets_result.Targets)
@@ -1231,12 +1404,12 @@ namespace lifted
                     //
                     bb_id_t new_target_id = (bb_id_t)target.Dest;
 
-                    bool edgeKnown = Edges.contains({curr_id, new_target_id});
+                    bool edgeKnown = hasEdgeBetween(curr_id, new_target_id);
 
                     if (!edgeKnown)
                     {
                         // Always record any newly solved edge.
-                        Edges.insert({curr_id, new_target_id});
+                        Edges.insert(Edge{curr_id, new_target_id, Edge::Type::CONTROL_FLOW});
                     }
 
                     if (!Explored.contains(new_target_id))
@@ -1250,25 +1423,7 @@ namespace lifted
                         // the path constraints into Target and its descendants.
                         if (!edgeKnown)
                         {
-                            // Compute all BBs currently reachable from Target in the partial CFG.
-                            std::set<uintptr_t> reachable_set;
-                            std::function<void(uintptr_t)> dfs = [&](uintptr_t addr)
-                            {
-                                for (const auto &edge : Edges)
-                                {
-                                    if (edge.first == addr && !reachable_set.contains(edge.second))
-                                    {
-                                        reachable_set.insert(edge.second);
-                                        dfs(edge.second);
-                                    }
-                                }
-                            };
-                            dfs(new_target_id);
-
-                            for (auto b : reachable_set)
-                            {
-                                Reprove.insert(b);
-                            }
+                            reproveSubtree(new_target_id);
                         }
                     }
                     break;
@@ -1290,6 +1445,17 @@ namespace lifted
                     //
                     // Currently, target.Dest has the address of ext_func, but we can't use that for the BB address.
                     //
+
+                    // Dedup: if this (source, dest_addr) pair already has a synthetic block,
+                    // skip creating a new one. This can happen when a block is re-analysed
+                    // during reproving after a new predecessor edge is added.
+                    auto ext_key = std::make_pair(curr_id, target.Dest);
+                    if (ExternalSyntheticIndex.count(ext_key))
+                    {
+                        // TODO: Optionally refine CalleeInfo if the new resolution is more specific.
+                        break;
+                    }
+
                     bb_id_t dispatcher_id = NextSyntheticID++;
 
                     SyntheticBlocks[dispatcher_id] = SyntheticBlockInfo{
@@ -1297,7 +1463,8 @@ namespace lifted
                         .DestAddr = target.Dest,
                         .CalleeInfo = target.CalleeInfo};
 
-                    Edges.insert({curr_id, dispatcher_id});
+                    ExternalSyntheticIndex[ext_key] = dispatcher_id;
+                    Edges.insert(Edge{curr_id, dispatcher_id, Edge::Type::SYNTHETIC_EXTERNAL});
 
                     Worklist.push_back(dispatcher_id);
                 }
@@ -1307,134 +1474,45 @@ namespace lifted
 
             if (targets_result.IndirectTarget)
             {
-                bb_id_t dispatcher_id = NextSyntheticID++;
+                // Dedup: a BB can have at most one indirect outgoing edge. If one was
+                // already created during a previous pass, skip re-creating it.
+                if (IndirectSyntheticIndex.count(curr_id))
+                {
+                    // TODO: Optionally refine CalleeInfo if the new resolution is more specific.
+                }
+                else
+                {
+                    bb_id_t dispatcher_id = NextSyntheticID++;
 
-                SyntheticBlocks[dispatcher_id] = SyntheticBlockInfo{
-                    .Type = SyntheticBlockInfo::Type::INDIRECT,
-                    .DestAddr = std::nullopt,
-                    .CalleeInfo = targets_result.IndirectTarget};
+                    SyntheticBlocks[dispatcher_id] = SyntheticBlockInfo{
+                        .Type = SyntheticBlockInfo::Type::INDIRECT,
+                        .DestAddr = std::nullopt,
+                        .CalleeInfo = targets_result.IndirectTarget};
 
-                Edges.insert({curr_id, dispatcher_id});
+                    IndirectSyntheticIndex[curr_id] = dispatcher_id;
+                    Edges.insert(Edge{curr_id, dispatcher_id, Edge::Type::SYNTHETIC_INDIRECT});
 
-                Worklist.push_back(dispatcher_id);
+                    Worklist.push_back(dispatcher_id);
+                }
             }
         }
 
         // Finished. Build final CFG.
+        // TODO: extract only needed blocks / code into seperate module to return back.
         auto M = llvm::CloneModule(*CleanModule);
 
         helpers::link_state_utils(M.get());
 
-        llvm::Function *FinalFunc = buildCFG(M.get());
+        std::set<Edge> reachable_edges;
+        std::set<LiftedBB> reachable_blocks;
 
-        return std::pair<std::unique_ptr<llvm::Module>, llvm::Function *>(std::move(M), FinalFunc);
+        llvm::Function *FinalFunc = buildForwardCFG(M.get(), entry_rva, "__lifted_rebuilt_cfg", InstrumentBasicBlockEntry,
+                                                    &reachable_edges, &reachable_blocks);
 
-        //
-        // M IS NOW PREPARED FOR TESTING.
-        //
-
-        /*
-        RunTests(M.get());
-
-        helpers::link_deobfuscation_intrinsics(M.get());
-
-        llvm::Function *FinalFunc = buildCFG(M.get());
-
-        opt::always_inline(M.get());
-
-        runCFGPipeline(*FinalFunc);
-
-        FinalFunc->addFnAttr(llvm::Attribute::AlwaysInline);
-
-        llvm::Function *ConcretizedFinalFunc = ConcretizeEntryPC(FinalFunc, 1, addr);
-
-        utils::output_to_file("/home/atlas/lifted/out/final_lifted.ll", M.get());
-
-        for (auto &F : *M)
-        {
-            if (F.getName().starts_with("BB_"))
-            {
-                F.addFnAttr(llvm::Attribute::AlwaysInline);
-            }
-        }
-
-        opt::always_inline(M.get());
-        opt::default_opt(M.get(), llvm::OptimizationLevel::O2);
-
-        utils::output_to_file("/home/atlas/lifted/out/final_lifted.ll", M.get());
-
-        // temp: Let's try to link it against unfolder.
-        ConcretizedFinalFunc->setName("__lifted_function");
-        ConcretizedFinalFunc->addFnAttr(llvm::Attribute::AlwaysInline);
-
-        helpers::link_abi_helpers(M.get());
-
-        opt::always_inline(M.get());
-        opt::default_opt(M.get(), llvm::OptimizationLevel::O3);
-
-        utils::output_to_file("/home/atlas/lifted/out/final_lifted.ll", M.get());
-        */
-    }
-
-    bool Lifter::RunTests(llvm::Module *M)
-    {
-        /*
-        helpers::link_state_utils(M);
-
-        llvm::Function *FinalFunc = buildCFG(M);
-        if (!FinalFunc)
-        {
-            llvm::errs() << "RunTests: buildCFG returned null\n";
-            return false;
-        }
-
-        if (M->getFunction("__remill_function"))
-        {
-            M->getFunction("__remill_function")->eraseFromParent();
-        }
-
-        FinalFunc->setName("__remill_function");
-
-        if (auto err = helpers::link_verification_intrinsics(M))
-        {
-            llvm::errs() << "RunTests: failed to link verification intrinsics: " << llvm::toString(std::move(err)) << "\n";
-            return false;
-        }
-
-        // Rewrite per-callee external call declarations (__lifted_ext_call_<name>)
-        // back to generic __lifted_ext_call for verifier execution.
-        auto *extCallFunc = M->getFunction("__lifted_ext_call");
-        if (!extCallFunc)
-        {
-            llvm::errs() << "RunTests: missing __lifted_ext_call declaration\n";
-            return false;
-        }
-
-        for (auto &[_, entry] : CalleeStubs)
-        {
-            if (auto *F = M->getFunction(entry.ExtCallDeclName))
-            {
-                F->replaceAllUsesWith(extCallFunc);
-            }
-        }
-
-        std::shared_ptr<LIEF::Binary> binary_ref(
-            const_cast<LIEF::Binary *>(Binary),
-            [](LIEF::Binary *) {});
-
-        auto test_result = run_verifier_test(
-            FinalFunc,
-            1337,
-            std::move(binary_ref),
-            InitialEntryPoint);
-
-        if (!test_result)
-        {
-            llvm::errs() << "RunTests: " << llvm::toString(test_result.takeError()) << "\n";
-            return false;
-        }
-        */
-
-        return true;
+        return LiftResult{
+            .Module = std::move(M),
+            .LiftedFunction = FinalFunc,
+            .Edges = reachable_edges,
+            .BasicBlocks = reachable_blocks};
     }
 }

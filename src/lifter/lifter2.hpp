@@ -135,6 +135,41 @@ namespace lifted
         return os;
     }
 
+    struct Edge
+    {
+        bb_id_t Source;
+        bb_id_t Dest;
+        enum class Type
+        {
+            CONTROL_FLOW,       // Normal jumps/branches discovered via ResolveTargets
+            FALLTHROUGH,        // Sequential flow created during block splitting
+            SYNTHETIC_EXTERNAL, // Edge to external call dispatcher
+            SYNTHETIC_INDIRECT  // Edge to indirect call dispatcher
+        } Type;
+
+        // Default to CONTROL_FLOW for backward compatibility
+        Edge(bb_id_t src, bb_id_t dst, enum Type type = Type::CONTROL_FLOW)
+            : Source(src), Dest(dst), Type(type) {}
+
+        bool operator<(const Edge &other) const
+        {
+            return std::tie(Source, Dest, Type) < std::tie(other.Source, other.Dest, other.Type);
+        }
+
+        bool operator==(const Edge &other) const
+        {
+            return Source == other.Source && Dest == other.Dest && Type == other.Type;
+        }
+    };
+
+    struct LiftResult
+    {
+        std::unique_ptr<llvm::Module> Module;
+        llvm::Function *LiftedFunction;
+        std::set<Edge> Edges;
+        std::set<LiftedBB> BasicBlocks;
+    };
+
     class Lifter
     {
     private:
@@ -144,6 +179,7 @@ namespace lifted
 
         std::set<llvm::AddressRange> ConstMemoryRvaRanges;
         std::set<llvm::AddressRange> GotTableRvaRanges;
+        std::set<llvm::AddressRange> ExtFuncRvaRanges;
 
         llvm::Module *Module;
         std::unique_ptr<llvm::Module> CleanModule;
@@ -167,14 +203,43 @@ namespace lifted
         std::map<std::string, CalleeStubEntry> CalleeStubs; // <name> (of) __lifted_ext_call_<name> -> CalleeStubEntry
         unsigned NextIndirectStubID = 0;
 
-        bb_id_t InitialEntryPoint;
         bb_id_t NextSyntheticID = 0xFFFF'0000'0000'0000; // Start of synthetic ID range
 
         std::deque<bb_id_t> Worklist;
         std::map<bb_id_t, LiftedBB> Explored;
         std::set<bb_id_t> Reprove;
-        std::set<std::pair<bb_id_t, bb_id_t>> Edges;
+        std::set<Edge> Edges;
         std::map<bb_id_t, SyntheticBlockInfo> SyntheticBlocks;
+
+        /// Index for deduplicating EXTERNAL synthetic edges on reprove.
+        /// Maps (source_bb_id, dest_addr) -> existing synthetic block ID.
+        /// Prevents minting a new synthetic block when the same callsite is
+        /// re-resolved after a predecessor is added.
+        std::map<std::pair<bb_id_t, uint64_t>, bb_id_t> ExternalSyntheticIndex;
+
+        /// Index for deduplicating INDIRECT synthetic edges on reprove.
+        /// Maps source_bb_id -> existing synthetic block ID.
+        /// A BB can have at most one indirect outgoing edge.
+        std::map<bb_id_t, bb_id_t> IndirectSyntheticIndex;
+
+        // Check if any edge exists between src and dst (ignoring type)
+        bool hasEdgeBetween(bb_id_t src, bb_id_t dst) const
+        {
+            return std::any_of(Edges.begin(), Edges.end(),
+                               [&](const Edge &e)
+                               { return e.Source == src && e.Dest == dst; });
+        }
+
+        /// Insert `root` and all blocks transitively reachable from it (via Edges)
+        /// into the Reprove set. Used whenever a new predecessor edge is added to
+        /// an already-explored block, so its backward-slice changes and its
+        /// resolved targets must be re-checked.
+        void reproveSubtree(bb_id_t root);
+
+        /// Find the nearest already-explored REAL block whose start address is
+        /// strictly greater than `curr_id`. Returns nullopt if none exists.
+        /// Used to clamp LiftBB so it doesn't overrun an already-explored block.
+        std::optional<bb_id_t> findNextExploredRealBB(bb_id_t curr_id) const;
 
         bool IsExecutableSection(const uint64_t addr) const;
         bool TryReadExecutableByte(uint64_t addr, uint8_t *byte);
@@ -188,8 +253,9 @@ namespace lifted
             llvm::Module *Module,
             const std::set<bb_id_t> &BlockSet,
             llvm::StringRef NewFuncName,
-            uintptr_t TargetAddr,     // 0 if no specific target to intercept
-            bool DeadEndIsUnreachable // true for slicing, false for full CFG
+            uintptr_t TargetAddr,                  // 0 if no specific target to intercept
+            bool DeadEndIsUnreachable,             // true for slicing, false for full CFG
+            bool InstrumentBasicBlockEntry = false // true to call __lifted_bb_entered at start of each REAL block
         );
 
         /// Create a concrete wrapper for a position-independent CFG function.
@@ -200,8 +266,18 @@ namespace lifted
             uint64_t ConcreteBase,
             llvm::StringRef ConcreteName = "");
 
-        llvm::Function *buildPartialCFG(llvm::Module *Module, const LiftedBB &BB);
-        llvm::Function *buildCFG(llvm::Module *Module);
+        /// Build a CFG function covering all blocks that can REACH TargetID (backward slice).
+        /// Execution is intercepted at TargetID so callers can inspect the resulting PC.
+        /// Used by ResolveTargets to determine successor addresses of a single basic block.
+        llvm::Function *buildBackwardSliceCFG(llvm::Module *Module, bb_id_t TargetID, llvm::StringRef Name,
+                                              bool InstrumentBasicBlockEntry = false);
+
+        /// Build a CFG function covering all blocks REACHABLE FROM RootID (forward slice).
+        /// Produces the full lifted function graph from an entry point.
+        /// Used by Lift() to construct the final lifted function.
+        llvm::Function *buildForwardCFG(llvm::Module *Module, bb_id_t RootID, llvm::StringRef Name,
+                                        bool InstrumentBasicBlockEntry = false,
+                                        std::set<Edge> *OutEdges = nullptr, std::set<LiftedBB> *OutBlocks = nullptr);
 
         /// Get or create a per-callee ABI stub that saves non-volatile registers,
         /// calls an opaque __lifted_ext_call_<name>, restores non-volatile registers,
@@ -210,9 +286,9 @@ namespace lifted
 
         /// Resolve the calling convention for a specific callee.
         /// Falls back to DefaultCC if the callee doesn't specify one.
-        const abi::CallingConvention *ResolveCC(const Callee &callee) const
+        const abi::CallingConvention *ResolveCC(std::optional<Callee> callee) const
         {
-            return callee.CC ? callee.CC : DefaultCC;
+            return callee && callee->CC ? callee->CC : DefaultCC;
         }
 
         /// Resolve the function type for a callee.
@@ -224,14 +300,14 @@ namespace lifted
             llvm::outs() << "Worklist: [";
             for (const auto &id : Worklist)
             {
-                llvm::outs() << "0x" << llvm::format_hex(id, 16) << ", ";
+                llvm::outs() << "\n\t0x" << llvm::format_hex(id, 16) << ",";
             }
             llvm::outs() << "]\n";
 
             llvm::outs() << "Reprove: [";
             for (const auto &id : Reprove)
             {
-                llvm::outs() << "0x" << llvm::format_hex(id, 16) << ", ";
+                llvm::outs() << "\n\t0x" << llvm::format_hex(id, 16) << ",";
             }
             llvm::outs() << "]\n";
 
@@ -239,19 +315,19 @@ namespace lifted
             for (const auto &pair : Explored)
             {
                 const auto &bb = pair.second;
-                llvm::outs() << "{ID: 0x" << llvm::format_hex(bb.ID, 16)
+                llvm::outs() << "\n\t{ID: 0x" << llvm::format_hex(bb.ID, 16)
                              << ", FuncName: " << bb.FuncName
                              << ", RVARange: " << (bb.RVARange ? ("[0x" + llvm::utohexstr(bb.RVARange->start()) + ", 0x" + llvm::utohexstr(bb.RVARange->end()) + ")") : "nullopt")
                              << ", TerminatingCategory: " << (bb.TerminatingCategory ? std::to_string(static_cast<int>(*bb.TerminatingCategory)) : "nullopt")
-                             << "}, ";
+                             << "},";
             }
             llvm::outs() << "]\n";
 
             llvm::outs() << "Edges: [";
             for (const auto &edge : Edges)
             {
-                llvm::outs() << "(0x" << llvm::format_hex(edge.first, 16)
-                             << " -> 0x" << llvm::format_hex(edge.second, 16) << "), ";
+                llvm::outs() << "\n\t(0x" << llvm::format_hex(edge.Source, 16)
+                             << " -> 0x" << llvm::format_hex(edge.Dest, 16) << " [" << static_cast<int>(edge.Type) << "]),";
             }
             llvm::outs() << "]\n";
         }
@@ -267,6 +343,7 @@ namespace lifted
                llvm::Module *module,
                const std::set<llvm::AddressRange> &const_rva_ranges,
                const std::set<llvm::AddressRange> &got_table_rva_ranges,
+               const std::set<llvm::AddressRange> &ext_func_rva_ranges,
                const llvm::Module *defs_module = nullptr,
                const abi::CallingConvention *cc = nullptr)
             : Arch{arch},
@@ -276,6 +353,7 @@ namespace lifted
               CleanModule{std::make_unique<llvm::Module>("clean_module", module->getContext())},
               ConstMemoryRvaRanges{const_rva_ranges},
               GotTableRvaRanges{got_table_rva_ranges},
+              ExtFuncRvaRanges{ext_func_rva_ranges},
               DefsModule{defs_module},
               DefaultCC{cc}
         {
@@ -284,11 +362,8 @@ namespace lifted
         LiftedBB LiftBB(uintptr_t id, std::optional<uintptr_t> stop_at = std::nullopt);
         LiftedBB CreateRemoteCallSyntheticBB(bb_id_t id, std::optional<Callee> callee_info = std::nullopt);
 
-        ResolvedTargetsResult ResolveTargets(const LiftedBB &BB);
+        ResolvedTargetsResult ResolveTargets(const LiftedBB &BB, uint64_t entry_rva);
 
-        bool RunTests(llvm::Module *M);
-
-        // TODO: Make some LiftResult which we pass later into verifier?
-        llvm::Expected<std::pair<std::unique_ptr<llvm::Module>, llvm::Function *>> Lift(uint64_t entry_rva);
+        llvm::Expected<LiftResult> Lift(uint64_t entry_rva, bool InstrumentBasicBlockEntry = false);
     };
 }
