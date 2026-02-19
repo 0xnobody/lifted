@@ -484,9 +484,84 @@ namespace lifted
             Builder.CreateStore(Call, MemVar);
 
             // 1. Target Interception (Used by BuildPartialCFG)
+            // For the terminal block we still need to dispatch back-edges that stay within
+            // the slice (e.g. loop edges TargetID→predecessor→TargetID), so the optimizer
+            // can observe those paths and resolve the exit target.  Only successors that are
+            // in BlockSet are added as switch cases — everything else hits the default `ret`,
+            // which is the exit path that ResolveTargets reads.
             if (TargetID != 0 && id == TargetID)
             {
-                Builder.CreateRet(Call);
+                // Extract the next RIP so we can dispatch loop-back edges.
+                llvm::Value *TargetNextRIP = Builder.CreateCall(ExtractRipFunc, {ArgState});
+                Builder.CreateStore(TargetNextRIP, PCVar);
+                llvm::Value *TargetNextRVA = Builder.CreateSub(TargetNextRIP, ArgBase, "next_rva");
+
+                // Collect all successors of the target block.
+                std::vector<uintptr_t> TargetSuccessors;
+                for (const auto &edge : Edges)
+                    if (edge.Source == id)
+                        TargetSuccessors.push_back(edge.Dest);
+
+                // Partition: in-slice (loop-back) vs. out-of-slice (exit paths).
+                std::vector<uintptr_t> InSlice;
+                for (bb_id_t succAddr : TargetSuccessors)
+                    if (BlockSet.count(succAddr))
+                        InSlice.push_back(succAddr);
+
+                if (InSlice.empty())
+                {
+                    // No loop-back edges in slice — pure exit, same as before.
+                    Builder.CreateRet(Call);
+                }
+                else
+                {
+                    // Create a dedicated ret BB as the default (exit) case.
+                    llvm::BasicBlock *RetBB = llvm::BasicBlock::Create(
+                        Module->getContext(), "target_exit", WrapperFunc);
+                    llvm::IRBuilder<> RetBuilder(RetBB);
+                    RetBuilder.CreateRet(RetBuilder.CreateLoad(MemPtrTy, MemVar));
+
+                    // Identify INDIRECT synthetic among in-slice successors.
+                    std::optional<bb_id_t> InSliceIndirect;
+                    for (bb_id_t succAddr : InSlice)
+                    {
+                        auto synth_it = SyntheticBlocks.find(succAddr);
+                        if (synth_it != SyntheticBlocks.end() &&
+                            synth_it->second.Type == SyntheticBlockInfo::Type::INDIRECT)
+                        {
+                            InSliceIndirect = succAddr;
+                            break;
+                        }
+                    }
+
+                    // Default: use INDIRECT in-slice block if present, else the ret BB.
+                    llvm::BasicBlock *DefaultBB = InSliceIndirect.has_value()
+                                                      ? BlockMap[InSliceIndirect.value()]
+                                                      : RetBB;
+                    llvm::SwitchInst *Switch =
+                        Builder.CreateSwitch(TargetNextRVA, DefaultBB, InSlice.size());
+
+                    for (bb_id_t succAddr : InSlice)
+                    {
+                        if (InSliceIndirect.has_value() && succAddr == InSliceIndirect.value())
+                            continue; // Already the default.
+
+                        auto synth_it = SyntheticBlocks.find(succAddr);
+                        if (synth_it != SyntheticBlocks.end())
+                        {
+                            if (synth_it->second.Type == SyntheticBlockInfo::Type::EXTERNAL)
+                            {
+                                uint64_t externalAddr = synth_it->second.DestAddr.value();
+                                Switch->addCase(Builder.getInt64(externalAddr), BlockMap[succAddr]);
+                            }
+                            // INDIRECT: already handled as default above.
+                        }
+                        else
+                        {
+                            Switch->addCase(Builder.getInt64(succAddr), BlockMap[succAddr]);
+                        }
+                    }
+                }
                 continue;
             }
 
