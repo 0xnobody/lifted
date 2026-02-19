@@ -10,6 +10,9 @@
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/Linker/Linker.h>
 #include <llvm/Support/FormatVariadic.h>
+#include <llvm/Support/raw_os_ostream.h>
+
+#include <remill/Arch/X86/Runtime/State.h>
 
 #include "third-party/nmd_assembly.h"
 
@@ -107,6 +110,28 @@ namespace lifted::utils
         }
 
         return formatted;
+    }
+
+    void print_state(const State &state, std::ostream &os)
+    {
+        llvm::raw_os_ostream llvm_os(os);
+        llvm_os << "RIP: " << llvm::format_hex(state.gpr.rip.qword, 16) << "\n";
+        llvm_os << "RSP: " << llvm::format_hex(state.gpr.rsp.qword, 16) << "\n";
+        llvm_os << "RBP: " << llvm::format_hex(state.gpr.rbp.qword, 16) << "\n";
+        llvm_os << "RAX: " << llvm::format_hex(state.gpr.rax.qword, 16) << "\n";
+        llvm_os << "RBX: " << llvm::format_hex(state.gpr.rbx.qword, 16) << "\n";
+        llvm_os << "RCX: " << llvm::format_hex(state.gpr.rcx.qword, 16) << "\n";
+        llvm_os << "RDX: " << llvm::format_hex(state.gpr.rdx.qword, 16) << "\n";
+        llvm_os << "RSI: " << llvm::format_hex(state.gpr.rsi.qword, 16) << "\n";
+        llvm_os << "RDI: " << llvm::format_hex(state.gpr.rdi.qword, 16) << "\n";
+        llvm_os << "R8 : " << llvm::format_hex(state.gpr.r8.qword, 16) << "\n";
+        llvm_os << "R9 : " << llvm::format_hex(state.gpr.r9.qword, 16) << "\n";
+        llvm_os << "R10: " << llvm::format_hex(state.gpr.r10.qword, 16) << "\n";
+        llvm_os << "R11: " << llvm::format_hex(state.gpr.r11.qword, 16) << "\n";
+        llvm_os << "R12: " << llvm::format_hex(state.gpr.r12.qword, 16) << "\n";
+        llvm_os << "R13: " << llvm::format_hex(state.gpr.r13.qword, 16) << "\n";
+        llvm_os << "R14: " << llvm::format_hex(state.gpr.r14.qword, 16) << "\n";
+        llvm_os << "R15: " << llvm::format_hex(state.gpr.r15.qword, 16) << "\n";
     }
 
 } // namespace lifted::utils

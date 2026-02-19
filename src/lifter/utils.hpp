@@ -4,6 +4,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <ostream>
 
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/Error.h>
@@ -14,9 +15,10 @@ namespace llvm
     class LLVMContext;
 }
 
+struct State;
+
 namespace lifted::utils
 {
-
     std::error_code output_to_file(std::filesystem::path path, llvm::Module *module);
 
     llvm::Error link_from_file(llvm::Module *module, std::filesystem::path helpers_path);
@@ -24,4 +26,6 @@ namespace lifted::utils
     llvm::Expected<std::unique_ptr<llvm::Module>> load_module_from_file(std::filesystem::path path, llvm::LLVMContext &ctx);
 
     std::string insn_bytes_to_str(std::span<const uint8_t> bytes, uintptr_t addr = 0);
+
+    void print_state(const State &state, std::ostream &os);
 }

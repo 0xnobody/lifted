@@ -173,6 +173,10 @@ namespace lifted::verification
         }
         uc_eng.reset(uc_raw);
 
+        // Virtual TLB so we have 1:1 address mapping.
+        // We don't care about arch limitations as we're using invalid memory anyway.
+        uc_ctl_tlb_mode(uc_eng.get(), UC_TLB_VIRTUAL);
+
         // Save clean context
         uc_context *ctx_raw = nullptr;
         err = uc_context_alloc(uc_eng.get(), &ctx_raw);
@@ -193,6 +197,9 @@ namespace lifted::verification
 
     ExecutionResult UnicornExecutor::run_single_impl(verifier_state &state)
     {
+        // Specify that we don't record fallthrough edges
+        state.set_bb_record_type(BBRecordType::NO_FALLTHROUGH);
+
         // Restore clean context
         uc_err err = uc_context_restore(uc_eng.get(), clean_ctx.get());
         if (err != UC_ERR_OK)

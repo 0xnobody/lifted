@@ -103,6 +103,9 @@ namespace lifted::verification
 
     ExecutionResult JITExecutor::run_single_impl(verifier_state &state)
     {
+        // Specify that we do record fallthrough edges.
+        state.set_bb_record_type(BBRecordType::ALL);
+
         // Call JIT function with verifier context
         entry_fn(state.context_ptr());
 

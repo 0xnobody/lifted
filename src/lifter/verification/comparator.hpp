@@ -12,14 +12,6 @@
 
 namespace lifted::verification
 {
-
-    /// Memory range for exclusion from comparison (e.g., stack region).
-    struct mem_range_t
-    {
-        uint64_t start;
-        uint64_t end;
-    };
-
     /// Configuration for state comparison.
     struct ComparisonConfig
     {
@@ -28,7 +20,7 @@ namespace lifted::verification
         bool compare_traces = true;
         bool compare_ext_calls = true;
 
-        std::vector<mem_range_t> excluded_memory_ranges;
+        std::vector<llvm::AddressRange> excluded_memory_ranges;
 
         /// Fallthrough edges (src_rva, dst_rva) introduced by the lifter's block-splitting.
         /// Trace entries reachable only via a fallthrough edge are stripped from both traces
@@ -50,12 +42,12 @@ namespace lifted::verification
     {
         bool equivalent() const
         {
-            return memory_equivalent && register_diffs.empty() &&
+            return memory_diff.equivalent && register_diffs.empty() &&
                    trace_diffs.empty() && ext_call_diffs.empty();
         }
 
         // Memory: bool only (detailed diffs can be huge, added later if needed)
-        bool memory_equivalent = true;
+        memory_diff_result_t memory_diff = {};
 
         // Registers: detailed (State is small)
         std::vector<std::tuple<std::string, uint64_t, uint64_t>> register_diffs; // (name, lhs, rhs)
@@ -66,7 +58,8 @@ namespace lifted::verification
         // External calls: detailed
         std::vector<std::tuple<size_t, uint64_t, uint64_t>> ext_call_diffs; // (index, lhs_addr, rhs_addr)
 
-        void print(std::ostream &os) const;
+        void print_summary(std::ostream &os) const;
+        void print_memory_diff(std::ostream &os) const;
     };
 
     /// Compare two verifier states for equivalence.

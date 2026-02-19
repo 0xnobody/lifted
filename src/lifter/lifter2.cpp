@@ -765,8 +765,6 @@ namespace lifted
         utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
 
         opt::default_opt(M.get(), llvm::OptimizationLevel::O2);
-        opt::default_opt(M.get(), llvm::OptimizationLevel::O2);
-        opt::default_opt(M.get(), llvm::OptimizationLevel::O2);
 
         utils::output_to_file("/home/atlas/lifted/out/slice.ll", M.get());
 

@@ -43,8 +43,53 @@ llvm::Expected<uint64_t> rva_from_export(const LIEF::Binary &binary, const std::
     return llvm::createStringError(llvm::inconvertibleErrorCode(), "Export not found: " + export_name);
 }
 
-llvm::Error lift_function(const remill::Arch &arch, std::filesystem::path path, const llvm::Module *defs_module)
+std::optional<llvm::AddressRange> get_section_bounds(const LIEF::Binary &binary, std::string name)
 {
+    auto format = binary.format();
+    switch (format)
+    {
+    case LIEF::EXE_FORMATS::FORMAT_ELF:
+    {
+        auto *elf = dynamic_cast<const LIEF::ELF::Binary *>(&binary);
+        auto *section = elf->get_section(name);
+        if (!section)
+            return std::nullopt;
+        return llvm::AddressRange{section->virtual_address(), section->virtual_address() + section->size()};
+    }
+    break;
+    case LIEF::EXE_FORMATS::FORMAT_PE:
+    {
+        auto *pe = dynamic_cast<const LIEF::PE::Binary *>(&binary);
+        auto *section = pe->get_section(name);
+        if (!section)
+            return std::nullopt;
+        return llvm::AddressRange{section->virtual_address(), section->virtual_address() + section->size()};
+    }
+    break;
+    case LIEF::EXE_FORMATS::FORMAT_MACHO:
+    {
+        auto *macho = dynamic_cast<const LIEF::MachO::Binary *>(&binary);
+        auto *section = macho->get_section(name);
+        if (!section)
+            return std::nullopt;
+        return llvm::AddressRange{section->virtual_address(), section->virtual_address() + section->size()};
+    }
+    break;
+    default:
+    {
+        throw std::runtime_error("Unsupported LIEF format");
+    }
+    break;
+    }
+}
+
+llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path path, const llvm::Module *defs_module)
+{
+    // TODO: figure out how to avoid loading arch/semantics for each lift
+    //
+    auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
+    auto lift_module = remill::LoadArchSemantics(arch.get());
+
     std::shared_ptr<LIEF::Binary> binary = LIEF::Parser::parse(path);
     if (!binary)
     {
@@ -58,20 +103,24 @@ llvm::Error lift_function(const remill::Arch &arch, std::filesystem::path path, 
         return rva.takeError();
     }
 
-    auto lift_module = remill::LoadArchSemantics(&arch);
-
     lifted::abi::SystemVx64CC CC;
 
     std::set<llvm::AddressRange> const_rva_ranges;
-    const_rva_ranges.insert(llvm::AddressRange{0x4030, 0x4080}); // obfuscator dependant
+    // const_rva_ranges.insert(llvm::AddressRange{0x4030, 0x4080}); // obfuscator dependant
 
     std::set<llvm::AddressRange> got_table_rva_ranges;
-    got_table_rva_ranges.insert(llvm::AddressRange{0x4000, 0x4028}); // .got
+    if (auto got_range = get_section_bounds(*binary, ".got"))
+    {
+        got_table_rva_ranges.insert(*got_range);
+    }
 
     std::set<llvm::AddressRange> ext_func_rva_ranges;
-    ext_func_rva_ranges.insert(llvm::AddressRange{0x1060, 0x1080}); // .plt.sec
+    if (auto plt_range = get_section_bounds(*binary, ".plt.sec"))
+    {
+        ext_func_rva_ranges.insert(*plt_range);
+    }
 
-    Lifter lifter(&arch,
+    Lifter lifter(arch.get(),
                   binary.get(),
                   lift_module.get(),
                   const_rva_ranges,
@@ -96,13 +145,10 @@ llvm::Error lift_function(const remill::Arch &arch, std::filesystem::path path, 
         }
 
         auto state = verification::verifier_state(0x1337, binary, *rva);
-        auto result = (*exec)->run_single(state);
 
-        llvm::outs() << "JIT blocks:\n";
-        for (const auto &bb : state.entered_blocks())
-        {
-            llvm::outs() << "\t0x" << llvm::format_hex(bb, 16) << "\n";
-        }
+        utils::print_state(state.get_initial_state(), std::cout);
+
+        auto result = (*exec)->run_single(state);
 
         llvm::outs() << "External calls:\n";
         std::set<uint64_t> ext_calls_set;
@@ -116,12 +162,6 @@ llvm::Error lift_function(const remill::Arch &arch, std::filesystem::path path, 
         auto emu = verification::UnicornExecutor::create(binary, ext_calls_set, *rva);
         auto emu_state = verification::verifier_state(0x1337, binary, *rva);
         auto emu_result = (*emu)->run_single(emu_state);
-
-        llvm::outs() << "Unicorn blocks:\n";
-        for (const auto &bb : emu_state.entered_blocks())
-        {
-            llvm::outs() << "\t0x" << llvm::format_hex(bb, 16) << "\n";
-        }
 
         auto cmp_abi = lifted::abi::AllRegistersCC{};
         auto cmp_config = verification::ComparisonConfig::default_config(&cmp_abi);
@@ -142,34 +182,51 @@ llvm::Error lift_function(const remill::Arch &arch, std::filesystem::path path, 
         }
 
         auto cmp_result = verification::compare_states(state, emu_state, cmp_config);
-        cmp_result.print(std::cout);
+        cmp_result.print_summary(std::cout);
+
+        if (!cmp_result.memory_diff.equivalent)
+        {
+            cmp_result.print_memory_diff(std::cout);
+        }
     }
 }
+
+std::array<std::string, 12> synthetic_test_bins = {
+    "libeval-arithmetic",
+    "libeval-branch",
+    "libeval-ext-call-branching",
+    "libeval-ext-call-stack-args",
+    "libeval-ext-call",
+    //"libeval-indirect-call",
+    "libeval-local-vars",
+    "libeval-loop-bounded",
+    "libeval-loop-unbounded",
+    "libeval-stack-args",
+    "libeval-stack-loop",
+    "libeval-switch",
+    "libeval-test",
+};
 
 int main(int argc, char **argv)
 {
     llvm::LLVMContext context;
-    auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
 
-    std::filesystem::path path = EVAL_SYNTHETIC_LIBS_DIR;
-    // path /= "libeval-branch-polaris.so";
-    // path /= "libeval-ext-call.so";
-    path /= "libeval-test.so";
-    // path /= "libeval-branch.so";
-    // path /= "libeval-test-polaris.so";
-    // path /= "libeval-loop-unbounded.so"; // test block splitting
+    std::filesystem::path custom_path = EVAL_SYNTHETIC_LIBS_DIR;
+    custom_path /= "libeval-loop-bounded.so";
+    auto custom_r = lift_and_verify(context, custom_path, nullptr);
 
-    std::filesystem::path output_path = path;
-    output_path.remove_filename();
-    output_path /= path.filename().replace_extension("").string() + "_out";
-    std::filesystem::create_directories(output_path);
-
-    // BINARY_FUNC -> [LIFTER] -> LIFTED_IR
-    auto r = lift_function(*arch, path, nullptr);
-
-    if (r)
+    for (auto &test : synthetic_test_bins)
     {
-        llvm::errs() << "Lifting failed: " << llvm::toString(std::move(r)) << "\n";
+        llvm::outs() << "Running test: " << test << "\n";
+        std::filesystem::path path = EVAL_SYNTHETIC_LIBS_DIR;
+        path /= test + ".so";
+
+        auto r = lift_and_verify(context, path, nullptr);
+
+        if (r)
+        {
+            llvm::errs() << "Lifting failed: " << llvm::toString(std::move(r)) << "\n";
+        }
     }
 
     return EXIT_SUCCESS;

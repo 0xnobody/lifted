@@ -9,11 +9,20 @@
 #include <vector>
 #include <random>
 
+#include <llvm/Support/Format.h>
+#include <llvm/Support/raw_ostream.h>
+
 #define LOAD_BASE 0x7ffff7000000ULL
-#define STACK_MAGIC 0x00007FFF00000000ULL
+#define STACK_MAGIC 0x7fff00000000ULL
 
 namespace lifted::verification
 {
+    enum class BBRecordType
+    {
+        ALL,           // All basic blocks recorded, including when going through fallthrough edges.
+        NO_FALLTHROUGH // Only basic blocks recorded when not going through fallthrough edges.
+    };
+
     /// Verifier state encapsulates execution state and trace recording.
     /// The virtual on_* methods define the execution contract - subclass to customize behavior
     /// (e.g., add checkpoints, mutate state on external calls, coverage tracking).
@@ -27,6 +36,8 @@ namespace lifted::verification
         std::vector<uint64_t> bbs_entered_rvas;
         std::vector<uint64_t> ext_calls;
 
+        BBRecordType bb_record_type = BBRecordType::ALL; // Default all, but executors should specify.
+
         verifier_context_t verifier_context;
 
         static verifier_state *from_context(void *context)
@@ -37,41 +48,53 @@ namespace lifted::verification
         // Virtual execution contract - override to customize behavior
         virtual uint8_t on_read8(uint64_t addr)
         {
-            return mem_state.read8(addr);
+            auto r = mem_state.read8(addr);
+            llvm::outs() << "READ8 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(r, 2) << "\n";
+            return r;
         }
 
         virtual uint16_t on_read16(uint64_t addr)
         {
-            return mem_state.read16(addr);
+            auto r = mem_state.read16(addr);
+            llvm::outs() << "READ16 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(r, 4) << "\n";
+            return r;
         }
 
         virtual uint32_t on_read32(uint64_t addr)
         {
-            return mem_state.read32(addr);
+            auto r = mem_state.read32(addr);
+            llvm::outs() << "READ32 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(r, 8) << "\n";
+            return r;
         }
 
         virtual uint64_t on_read64(uint64_t addr)
         {
-            return mem_state.read64(addr);
+            auto r = mem_state.read64(addr);
+            llvm::outs() << "READ64 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(r, 16) << "\n";
+            return r;
         }
 
         virtual void on_write8(uint64_t addr, uint8_t value)
         {
+            llvm::outs() << "WRITE8 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(value, 2) << "\n";
             mem_state.write8(addr, value);
         }
 
         virtual void on_write16(uint64_t addr, uint16_t value)
         {
+            llvm::outs() << "WRITE16 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(value, 4) << "\n";
             mem_state.write16(addr, value);
         }
 
         virtual void on_write32(uint64_t addr, uint32_t value)
         {
+            llvm::outs() << "WRITE32 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(value, 8) << "\n";
             mem_state.write32(addr, value);
         }
 
         virtual void on_write64(uint64_t addr, uint64_t value)
         {
+            llvm::outs() << "WRITE64 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(value, 16) << "\n";
             mem_state.write64(addr, value);
         }
 
@@ -240,6 +263,16 @@ namespace lifted::verification
         const std::vector<uint64_t> &external_calls() const
         {
             return ext_calls;
+        }
+
+        BBRecordType get_bb_record_type() const
+        {
+            return bb_record_type;
+        }
+
+        void set_bb_record_type(BBRecordType type)
+        {
+            bb_record_type = type;
         }
     };
 
