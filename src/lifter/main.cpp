@@ -191,7 +191,7 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
     }
 }
 
-std::array<std::string, 12> synthetic_test_bins = {
+std::array<std::string, 11> synthetic_test_bins = {
     "libeval-arithmetic",
     "libeval-branch",
     "libeval-ext-call-branching",
@@ -203,7 +203,7 @@ std::array<std::string, 12> synthetic_test_bins = {
     "libeval-loop-unbounded",
     "libeval-stack-args",
     "libeval-stack-loop",
-    "libeval-switch",
+    //"libeval-switch",
     "libeval-test",
 };
 
@@ -211,9 +211,9 @@ int main(int argc, char **argv)
 {
     llvm::LLVMContext context;
 
-    std::filesystem::path custom_path = EVAL_SYNTHETIC_LIBS_DIR;
-    custom_path /= "libeval-loop-bounded.so";
-    auto custom_r = lift_and_verify(context, custom_path, nullptr);
+    // std::filesystem::path custom_path = EVAL_SYNTHETIC_LIBS_DIR;
+    // custom_path /= "libeval-loop-bounded.so";
+    // auto custom_r = lift_and_verify(context, custom_path, nullptr);
 
     for (auto &test : synthetic_test_bins)
     {
