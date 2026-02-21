@@ -12,7 +12,6 @@
 #include <llvm/Support/Format.h>
 #include <llvm/Support/raw_ostream.h>
 
-#define LOAD_BASE 0x7ffff7000000ULL
 #define STACK_MAGIC 0x7fff00000000ULL
 
 namespace lifted::verification
@@ -33,10 +32,14 @@ namespace lifted::verification
 
     protected:
         paged_memory_state mem_state;
-        std::vector<uint64_t> bbs_entered_rvas;
         std::vector<uint64_t> ext_calls;
 
-        BBRecordType bb_record_type = BBRecordType::ALL; // Default all, but executors should specify.
+        std::vector<uint64_t> bbs_entered_rvas;
+        std::unordered_map<uint64_t, uint64_t> bb_first_seen;   // addr -> step when first seen
+        std::unordered_map<uint64_t, uint32_t> bb_header_count; // addr -> back-edge arrivals
+        uint64_t bb_step = 0;
+        uint64_t bb_prev = -1;
+        uint64_t bb_loop_limit = -1;
 
         verifier_context_t verifier_context;
 
@@ -105,6 +108,20 @@ namespace lifted::verification
         virtual void on_bb_entered(State *state, uint64_t rva)
         {
             bbs_entered_rvas.push_back(rva);
+
+            if (!bb_first_seen.count(rva))
+            {
+                bb_first_seen[rva] = bb_step;
+            }
+
+            if (bb_prev != -1 && bb_first_seen[rva] < bb_first_seen[bb_prev])
+                // back edge: addr was seen before prev → addr is a loop header
+                if (++bb_header_count[rva] >= bb_loop_limit)
+                {
+                    // TODO: do something, reached limit
+                }
+
+            bb_prev = rva;
         }
 
         virtual void on_ext_call(State *state, uint64_t addr)
@@ -267,16 +284,6 @@ namespace lifted::verification
         const std::vector<uint64_t> &external_calls() const
         {
             return ext_calls;
-        }
-
-        BBRecordType get_bb_record_type() const
-        {
-            return bb_record_type;
-        }
-
-        void set_bb_record_type(BBRecordType type)
-        {
-            bb_record_type = type;
         }
 
         // Set (or replace) the sentinel oracle used for memory reads.
