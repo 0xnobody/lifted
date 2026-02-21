@@ -6,18 +6,18 @@
 
 #define LOAD_BASE 0x7ffff7000000ULL
 
-using fn_read8 = uint8_t (*)(void *context, uint64_t addr);
-using fn_read16 = uint16_t (*)(void *context, uint64_t addr);
-using fn_read32 = uint32_t (*)(void *context, uint64_t addr);
-using fn_read64 = uint64_t (*)(void *context, uint64_t addr);
+using fn_read8 = bool (*)(void *context, uint64_t addr, uint8_t &value);
+using fn_read16 = bool (*)(void *context, uint64_t addr, uint16_t &value);
+using fn_read32 = bool (*)(void *context, uint64_t addr, uint32_t &value);
+using fn_read64 = bool (*)(void *context, uint64_t addr, uint64_t &value);
 
-using fn_write8 = void (*)(void *context, uint64_t addr, uint8_t value);
-using fn_write16 = void (*)(void *context, uint64_t addr, uint16_t value);
-using fn_write32 = void (*)(void *context, uint64_t addr, uint32_t value);
-using fn_write64 = void (*)(void *context, uint64_t addr, uint64_t value);
+using fn_write8 = bool (*)(void *context, uint64_t addr, uint8_t value);
+using fn_write16 = bool (*)(void *context, uint64_t addr, uint16_t value);
+using fn_write32 = bool (*)(void *context, uint64_t addr, uint32_t value);
+using fn_write64 = bool (*)(void *context, uint64_t addr, uint64_t value);
 
-using fn_bb_entered = void (*)(void *context, State *state, uint64_t rva);
-using fn_ext_call = void (*)(void *context, State *state, uint64_t addr);
+using fn_bb_entered = bool (*)(void *context, State *state, uint64_t rva);
+using fn_ext_call = bool (*)(void *context, State *state, uint64_t addr);
 
 struct verifier_context_t
 {

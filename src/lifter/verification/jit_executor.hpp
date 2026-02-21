@@ -9,18 +9,19 @@
 #include <memory>
 #include <string>
 
+struct jit_executor_context_t;
+
 namespace lifted::verification
 {
-
     /// Executor that runs lifted LLVM IR via ORC JIT.
     class JITExecutor : public Executor
     {
     private:
-        using fn_verifier_begin = void (*)(verifier_context_t *);
+        using fn_verifier_begin = void (*)(jit_executor_context_t *);
 
         std::unique_ptr<llvm::Module> module;
         std::unique_ptr<llvm::orc::LLJIT> jit;
-        void (*entry_fn)(verifier_context_t *);
+        fn_verifier_begin entry_fn;
         std::string function_name;
         std::set<std::pair<uint64_t, uint64_t>> fallthrough_edges;
 

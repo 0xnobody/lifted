@@ -29,7 +29,11 @@ namespace lifted::verification
 
         if (ctx->executor->external_rvas.contains(address))
         {
-            ctx->state->context_ptr()->ext_call(ctx->state->context_ptr()->context, nullptr, address);
+            if (!ctx->state->context_ptr()->ext_call(ctx->state->context_ptr()->context, nullptr, address))
+            {
+                uc_emu_stop(uc);
+                return;
+            }
 
             // TODO: do we need to clear cache?
             // TODO: what about callee cleanup functs (e.g. stdcall)?
@@ -51,7 +55,11 @@ namespace lifted::verification
             // Invoke verifier_state callback
             // Note: We don't have direct access to State* here in Unicorn,
             // so we pass nullptr for now (can be extended later if needed)
-            ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, nullptr, address - LOAD_BASE);
+            if (!ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, nullptr, address - LOAD_BASE))
+            {
+                uc_emu_stop(uc);
+                return;
+            }
         }
     }
 
@@ -95,22 +103,41 @@ namespace lifted::verification
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
         auto *state = ctx->state;
 
+        bool cont = false;
+
         // Track memory access via verifier_context callbacks
         // Read appropriate size
         switch (size)
         {
         case 1:
-            state->context_ptr()->read8(state->context_ptr()->context, address);
+        {
+            uint8_t dummy;
+            cont = state->context_ptr()->read8(state->context_ptr()->context, address, dummy);
             break;
+        }
         case 2:
-            state->context_ptr()->read16(state->context_ptr()->context, address);
+        {
+            uint16_t dummy;
+            cont = state->context_ptr()->read16(state->context_ptr()->context, address, dummy);
             break;
+        }
         case 4:
-            state->context_ptr()->read32(state->context_ptr()->context, address);
+        {
+            uint32_t dummy;
+            cont = state->context_ptr()->read32(state->context_ptr()->context, address, dummy);
             break;
+        }
         case 8:
-            state->context_ptr()->read64(state->context_ptr()->context, address);
+        {
+            uint64_t dummy;
+            cont = state->context_ptr()->read64(state->context_ptr()->context, address, dummy);
             break;
+        }
+        }
+
+        if (!cont)
+        {
+            uc_emu_stop(uc);
         }
     }
 
@@ -120,21 +147,28 @@ namespace lifted::verification
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
         auto *state = ctx->state;
 
+        bool cont = false;
+
         // Track memory access via verifier_context callbacks
         switch (size)
         {
         case 1:
-            state->context_ptr()->write8(state->context_ptr()->context, address, value);
+            cont = state->context_ptr()->write8(state->context_ptr()->context, address, value);
             break;
         case 2:
-            state->context_ptr()->write16(state->context_ptr()->context, address, value);
+            cont = state->context_ptr()->write16(state->context_ptr()->context, address, value);
             break;
         case 4:
-            state->context_ptr()->write32(state->context_ptr()->context, address, value);
+            cont = state->context_ptr()->write32(state->context_ptr()->context, address, value);
             break;
         case 8:
-            state->context_ptr()->write64(state->context_ptr()->context, address, value);
+            cont = state->context_ptr()->write64(state->context_ptr()->context, address, value);
             break;
+        }
+
+        if (!cont)
+        {
+            uc_emu_stop(uc);
         }
     }
 

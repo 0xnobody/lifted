@@ -16,12 +16,6 @@
 
 namespace lifted::verification
 {
-    enum class BBRecordType
-    {
-        ALL,           // All basic blocks recorded, including when going through fallthrough edges.
-        NO_FALLTHROUGH // Only basic blocks recorded when not going through fallthrough edges.
-    };
-
     /// Verifier state encapsulates execution state and trace recording.
     /// The virtual on_* methods define the execution contract - subclass to customize behavior
     /// (e.g., add checkpoints, mutate state on external calls, coverage tracking).
@@ -40,6 +34,7 @@ namespace lifted::verification
         uint64_t bb_step = 0;
         uint64_t bb_prev = -1;
         uint64_t bb_loop_limit = -1;
+        uint64_t bb_limit = -1;
 
         verifier_context_t verifier_context;
 
@@ -53,59 +48,55 @@ namespace lifted::verification
         }
 
         // Virtual execution contract - override to customize behavior
-        virtual uint8_t on_read8(uint64_t addr)
+        virtual bool on_read8(uint64_t addr, uint8_t &value)
         {
-            auto r = mem_state.read8(addr);
-            llvm::outs() << "READ8 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(r, 2) << "\n";
-            return r;
+            value = mem_state.read8(addr);
+            return true;
         }
 
-        virtual uint16_t on_read16(uint64_t addr)
+        virtual bool on_read16(uint64_t addr, uint16_t &value)
         {
-            auto r = mem_state.read16(addr);
-            llvm::outs() << "READ16 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(r, 4) << "\n";
-            return r;
+            value = mem_state.read16(addr);
+            return true;
         }
 
-        virtual uint32_t on_read32(uint64_t addr)
+        virtual bool on_read32(uint64_t addr, uint32_t &value)
         {
-            auto r = mem_state.read32(addr);
-            llvm::outs() << "READ32 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(r, 8) << "\n";
-            return r;
+            value = mem_state.read32(addr);
+            return true;
         }
 
-        virtual uint64_t on_read64(uint64_t addr)
+        virtual bool on_read64(uint64_t addr, uint64_t &value)
         {
-            auto r = mem_state.read64(addr);
-            llvm::outs() << "READ64 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(r, 16) << "\n";
-            return r;
+            value = mem_state.read64(addr);
+            return true;
         }
 
-        virtual void on_write8(uint64_t addr, uint8_t value)
+        virtual bool on_write8(uint64_t addr, uint8_t value)
         {
-            llvm::outs() << "WRITE8 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(value, 2) << "\n";
             mem_state.write8(addr, value);
+            return true;
         }
 
-        virtual void on_write16(uint64_t addr, uint16_t value)
+        virtual bool on_write16(uint64_t addr, uint16_t value)
         {
-            llvm::outs() << "WRITE16 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(value, 4) << "\n";
             mem_state.write16(addr, value);
+            return true;
         }
 
-        virtual void on_write32(uint64_t addr, uint32_t value)
+        virtual bool on_write32(uint64_t addr, uint32_t value)
         {
-            llvm::outs() << "WRITE32 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(value, 8) << "\n";
             mem_state.write32(addr, value);
+            return true;
         }
 
-        virtual void on_write64(uint64_t addr, uint64_t value)
+        virtual bool on_write64(uint64_t addr, uint64_t value)
         {
-            llvm::outs() << "WRITE64 " << llvm::format_hex(addr, 16) << " : " << llvm::format_hex(value, 16) << "\n";
             mem_state.write64(addr, value);
+            return true;
         }
 
-        virtual void on_bb_entered(State *state, uint64_t rva)
+        virtual bool on_bb_entered(State *state, uint64_t rva)
         {
             bbs_entered_rvas.push_back(rva);
 
@@ -122,63 +113,65 @@ namespace lifted::verification
                 }
 
             bb_prev = rva;
+            return true;
         }
 
-        virtual void on_ext_call(State *state, uint64_t addr)
+        virtual bool on_ext_call(State *state, uint64_t addr)
         {
             ext_calls.push_back(addr);
+            return true;
         }
 
     private:
         // Static proxies invoke virtual methods
-        static uint8_t read8_proxy(void *context, uint64_t addr)
+        static bool read8_proxy(void *context, uint64_t addr, uint8_t &value)
         {
-            return from_context(context)->on_read8(addr);
+            return from_context(context)->on_read8(addr, value);
         }
 
-        static uint16_t read16_proxy(void *context, uint64_t addr)
+        static bool read16_proxy(void *context, uint64_t addr, uint16_t &value)
         {
-            return from_context(context)->on_read16(addr);
+            return from_context(context)->on_read16(addr, value);
         }
 
-        static uint32_t read32_proxy(void *context, uint64_t addr)
+        static bool read32_proxy(void *context, uint64_t addr, uint32_t &value)
         {
-            return from_context(context)->on_read32(addr);
+            return from_context(context)->on_read32(addr, value);
         }
 
-        static uint64_t read64_proxy(void *context, uint64_t addr)
+        static bool read64_proxy(void *context, uint64_t addr, uint64_t &value)
         {
-            return from_context(context)->on_read64(addr);
+            return from_context(context)->on_read64(addr, value);
         }
 
-        static void write8_proxy(void *context, uint64_t addr, uint8_t value)
+        static bool write8_proxy(void *context, uint64_t addr, uint8_t value)
         {
-            from_context(context)->on_write8(addr, value);
+            return from_context(context)->on_write8(addr, value);
         }
 
-        static void write16_proxy(void *context, uint64_t addr, uint16_t value)
+        static bool write16_proxy(void *context, uint64_t addr, uint16_t value)
         {
-            from_context(context)->on_write16(addr, value);
+            return from_context(context)->on_write16(addr, value);
         }
 
-        static void write32_proxy(void *context, uint64_t addr, uint32_t value)
+        static bool write32_proxy(void *context, uint64_t addr, uint32_t value)
         {
-            from_context(context)->on_write32(addr, value);
+            return from_context(context)->on_write32(addr, value);
         }
 
-        static void write64_proxy(void *context, uint64_t addr, uint64_t value)
+        static bool write64_proxy(void *context, uint64_t addr, uint64_t value)
         {
-            from_context(context)->on_write64(addr, value);
+            return from_context(context)->on_write64(addr, value);
         }
 
-        static void bb_entered_proxy(void *context, State *state, uint64_t rva)
+        static bool bb_entered_proxy(void *context, State *state, uint64_t rva)
         {
-            from_context(context)->on_bb_entered(state, rva);
+            return from_context(context)->on_bb_entered(state, rva);
         }
 
-        static void ext_call_proxy(void *context, State *state, uint64_t addr)
+        static bool ext_call_proxy(void *context, State *state, uint64_t addr)
         {
-            from_context(context)->on_ext_call(state, addr);
+            return from_context(context)->on_ext_call(state, addr);
         }
 
         void initialize_initial_state(uint64_t seed, uint64_t entry_rva)
