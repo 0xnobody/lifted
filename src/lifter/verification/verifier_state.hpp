@@ -40,6 +40,10 @@ namespace lifted::verification
 
         verifier_context_t verifier_context;
 
+        // Authoritative sentinel oracle. verifier_state owns it by value; a copy is pushed
+        // into mem_state via attach_oracle() so mem_state has no lifetime dependency on us.
+        std::optional<sentinel_oracle> sentinel_oracle_;
+
         static verifier_state *from_context(void *context)
         {
             return static_cast<verifier_state *>(context);
@@ -273,6 +277,26 @@ namespace lifted::verification
         void set_bb_record_type(BBRecordType type)
         {
             bb_record_type = type;
+        }
+
+        // Set (or replace) the sentinel oracle used for memory reads.
+        // Both verifier_state and paged_memory_state own independent copies,
+        // so moves/copies of either do not create dangling pointers.
+        void set_oracle(sentinel_oracle o)
+        {
+            sentinel_oracle_ = std::move(o);
+            mem_state.attach_oracle(sentinel_oracle_);
+        }
+
+        void clear_oracle()
+        {
+            sentinel_oracle_.reset();
+            mem_state.attach_oracle(std::nullopt);
+        }
+
+        const std::optional<sentinel_oracle> &get_oracle() const
+        {
+            return sentinel_oracle_;
         }
     };
 

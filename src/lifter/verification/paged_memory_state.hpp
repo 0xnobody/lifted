@@ -1,8 +1,11 @@
 #pragma once
 
+#include "sentinel_oracle.hpp"
+
 #include <cstdint>
 #include <array>
 #include <unordered_map>
+#include <optional>
 #include <random>
 #include <vector>
 #include <algorithm>
@@ -91,12 +94,21 @@ namespace lifted::verification
         std::array<uint8_t, 4096> data;
         std::bitset<4096> read;
         std::bitset<4096> written;
+        // Set when a sentinel oracle has injected a value at this byte.
+        // Prevents re-querying the oracle and overwriting already-committed sentinel bytes.
+        std::bitset<4096> sentinel_filled;
 
         // Constructor for DYNAMIC pages (hash-seeded random content)
         page_t(uint64_t page_seed);
 
         // Constructor for IMAGE pages (content copied into page)
         page_t(std::array<uint8_t, 4096> content);
+
+        // Write byte without touching 'written' or 'sentinel_filled' — for sentinel injection.
+        void raw_write8(uint64_t offset, uint8_t val)
+        {
+            data[offset] = val;
+        }
 
         void write8(uint64_t offset, uint8_t val)
         {
@@ -131,9 +143,17 @@ namespace lifted::verification
         std::shared_ptr<LIEF::Binary> binary_;
         uint64_t image_base_ = 0;
 
+        // Optional sentinel oracle — owned by value to avoid lifetime/dangling issues.
+        // verifier_state copies its oracle in via attach_oracle().
+        std::optional<sentinel_oracle> oracle_;
+
         // Deterministic hash combining master_seed and page_addr
         // Uses a simple but effective mixing based on golden ratio prime
         static uint64_t compute_page_seed(uint64_t master_seed, uint64_t page_addr);
+
+        // Separate hash for oracle slot seeds — same mixing, different salt,
+        // so oracle rolls are uncorrelated with initial page data fills.
+        static uint64_t compute_oracle_slot_seed(uint64_t master_seed, uint64_t slot_addr);
 
         // Try to load page content from binary image (ELF or PE)
         // Returns true if page_addr falls within a loadable segment/section
@@ -148,6 +168,70 @@ namespace lifted::verification
         // Get existing page or create one (IMAGE if in binary, else DYNAMIC)
         page_t &get_or_create_page(uint64_t page_addr);
 
+        // Try to inject a sentinel into a single-page multi-byte read.
+        // N bytes starting at (page, offset) must all lie within one page.
+        // Only injects if none of the N bytes are already sentinel_filled.
+        // Marks injected bytes as sentinel_filled in the page.
+        template <typename T, uint8_t N>
+        void try_inject_sentinel(page_t &page, uint64_t offset, uint64_t addr)
+        {
+            static_assert(N == 1 || N == 2 || N == 4 || N == 8);
+            // Check: if ANY byte in [offset, offset+N) is already sentinel_filled OR written
+            // by the program, skip injection. Sentinel never overwrites program writes.
+            bool any_filled = false;
+            for (uint8_t i = 0; i < N; ++i)
+                any_filled |= page.sentinel_filled.test(offset + i) | page.written.test(offset + i);
+            if (any_filled)
+                return;
+
+            // Compute a stable slot seed aligned to the access size.
+            uint64_t slot_addr = addr & ~(uint64_t)(N - 1);
+            uint64_t slot_seed = compute_oracle_slot_seed(master_seed, slot_addr);
+            auto s = oracle_->query(slot_seed, N);
+            if (!s)
+                return;
+
+            T val = (T)s->value;
+            for (uint8_t i = 0; i < N; ++i)
+            {
+                page.raw_write8(offset + i, (uint8_t)(val >> (i * 8)));
+                page.sentinel_filled.set(offset + i);
+            }
+        }
+
+        // Core multi-byte read: single-page path with sentinel injection + cross-page fallback.
+        template <typename T, uint8_t N>
+        T read_sized(uint64_t addr)
+        {
+            static_assert(sizeof(T) == N);
+
+            // Cross-page slow path — very rare (~N/4096 probability for random addr).
+            if ((addr & 0xFFFULL) + N > 0x1000ULL) [[unlikely]]
+            {
+                // Oracle injection at size=1 per byte is handled by read8().
+                T v = 0;
+                for (uint8_t i = 0; i < N; ++i)
+                    v |= (T)read8(addr + i) << (i * 8);
+                return v;
+            }
+
+            uint64_t page_addr = addr & ~0xFFFULL;
+            uint64_t offset = addr & 0xFFFULL;
+            page_t &page = get_or_create_page(page_addr);
+
+            if (oracle_.has_value())
+                try_inject_sentinel<T, N>(page, offset, addr);
+
+            // Read N bytes directly from the page and mark them read.
+            T v = 0;
+            for (uint8_t i = 0; i < N; ++i)
+            {
+                v |= (T)page.data[offset + i] << (i * 8);
+                page.read.set(offset + i);
+            }
+            return v;
+        }
+
     public:
         // Constructor for dynamic-only memory state (no binary image)
         paged_memory_state(uint64_t seed);
@@ -157,6 +241,15 @@ namespace lifted::verification
 
         // Factory: create memory state with binary reference (lazy loading)
         static paged_memory_state init(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t base_addr = 0);
+
+        // Attach (copy) a sentinel oracle. Pass nullopt to remove.
+        // Safe to call any time; paged_memory_state owns its oracle copy.
+        void attach_oracle(std::optional<sentinel_oracle> o)
+        {
+            oracle_ = std::move(o);
+        }
+
+        const std::optional<sentinel_oracle> &get_oracle() const { return oracle_; }
 
         uint64_t get_master_seed() const { return master_seed; }
         uint64_t get_image_base() const { return image_base_; }
@@ -172,33 +265,24 @@ namespace lifted::verification
         {
             uint64_t page_addr = addr & ~0xFFFULL;
             uint64_t offset = addr & 0xFFFULL;
-            return get_or_create_page(page_addr).read8(offset);
+            page_t &page = get_or_create_page(page_addr);
+
+            if (oracle_.has_value() && !page.sentinel_filled.test(offset) && !page.written.test(offset))
+            {
+                uint64_t slot_seed = compute_oracle_slot_seed(master_seed, addr);
+                if (auto s = oracle_->query(slot_seed, 1))
+                {
+                    page.raw_write8(offset, (uint8_t)s->value);
+                    page.sentinel_filled.set(offset);
+                }
+            }
+
+            return page.read8(offset);
         }
 
-        // TODO: can later optimize this to avoid repeated page lookups
-        uint16_t read16(uint64_t addr)
-        {
-            uint16_t v = 0;
-            v |= read8(addr + 0) << 0;
-            v |= read8(addr + 1) << 8;
-            return v;
-        }
-
-        uint32_t read32(uint64_t addr)
-        {
-            uint32_t v = 0;
-            v |= read16(addr + 0) << 0;
-            v |= read16(addr + 2) << 16;
-            return v;
-        }
-
-        uint64_t read64(uint64_t addr)
-        {
-            uint64_t v = 0;
-            v |= (uint64_t)read32(addr + 0) << 0;
-            v |= (uint64_t)read32(addr + 4) << 32;
-            return v;
-        }
+        uint16_t read16(uint64_t addr) { return read_sized<uint16_t, 2>(addr); }
+        uint32_t read32(uint64_t addr) { return read_sized<uint32_t, 4>(addr); }
+        uint64_t read64(uint64_t addr) { return read_sized<uint64_t, 8>(addr); }
 
         void write8(uint64_t addr, uint8_t val)
         {

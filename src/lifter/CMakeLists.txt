@@ -1,7 +1,8 @@
 project(lifted)
 
-add_executable(lifted 
-    "main.cpp"
+# ── Static library: all sources except main.cpp ──────────────────────────────
+
+add_library(lifted STATIC
     "tester.cpp"
     "tester.hpp"
     "helpers.cpp"
@@ -14,7 +15,7 @@ add_executable(lifted
     "slicer.hpp"
     "lifter2.cpp"
     "lifter2.hpp"
-    
+
     "passes/pass_utils.cpp"
     "passes/pass_utils.hpp"
 
@@ -40,6 +41,7 @@ add_executable(lifted
     "abi/abi_utils.cpp"
 
     # Verification framework
+    "verification/sentinel_oracle.hpp"
     "verification/verifier_state.hpp"
     "verification/verifier_context.hpp"
     "verification/paged_memory_state.hpp"
@@ -61,29 +63,55 @@ add_executable(lifted
     "verification/runner.cpp"
     "verification/examples.hpp"
     "verification/examples.cpp"
-    "third-party/nmd_assembly.h" # for testing
+    "third-party/nmd_assembly.h"
     "third-party/nmd_assembly.cpp"
 )
 
-target_link_libraries(lifted PRIVATE
-    remill
-    LIEF::LIEF
-    libklee
-    Souper
-    lifted-shared
-    LLVMOrcJIT
-    unicorn_external
+# Expose src/lifter/ as a public include root so consumers can do:
+#   #include "verification/paged_memory_state.hpp"  etc.
+target_include_directories(lifted PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_link_libraries(lifted
+    PUBLIC
+        remill
+        LIEF::LIEF
+        libklee
+        Souper
+        lifted-shared
+        LLVMOrcJIT
+        unicorn_external
 )
 
 target_compile_definitions(lifted PRIVATE
     "HELPERS_DEOBFUSCATION_INTRINSICS_PATH=\"${HELPERS_DEOBFUSCATION_INTRINSICS_PATH}\""
     "HELPERS_VERIFICATION_INTRINSICS_PATH=\"${HELPERS_VERIFICATION_INTRINSICS_PATH}\""
     "HELPERS_STATE_UTILS_PATH=\"${HELPERS_STATE_UTILS_PATH}\""
-    "EVAL_SYNTHETIC_LIBS_DIR=\"${EVAL_SYNTHETIC_LIBS_DIR}\""
     "KLEE_RUNTIME_LIBRARY_PATH=\"${KLEE_RUNTIME_LIBRARY_PATH}\""
     "HELPERS_ABI_PATH=\"${HELPERS_ABI_PATH}\""
     "HELPERS_LIFTING_PATH=\"${HELPERS_LIFTING_PATH}\""
 )
 
-# Ensure Z3 is built before linking
 add_dependencies(lifted helpers z3_external lifted-shared)
+
+# ── Main executable ───────────────────────────────────────────────────────────
+
+add_executable(lifted_exe "main.cpp")
+
+set_target_properties(lifted_exe PROPERTIES OUTPUT_NAME lifted)
+
+target_link_libraries(lifted_exe PRIVATE lifted)
+
+# main.cpp uses EVAL_SYNTHETIC_LIBS_DIR directly
+target_compile_definitions(lifted_exe PRIVATE
+    "EVAL_SYNTHETIC_LIBS_DIR=\"${EVAL_SYNTHETIC_LIBS_DIR}\""
+)
+
+# ── Tests executable ──────────────────────────────────────────────────────────
+
+add_executable(lifted_tests
+    "tests/test_main.cpp"
+    "tests/test_sentinel_oracle.cpp"
+    "tests/test_paged_memory.cpp"
+)
+
+target_link_libraries(lifted_tests PRIVATE lifted)
