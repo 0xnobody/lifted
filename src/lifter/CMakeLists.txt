@@ -63,6 +63,8 @@ add_library(lifted STATIC
     "verification/runner.cpp"
     "verification/examples.hpp"
     "verification/examples.cpp"
+    "verification/checkpoint.hpp"
+    "verification/checkpoint.cpp"
     "third-party/nmd_assembly.h"
     "third-party/nmd_assembly.cpp"
 )
@@ -112,6 +114,7 @@ add_executable(lifted_tests
     "tests/test_main.cpp"
     "tests/test_sentinel_oracle.cpp"
     "tests/test_paged_memory.cpp"
+    "tests/test_checkpoint.cpp"
 )
 
 target_link_libraries(lifted_tests PRIVATE lifted)

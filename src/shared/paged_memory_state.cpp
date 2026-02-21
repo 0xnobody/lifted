@@ -1,6 +1,8 @@
 
 #include "paged_memory_state.hpp"
 
+#include <lifted/hash_mix.hpp>
+
 #ifdef DEBUG
 #undef DEBUG
 #include <LIEF/LIEF.hpp>
@@ -32,14 +34,7 @@ page_t::page_t(std::array<uint8_t, 4096> content)
 
 uint64_t paged_memory_state::compute_page_seed(uint64_t master_seed, uint64_t page_addr)
 {
-    // Mix page_addr into master_seed using multiplication and xor
-    // 0x9e3779b97f4a7c15 is derived from golden ratio (good for hashing)
-    uint64_t mixed = master_seed ^ (page_addr * 0x9e3779b97f4a7c15ULL);
-    // Additional mixing to improve distribution
-    mixed ^= mixed >> 33;
-    mixed *= 0xff51afd7ed558ccdULL;
-    mixed ^= mixed >> 33;
-    return mixed;
+    return lifted::hash::mix(master_seed, page_addr);
 }
 
 bool paged_memory_state::try_load_image_page(uint64_t page_addr, std::array<uint8_t, 4096> &out_data)

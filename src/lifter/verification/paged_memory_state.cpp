@@ -1,6 +1,8 @@
 
 #include "paged_memory_state.hpp"
 
+#include <lifted/hash_mix.hpp>
+
 #ifdef DEBUG
 #undef DEBUG
 #include <LIEF/LIEF.hpp>
@@ -33,26 +35,14 @@ namespace lifted::verification
 
     uint64_t paged_memory_state::compute_page_seed(uint64_t master_seed, uint64_t page_addr)
     {
-        // Mix page_addr into master_seed using multiplication and xor
-        // 0x9e3779b97f4a7c15 is derived from golden ratio (good for hashing)
-        uint64_t mixed = master_seed ^ (page_addr * 0x9e3779b97f4a7c15ULL);
-        // Additional mixing to improve distribution
-        mixed ^= mixed >> 33;
-        mixed *= 0xff51afd7ed558ccdULL;
-        mixed ^= mixed >> 33;
-        return mixed;
+        return hash::mix(master_seed, page_addr);
     }
 
     uint64_t paged_memory_state::compute_oracle_slot_seed(uint64_t master_seed, uint64_t slot_addr)
     {
-        // Same mixing chain as compute_page_seed but with a distinct salt so oracle rolls
-        // are statistically uncorrelated with the initial random data fill of each page.
-        uint64_t salted = master_seed ^ 0xdeadbeefcafe0000ULL;
-        uint64_t mixed = salted ^ (slot_addr * 0x9e3779b97f4a7c15ULL);
-        mixed ^= mixed >> 33;
-        mixed *= 0xff51afd7ed558ccdULL;
-        mixed ^= mixed >> 33;
-        return mixed;
+        // Use a distinct salt so oracle rolls are statistically uncorrelated
+        // with the initial random data fill of each page.
+        return hash::mix(master_seed ^ 0xdeadbeefcafe0000ULL, slot_addr);
     }
 
     bool paged_memory_state::try_load_image_page(uint64_t page_addr, std::array<uint8_t, 4096> &out_data)

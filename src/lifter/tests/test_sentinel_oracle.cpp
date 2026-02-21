@@ -1,6 +1,8 @@
 #include "test_framework.hpp"
 #include "verification/sentinel_oracle.hpp"
 
+#include <lifted/hash_mix.hpp>
+
 #include <cstdint>
 #include <cmath>
 #include <limits>
@@ -13,11 +15,7 @@ using namespace lifted::verification;
 // approximating the distribution of compute_oracle_slot_seed outputs.
 static uint64_t spread(uint64_t s)
 {
-    uint64_t x = s * 0x9e3779b97f4a7c15ULL;
-    x ^= x >> 33;
-    x *= 0xff51afd7ed558ccdULL;
-    x ^= x >> 33;
-    return x;
+    return lifted::hash::mix(0ULL, s);
 }
 
 // Count how many times each sentinel value fires over [0, num_seeds).
