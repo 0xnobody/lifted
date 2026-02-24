@@ -356,6 +356,8 @@ namespace lifted::verification
               verifier_context(),
               sentinel_oracle_(params.oracle)
         {
+            checkpoint_config = verif_params.checkpoint_config;
+            checkpoint_record.flags = checkpoint_config.flags;
             initialize_context(params.seed, params.entry_rva);
         }
 

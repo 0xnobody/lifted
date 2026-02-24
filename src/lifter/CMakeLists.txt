@@ -107,6 +107,7 @@ add_executable(lifted_tests
     "tests/test_sentinel_oracle.cpp"
     "tests/test_paged_memory.cpp"
     "tests/test_checkpoint.cpp"
+    "tests/test_comparator.cpp"
 )
 
 target_link_libraries(lifted_tests PRIVATE lifted)

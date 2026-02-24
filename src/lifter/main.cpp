@@ -148,8 +148,6 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
                     .flags = verification::record_on_flags::BB,
                     .prev_record = nullptr}};
 
-        // Capture edges before the module is moved into the JIT.
-        auto lift_edges = std::move(lift_result->Edges);
         auto exec = verification::JITExecutor::create(std::move(lift_result->Module), lift_result->LiftedFunction->getName().str());
         if (!exec)
         {
@@ -182,33 +180,9 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
             return emu_result.takeError();
         }
 
-        /*
-        auto cmp_abi = lifted::abi::AllRegistersCC{};
-        auto cmp_config = verification::ComparisonConfig::default_config(&cmp_abi);
-
-        // Populate fallthrough edges from the lift result so the comparator can
-        // normalize traces recorded by the JIT (which crosses lifter-introduced
-        // split boundaries) against those from Unicorn (which does not).
-        llvm::outs() << "Lifter-introduced fallthrough edges:\n";
-        for (const auto &edge : lift_edges)
-        {
-            if (edge.Type == lifted::Edge::Type::FALLTHROUGH)
-            {
-                cmp_config.fallthrough_edges.emplace(edge.Source, edge.Dest);
-
-                llvm::outs() << "\t0x" << llvm::format_hex(edge.Source, 16)
-                             << " -> 0x" << llvm::format_hex(edge.Dest, 16) << "\n";
-            }
-        }
-
-        auto cmp_result = verification::compare_states(state, emu_state, cmp_config);
-        cmp_result.print_summary(std::cout);
-
-        if (!cmp_result.memory_diff.equivalent)
-        {
-            cmp_result.print_memory_diff(std::cout);
-        }
-        */
+        // Compare JIT and Unicorn results.
+        auto cmp = verification::compare_runs(*result, *emu_result);
+        cmp.print(std::cout);
     }
 }
 

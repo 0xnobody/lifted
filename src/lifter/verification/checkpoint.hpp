@@ -82,6 +82,15 @@ namespace lifted::verification
     {
         std::vector<checkpoint_t> checkpoints;
 
+        // Which event types were recorded into this record.  Set by the
+        // verifier_state from checkpoint_config_t::flags at construction time
+        // and preserved into run_result_t::checkpoint_record.  The comparator
+        // uses this to determine which sub-hash shortcuts are sound: a shortcut
+        // for dimension X is only valid when X's flag is set in BOTH records,
+        // otherwise the sub-hash is zero-filled and cannot distinguish
+        // "no events occurred" from "events were not recorded".
+        record_on_flags flags = record_on_flags::NONE;
+
         checkpoint_record_t()
         {
             checkpoints.push_back({}); // sentinel
