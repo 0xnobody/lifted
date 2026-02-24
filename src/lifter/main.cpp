@@ -145,7 +145,7 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
         verification::verification_params_t verif_params =
             {
                 .checkpoint_config = {
-                    .flags = verification::record_on_flags::BB,
+                    .flags = verification::record_on_flags::DEFAULT,
                     .prev_record = nullptr}};
 
         auto exec = verification::JITExecutor::create(std::move(lift_result->Module), lift_result->LiftedFunction->getName().str());
@@ -183,6 +183,23 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
         // Compare JIT and Unicorn results.
         auto cmp = verification::compare_runs(*result, *emu_result);
         cmp.print(std::cout);
+
+        if (cmp.status == verification::comparison_status::NEEDS_RERUN)
+        {
+            verif_params.checkpoint_config.prev_record = &emu_result->checkpoint_record;
+
+            result = (*exec)->run_single(run_params, verif_params);
+            if (!result)
+            {
+                return result.takeError();
+            }
+
+            cmp = verification::compare_runs(*result, *emu_result);
+            cmp.print(std::cout);
+        }
+
+        auto diff = verification::diff_runs(*result, *emu_result);
+        diff.print(std::cout);
     }
 }
 

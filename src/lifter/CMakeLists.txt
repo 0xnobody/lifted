@@ -108,6 +108,7 @@ add_executable(lifted_tests
     "tests/test_paged_memory.cpp"
     "tests/test_checkpoint.cpp"
     "tests/test_comparator.cpp"
+    "tests/test_comparator_diff.cpp"
 )
 
 target_link_libraries(lifted_tests PRIVATE lifted)

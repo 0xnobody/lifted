@@ -230,6 +230,102 @@ TEST(comparator_fail_ext_calls_mismatch)
     CHECK_EQ(*res.first_ext_call_divergence, static_cast<size_t>(1));
 }
 
+// ── NEEDS_RERUN: equal-depth edge cases ──────────────────────────────────────
+
+// Bug regression: one NATURAL_EXIT with N events, one CHECKPOINT_MISMATCH at
+// depth N.  push_* runs before assert_checkpoint, so the failing event IS in
+// the aborting run's own record and event_count() == N on both sides.  The old
+// guard (`either_mismatch && d1 != d2`) missed this and let a Phase-3
+// comparison proceed with final states at different program points.
+TEST(comparator_needs_rerun_equal_depth_one_natural_one_mismatch)
+{
+    State s1 = make_state(1);
+    State s2 = make_state(999); // diverged state
+
+    // Run 1: free run, 2 BB events, natural exit.
+    auto r1 = make_result(exit_type::NATURAL_EXIT);
+    r1.checkpoint_record.push_bb(0x1000, &s1);
+    r1.checkpoint_record.push_bb(0x1010, &s1);
+
+    // Run 2: assertion mode, fails at event 2.
+    // The failing event is pushed before the abort → event_count() == 2.
+    auto r2 = make_result(exit_type::CHECKPOINT_MISMATCH);
+    r2.failed_checkpoint_idx = 2;
+    r2.checkpoint_record.push_bb(0x1000, &s1);
+    r2.checkpoint_record.push_bb(0x1010, &s2); // diverged
+
+    auto res = compare_runs(r1, r2);
+    CHECK_EQ(static_cast<int>(res.status),
+             static_cast<int>(comparison_status::NEEDS_RERUN));
+    CHECK(res.needs_rerun_at_index.has_value());
+    CHECK_EQ(*res.needs_rerun_at_index, static_cast<size_t>(2));
+}
+
+// Symmetric: CHECKPOINT_MISMATCH first, NATURAL_EXIT second.
+TEST(comparator_needs_rerun_equal_depth_one_mismatch_one_natural)
+{
+    State s1 = make_state(1);
+    State s2 = make_state(999);
+
+    auto r1 = make_result(exit_type::CHECKPOINT_MISMATCH);
+    r1.failed_checkpoint_idx = 2;
+    r1.checkpoint_record.push_bb(0x1000, &s2);
+    r1.checkpoint_record.push_bb(0x1010, &s2);
+
+    auto r2 = make_result(exit_type::NATURAL_EXIT);
+    r2.checkpoint_record.push_bb(0x1000, &s1);
+    r2.checkpoint_record.push_bb(0x1010, &s1);
+
+    auto res = compare_runs(r1, r2);
+    CHECK_EQ(static_cast<int>(res.status),
+             static_cast<int>(comparison_status::NEEDS_RERUN));
+    CHECK_EQ(*res.needs_rerun_at_index, static_cast<size_t>(2));
+}
+
+// One LOOP_LIMIT (clean, non-mismatch exit) + one CHECKPOINT_MISMATCH at the
+// same depth: still NEEDS_RERUN.
+TEST(comparator_needs_rerun_loop_limit_plus_mismatch_equal_depth)
+{
+    State s = make_state(42);
+
+    auto r1 = make_result(exit_type::LOOP_LIMIT);
+    r1.checkpoint_record.push_bb(0x1000, &s);
+
+    auto r2 = make_result(exit_type::CHECKPOINT_MISMATCH);
+    r2.failed_checkpoint_idx = 1;
+    r2.checkpoint_record.push_bb(0x1000, &s); // even matching hash: still NEEDS_RERUN
+
+    auto res = compare_runs(r1, r2);
+    CHECK_EQ(static_cast<int>(res.status),
+             static_cast<int>(comparison_status::NEEDS_RERUN));
+    CHECK_EQ(*res.needs_rerun_at_index, static_cast<size_t>(1));
+}
+
+// After the re-run dance: BOTH CHECKPOINT_MISMATCH at the same depth.
+// This must NOT return NEEDS_RERUN — Phase 3 comparison is valid.
+TEST(comparator_both_mismatch_same_depth_proceeds_to_phase3)
+{
+    State s1 = make_state(1);
+    State s2 = make_state(999);
+
+    auto r1 = make_result(exit_type::CHECKPOINT_MISMATCH);
+    r1.failed_checkpoint_idx = 2;
+    r1.checkpoint_record.push_bb(0x1000, &s1);
+    r1.checkpoint_record.push_bb(0x1010, &s1);
+
+    auto r2 = make_result(exit_type::CHECKPOINT_MISMATCH);
+    r2.failed_checkpoint_idx = 2;
+    r2.checkpoint_record.push_bb(0x1000, &s1);
+    r2.checkpoint_record.push_bb(0x1010, &s2); // diverges at index 2
+
+    auto res = compare_runs(r1, r2);
+    CHECK(static_cast<int>(res.status) !=
+          static_cast<int>(comparison_status::NEEDS_RERUN));
+    CHECK_EQ(static_cast<int>(res.status),
+             static_cast<int>(comparison_status::FAIL_DIVERGED));
+    CHECK(!res.dimensions.checkpoint_match);
+}
+
 // ── Checkpoint flag guards ────────────────────────────────────────────────────
 
 // If BB flag is absent in either record, state_hash shortcut must NOT fire —
