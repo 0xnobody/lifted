@@ -133,6 +133,27 @@ namespace lifted::verification
         }
     };
 
+    // Lightweight post-run snapshot — holds only the materialized pages and the
+    // comparison / stats API.  Produced by paged_memory_state::finalize() and
+    // stored in run_result_t.  No binary ref, no seed, no oracle.
+    struct memory_snapshot_t
+    {
+        std::unordered_map<uint64_t, page_t> pages;
+
+        struct stats_t
+        {
+            size_t total_pages;
+            size_t pages_with_writes;
+            size_t total_bytes_written;
+            size_t total_bytes_read;
+        };
+
+        bool compare(const memory_snapshot_t &other, std::span<const llvm::AddressRange> ignored = {}) const;
+        memory_diff_result_t compare_detailed(const memory_snapshot_t &other, std::span<const llvm::AddressRange> ignored = {}) const;
+        stats_t get_stats() const;
+        const std::unordered_map<uint64_t, page_t> &get_pages() const { return pages; }
+    };
+
     class paged_memory_state
     {
     private:
@@ -143,9 +164,10 @@ namespace lifted::verification
         std::shared_ptr<LIEF::Binary> binary_;
         uint64_t image_base_ = 0;
 
-        // Optional sentinel oracle — owned by value to avoid lifetime/dangling issues.
-        // verifier_state copies its oracle in via attach_oracle().
-        std::optional<sentinel_oracle> oracle_;
+        // Non-owning pointer to sentinel oracle, valid only during execution.
+        // paged_memory_state is transient (internal to verifier_state); the oracle
+        // pointer cannot dangle because both die with verifier_state.
+        const sentinel_oracle *oracle_ = nullptr;
 
         // Deterministic hash combining master_seed and page_addr
         // Uses a simple but effective mixing based on golden ratio prime
@@ -219,7 +241,7 @@ namespace lifted::verification
             uint64_t offset = addr & 0xFFFULL;
             page_t &page = get_or_create_page(page_addr);
 
-            if (oracle_.has_value())
+            if (oracle_)
                 try_inject_sentinel<T, N>(page, offset, addr);
 
             // Read N bytes directly from the page and mark them read.
@@ -234,22 +256,14 @@ namespace lifted::verification
 
     public:
         // Constructor for dynamic-only memory state (no binary image)
-        paged_memory_state(uint64_t seed);
+        paged_memory_state(uint64_t seed, const sentinel_oracle *oracle = nullptr);
 
         // Constructor with binary reference for lazy image loading
-        paged_memory_state(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t base_addr);
+        paged_memory_state(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t base_addr, const sentinel_oracle *oracle = nullptr);
 
-        // Factory: create memory state with binary reference (lazy loading)
-        static paged_memory_state init(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t base_addr = 0);
-
-        // Attach (copy) a sentinel oracle. Pass nullopt to remove.
-        // Safe to call any time; paged_memory_state owns its oracle copy.
-        void attach_oracle(std::optional<sentinel_oracle> o)
-        {
-            oracle_ = std::move(o);
-        }
-
-        const std::optional<sentinel_oracle> &get_oracle() const { return oracle_; }
+        // Consume this transient execution object and extract the pages into a
+        // lightweight snapshot suitable for storage in run_result_t.
+        static memory_snapshot_t finalize(paged_memory_state &&mem);
 
         uint64_t get_master_seed() const { return master_seed; }
         uint64_t get_image_base() const { return image_base_; }
@@ -267,7 +281,7 @@ namespace lifted::verification
             uint64_t offset = addr & 0xFFFULL;
             page_t &page = get_or_create_page(page_addr);
 
-            if (oracle_.has_value() && !page.sentinel_filled.test(offset) && !page.written.test(offset))
+            if (oracle_ && !page.sentinel_filled.test(offset) && !page.written.test(offset))
             {
                 uint64_t slot_seed = compute_oracle_slot_seed(master_seed, addr);
                 if (auto s = oracle_->query(slot_seed, 1))
@@ -309,35 +323,12 @@ namespace lifted::verification
             write32(addr + 4, (val >> 32) & 0xFFFFFFFF);
         }
 
-        // Symmetric comparison: only written bytes must match
-        //
-        // This function IS commutative - a.compare(b) == b.compare(a)
-        //
-        // Requirements:
-        // 1. Same write set: the set of written byte addresses must be identical
-        // 2. Same written values: all written bytes must have the same final values
-        //
-        // What we DON'T require:
-        // - Same pages accessed (reads are internal behavior)
-        // - Same read patterns
-        //
-        // Returns: true if equivalent, false otherwise
-        bool compare(const paged_memory_state &other, std::span<const llvm::AddressRange> ignored = {}) const;
+        // Set or clear the sentinel oracle pointer (non-owning).
+        // Valid only during execution; caller must ensure oracle outlives this object.
+        void set_oracle(const sentinel_oracle *oracle) { oracle_ = oracle; }
+        const sentinel_oracle *get_oracle() const { return oracle_; }
 
-        memory_diff_result_t compare_detailed(const paged_memory_state &other, std::span<const llvm::AddressRange> ignored = {}) const;
-
-        // Get statistics about page usage for debugging
-        struct stats_t
-        {
-            size_t total_pages;
-            size_t pages_with_writes;
-            size_t total_bytes_written;
-            size_t total_bytes_read;
-        };
-
-        stats_t get_stats() const;
-
-        // Access pages for debugging/inspection
+        // Raw page access for inspection/testing during execution.
         const std::unordered_map<uint64_t, page_t> &get_pages() const { return pages; }
     };
 }

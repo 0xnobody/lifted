@@ -52,10 +52,8 @@ namespace lifted::verification
         }
         else
         {
-            // Invoke verifier_state callback
-            // Note: We don't have direct access to State* here in Unicorn,
-            // so we pass nullptr for now (can be extended later if needed)
-            if (!ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, nullptr, address - LOAD_BASE))
+            State state = unicorn_to_state(uc);
+            if (!ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, &state, address - LOAD_BASE))
             {
                 uc_emu_stop(uc);
                 return;
@@ -229,23 +227,24 @@ namespace lifted::verification
         return llvm::Error::success();
     }
 
-    ExecutionResult UnicornExecutor::run_single_impl(verifier_state &state)
+    llvm::Error UnicornExecutor::run_single_impl(verifier_state &state)
     {
         // Restore clean context
         uc_err err = uc_context_restore(uc_eng.get(), clean_ctx.get());
         if (err != UC_ERR_OK)
         {
-            return ExecutionResult::error(
-                StopReason::CRASH,
-                std::string("uc_context_restore failed: ") + uc_strerror(err));
+
+            return llvm::make_error<llvm::StringError>(
+                std::string("uc_context_restore failed: ") + uc_strerror(err),
+                llvm::inconvertibleErrorCode());
         }
 
         // Map initial State to Unicorn registers
         if (auto conv_err = state_to_unicorn(state.get_initial_state(), uc_eng.get()))
         {
-            return ExecutionResult::error(
-                StopReason::CRASH,
-                "Failed to set initial state");
+            return llvm::make_error<llvm::StringError>(
+                "Failed to set initial state",
+                llvm::inconvertibleErrorCode());
         }
 
         // Register hooks
@@ -260,7 +259,9 @@ namespace lifted::verification
                           (void *)hook_block, &ctx, 1, 0);
         if (err != UC_ERR_OK)
         {
-            return ExecutionResult::error(StopReason::CRASH, "Failed to add block hook");
+            return llvm::make_error<llvm::StringError>(
+                std::string("Failed to add block hook: ") + uc_strerror(err),
+                llvm::inconvertibleErrorCode());
         }
 
         err = uc_hook_add(uc_eng.get(), &mem_invalid_hook,
@@ -268,28 +269,36 @@ namespace lifted::verification
                           (void *)hook_mem_invalid, &ctx, 1, 0);
         if (err != UC_ERR_OK)
         {
-            return ExecutionResult::error(StopReason::CRASH, "Failed to add mem_invalid hook");
+            return llvm::make_error<llvm::StringError>(
+                std::string("Failed to add mem_invalid hook: ") + uc_strerror(err),
+                llvm::inconvertibleErrorCode());
         }
 
         err = uc_hook_add(uc_eng.get(), &mem_read_hook, UC_HOOK_MEM_READ,
                           (void *)hook_mem_read, &ctx, 1, 0);
         if (err != UC_ERR_OK)
         {
-            return ExecutionResult::error(StopReason::CRASH, "Failed to add mem_read hook");
+            return llvm::make_error<llvm::StringError>(
+                std::string("Failed to add mem_read hook: ") + uc_strerror(err),
+                llvm::inconvertibleErrorCode());
         }
 
         err = uc_hook_add(uc_eng.get(), &mem_write_hook, UC_HOOK_MEM_WRITE,
                           (void *)hook_mem_write, &ctx, 1, 0);
         if (err != UC_ERR_OK)
         {
-            return ExecutionResult::error(StopReason::CRASH, "Failed to add mem_write hook");
+            return llvm::make_error<llvm::StringError>(
+                std::string("Failed to add mem_write hook: ") + uc_strerror(err),
+                llvm::inconvertibleErrorCode());
         }
 
         err = uc_hook_add(uc_eng.get(), &code_hook, UC_HOOK_CODE,
                           (void *)hook_code, nullptr, 1, 0);
         if (err != UC_ERR_OK)
         {
-            return ExecutionResult::error(StopReason::CRASH, "Failed to add code hook");
+            return llvm::make_error<llvm::StringError>(
+                std::string("Failed to add code hook: ") + uc_strerror(err),
+                llvm::inconvertibleErrorCode());
         }
 
         // Run emulation
@@ -305,9 +314,9 @@ namespace lifted::verification
         // Check emulation result
         if (err != UC_ERR_OK)
         {
-            return ExecutionResult::error(
-                StopReason::CRASH,
-                std::string("uc_emu_start failed: ") + uc_strerror(err));
+            return llvm::make_error<llvm::StringError>(
+                std::string("uc_emu_start failed: ") + uc_strerror(err),
+                llvm::inconvertibleErrorCode());
         }
 
         // Read final state from Unicorn
@@ -315,7 +324,7 @@ namespace lifted::verification
         state.context_ptr()->final_reg_state = final_state;
 
         // TODO: Track instruction count
-        return ExecutionResult::ok(0);
+        return llvm::Error::success();
     }
 
 } // namespace lifted::verification

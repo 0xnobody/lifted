@@ -1,6 +1,5 @@
 #pragma once
 
-#include "execution_result.hpp"
 #include "verifier_state.hpp"
 
 #include <llvm/Support/Error.h>
@@ -25,25 +24,21 @@ namespace lifted::verification
 
         /// Execute a single test case. State contains initial conditions, execution
         /// populates final state and traces.
-        virtual ExecutionResult run_single_impl(verifier_state &state) = 0;
+        virtual llvm::Error run_single_impl(verifier_state &state) = 0;
 
     public:
         virtual ~Executor() = default;
 
         /// Run a single test case.
-        ExecutionResult run_single(verifier_state &state)
+        llvm::Expected<run_result_t> run_single(const run_params_t &run_params, const verification_params_t &verif_params)
         {
-            return run_single_impl(state);
-        }
-
-        /// Run multiple tests (convenience wrapper).
-        /// States are created externally - allows custom verifier_state subclasses.
-        void run_tests(std::vector<std::unique_ptr<verifier_state>> &states)
-        {
-            for (auto &state : states)
+            verifier_state state(run_params, verif_params);
+            auto err = run_single_impl(state);
+            if (err)
             {
-                run_single(*state);
+                return err;
             }
+            return verifier_state::finalize(std::move(state));
         }
     };
 

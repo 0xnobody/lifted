@@ -1,7 +1,7 @@
 
 #include "paged_memory_state.hpp"
 
-#include <lifted/hash_mix.hpp>
+#include "../hash_mix.hpp"
 
 #ifdef DEBUG
 #undef DEBUG
@@ -165,22 +165,22 @@ namespace lifted::verification
 
     // paged_memory_state public methods
 
-    paged_memory_state::paged_memory_state(uint64_t seed)
-        : master_seed(seed), binary_(nullptr), image_base_(0)
+    paged_memory_state::paged_memory_state(uint64_t seed, const sentinel_oracle *oracle)
+        : master_seed(seed), binary_(nullptr), image_base_(0), oracle_(oracle)
     {
     }
 
-    paged_memory_state::paged_memory_state(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t base_addr)
-        : master_seed(seed), binary_(std::move(binary)), image_base_(base_addr)
+    paged_memory_state::paged_memory_state(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t base_addr, const sentinel_oracle *oracle)
+        : master_seed(seed), binary_(std::move(binary)), image_base_(base_addr), oracle_(oracle)
     {
     }
 
-    paged_memory_state paged_memory_state::init(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t base_addr)
+    memory_snapshot_t paged_memory_state::finalize(paged_memory_state &&mem)
     {
-        return paged_memory_state(seed, std::move(binary), base_addr);
+        return memory_snapshot_t{std::move(mem.pages)};
     }
 
-    bool paged_memory_state::compare(const paged_memory_state &other, std::span<const llvm::AddressRange> ignored) const
+    bool memory_snapshot_t::compare(const memory_snapshot_t &other, std::span<const llvm::AddressRange> ignored) const
     {
         auto is_page_ignored = [&](uint64_t page_addr) -> bool
         {
@@ -292,8 +292,8 @@ namespace lifted::verification
         return ranges;
     }
 
-    memory_diff_result_t paged_memory_state::compare_detailed(
-        const paged_memory_state &other,
+    memory_diff_result_t memory_snapshot_t::compare_detailed(
+        const memory_snapshot_t &other,
         std::span<const llvm::AddressRange> ignored) const
     {
         memory_diff_result_t result;
@@ -389,7 +389,7 @@ namespace lifted::verification
         return result;
     }
 
-    paged_memory_state::stats_t paged_memory_state::get_stats() const
+    memory_snapshot_t::stats_t memory_snapshot_t::get_stats() const
     {
         stats_t s{};
         s.total_pages = pages.size();

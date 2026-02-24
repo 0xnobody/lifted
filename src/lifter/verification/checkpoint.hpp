@@ -2,7 +2,7 @@
 
 #include "verifier_context.hpp" // State
 
-#include <lifted/hash_mix.hpp>
+#include "../hash_mix.hpp"
 
 #include <cstddef>
 #include <cstdint>

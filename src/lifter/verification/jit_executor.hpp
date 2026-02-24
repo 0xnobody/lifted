@@ -38,7 +38,7 @@ namespace lifted::verification
 
     protected:
         llvm::Error setup_impl() override;
-        ExecutionResult run_single_impl(verifier_state &state) override;
+        llvm::Error run_single_impl(verifier_state &state) override;
 
     public:
         static llvm::Expected<std::unique_ptr<JITExecutor>>

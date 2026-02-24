@@ -46,7 +46,6 @@ add_library(lifted STATIC
     "verification/verifier_context.hpp"
     "verification/paged_memory_state.hpp"
     "verification/paged_memory_state.cpp"
-    "verification/execution_result.hpp"
     "verification/executor.hpp"
     "verification/unicorn_executor.hpp"
     "verification/unicorn_executor.cpp"
@@ -57,12 +56,6 @@ add_library(lifted STATIC
     "verification/uc_raii.hpp"
     "verification/comparator.hpp"
     "verification/comparator.cpp"
-    "verification/test_generator.hpp"
-    "verification/test_generator.cpp"
-    "verification/runner.hpp"
-    "verification/runner.cpp"
-    "verification/examples.hpp"
-    "verification/examples.cpp"
     "verification/checkpoint.hpp"
     "verification/checkpoint.cpp"
     "third-party/nmd_assembly.h"
@@ -79,7 +72,6 @@ target_link_libraries(lifted
         LIEF::LIEF
         libklee
         Souper
-        lifted-shared
         LLVMOrcJIT
         unicorn_external
 )
@@ -93,7 +85,7 @@ target_compile_definitions(lifted PRIVATE
     "HELPERS_LIFTING_PATH=\"${HELPERS_LIFTING_PATH}\""
 )
 
-add_dependencies(lifted helpers z3_external lifted-shared)
+add_dependencies(lifted helpers z3_external)
 
 # ── Main executable ───────────────────────────────────────────────────────────
 

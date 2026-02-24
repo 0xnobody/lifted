@@ -109,7 +109,7 @@ namespace lifted::verification
         return executor->fallthrough_edges.contains({from, to});
     }
 
-    ExecutionResult JITExecutor::run_single_impl(verifier_state &state)
+    llvm::Error JITExecutor::run_single_impl(verifier_state &state)
     {
         jit_executor_context_t executor_ctx = {
             .verifier_context = state.context_ptr(),
@@ -119,8 +119,7 @@ namespace lifted::verification
         // Call JIT function with verifier context
         entry_fn(&executor_ctx);
 
-        // TODO: Track instruction count
-        return ExecutionResult::ok(0);
+        return llvm::Error::success();
     }
 
 } // namespace lifted::verification

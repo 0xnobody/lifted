@@ -12,10 +12,61 @@
 #include <llvm/Support/Format.h>
 #include <llvm/Support/raw_ostream.h>
 
+#include "checkpoint.hpp"
+
 #define STACK_MAGIC 0x7fff00000000ULL
 
 namespace lifted::verification
 {
+    enum class exit_type
+    {
+        NATURAL_EXIT,            // program reached a natural exit (e.g., return from entry function)
+        EXCEPTION,               // program triggered an exception (e.g., divide-by-zero, invalid instruction)
+        MISSING_BLOCK,           // program entered a block that was not lifted (e.g., indirect jump to an unknown target)
+        CHECKPOINT_MISMATCH,     // program reached a checkpoint but the state did not match the expected state
+        LAST_CHECKPOINT_REACHED, // program reached the last checkpoint (if any) without mismatches, but did not reach a natural exit
+        LOOP_LIMIT,              // program exceeded the configured loop iteration limit (if any)
+        BB_LIMIT,                // program exceeded the configured basic block execution limit (if any)
+    };
+
+    enum class loop_limit_policy
+    {
+        TERMINATE,
+        FORCE_EXECUTION,
+    };
+
+    struct run_params_t
+    {
+        uint64_t seed;
+        std::shared_ptr<LIEF::Binary> binary;
+        uint64_t entry_rva;
+        const sentinel_oracle *oracle = nullptr;
+    };
+
+    struct verification_params_t
+    {
+        checkpoint_config_t checkpoint_config;
+        loop_limit_policy loop_policy = loop_limit_policy::TERMINATE;
+    };
+
+    struct execution_flags_t
+    {
+        bool forced_initialization : 1 = false;
+    };
+
+    struct run_result_t
+    {
+        exit_type exit_reason;
+        execution_flags_t flags;
+        State initial_state;
+        State final_state;
+        memory_snapshot_t mem_snapshot;
+        std::vector<uint64_t> bb_trace;
+        std::vector<uint64_t> ext_calls;
+        checkpoint_record_t checkpoint_record;
+        std::optional<uint64_t> failed_checkpoint_idx;
+    };
+
     /// Verifier state encapsulates execution state and trace recording.
     /// The virtual on_* methods define the execution contract - subclass to customize behavior
     /// (e.g., add checkpoints, mutate state on external calls, coverage tracking).
@@ -36,64 +87,117 @@ namespace lifted::verification
         uint64_t bb_loop_limit = -1;
         uint64_t bb_limit = -1;
 
+        exit_type exit_reason = exit_type::NATURAL_EXIT;
+        execution_flags_t flags{};
+        std::optional<uint64_t> failed_checkpoint_idx;
+
         verifier_context_t verifier_context;
 
-        // Authoritative sentinel oracle. verifier_state owns it by value; a copy is pushed
-        // into mem_state via attach_oracle() so mem_state has no lifetime dependency on us.
-        std::optional<sentinel_oracle> sentinel_oracle_;
+        checkpoint_record_t checkpoint_record;
+        checkpoint_config_t checkpoint_config;
+        uint64_t curr_checkpoint_idx = 0;
+
+        const sentinel_oracle *sentinel_oracle_;
 
         static verifier_state *from_context(void *context)
         {
             return static_cast<verifier_state *>(context);
         }
 
+        bool assert_checkpoint(uint64_t curr_combined_hash)
+        {
+            if (checkpoint_config.prev_record)
+            {
+                if (checkpoint_config.prev_record->checkpoints.size() <= curr_checkpoint_idx + 1)
+                {
+                    failed_checkpoint_idx = curr_checkpoint_idx;
+                    exit_reason = exit_type::LAST_CHECKPOINT_REACHED;
+                    return false;
+                }
+
+                const auto &prev_cp = checkpoint_config.prev_record->checkpoints[++curr_checkpoint_idx];
+                if (prev_cp.combined_hash != curr_combined_hash)
+                {
+                    failed_checkpoint_idx = curr_checkpoint_idx;
+                    exit_reason = exit_type::CHECKPOINT_MISMATCH;
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         // Virtual execution contract - override to customize behavior
         virtual bool on_read8(uint64_t addr, uint8_t &value)
         {
             value = mem_state.read8(addr);
-            return true;
+
+            return has_flag(checkpoint_config.flags, record_on_flags::MEM_READ)
+                       ? assert_checkpoint(checkpoint_record.push_read(addr, value, 1))
+                       : true;
         }
 
         virtual bool on_read16(uint64_t addr, uint16_t &value)
         {
             value = mem_state.read16(addr);
-            return true;
+
+            return has_flag(checkpoint_config.flags, record_on_flags::MEM_READ)
+                       ? assert_checkpoint(checkpoint_record.push_read(addr, value, 2))
+                       : true;
         }
 
         virtual bool on_read32(uint64_t addr, uint32_t &value)
         {
             value = mem_state.read32(addr);
-            return true;
+
+            return has_flag(checkpoint_config.flags, record_on_flags::MEM_READ)
+                       ? assert_checkpoint(checkpoint_record.push_read(addr, value, 4))
+                       : true;
         }
 
         virtual bool on_read64(uint64_t addr, uint64_t &value)
         {
             value = mem_state.read64(addr);
-            return true;
+
+            return has_flag(checkpoint_config.flags, record_on_flags::MEM_READ)
+                       ? assert_checkpoint(checkpoint_record.push_read(addr, value, 8))
+                       : true;
         }
 
         virtual bool on_write8(uint64_t addr, uint8_t value)
         {
             mem_state.write8(addr, value);
-            return true;
+
+            return has_flag(checkpoint_config.flags, record_on_flags::MEM_WRITE)
+                       ? assert_checkpoint(checkpoint_record.push_write(addr, value, 1))
+                       : true;
         }
 
         virtual bool on_write16(uint64_t addr, uint16_t value)
         {
             mem_state.write16(addr, value);
-            return true;
+
+            return has_flag(checkpoint_config.flags, record_on_flags::MEM_WRITE)
+                       ? assert_checkpoint(checkpoint_record.push_write(addr, value, 2))
+                       : true;
         }
 
         virtual bool on_write32(uint64_t addr, uint32_t value)
         {
             mem_state.write32(addr, value);
-            return true;
+
+            return has_flag(checkpoint_config.flags, record_on_flags::MEM_WRITE)
+                       ? assert_checkpoint(checkpoint_record.push_write(addr, value, 4))
+                       : true;
         }
 
         virtual bool on_write64(uint64_t addr, uint64_t value)
         {
             mem_state.write64(addr, value);
-            return true;
+
+            return has_flag(checkpoint_config.flags, record_on_flags::MEM_WRITE)
+                       ? assert_checkpoint(checkpoint_record.push_write(addr, value, 8))
+                       : true;
         }
 
         virtual bool on_bb_entered(State *state, uint64_t rva)
@@ -105,21 +209,38 @@ namespace lifted::verification
                 bb_first_seen[rva] = bb_step;
             }
 
+            if (++bb_step > bb_limit)
+            {
+                exit_reason = exit_type::BB_LIMIT;
+                return false;
+            }
+
             if (bb_prev != -1 && bb_first_seen[rva] < bb_first_seen[bb_prev])
                 // back edge: addr was seen before prev → addr is a loop header
                 if (++bb_header_count[rva] >= bb_loop_limit)
                 {
-                    // TODO: do something, reached limit
+                    //
+                    // TODO: implement forced execution here if user specifies this.
+                    //
+
+                    exit_reason = exit_type::LOOP_LIMIT;
+                    return false;
                 }
 
             bb_prev = rva;
-            return true;
+
+            return has_flag(checkpoint_config.flags, record_on_flags::BB)
+                       ? assert_checkpoint(checkpoint_record.push_bb(rva, state))
+                       : true;
         }
 
         virtual bool on_ext_call(State *state, uint64_t addr)
         {
             ext_calls.push_back(addr);
-            return true;
+
+            return has_flag(checkpoint_config.flags, record_on_flags::EXT_CALL)
+                       ? assert_checkpoint(checkpoint_record.push_ext_call(addr, state))
+                       : true;
         }
 
     private:
@@ -228,13 +349,14 @@ namespace lifted::verification
         }
 
     public:
-        verifier_state(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t entry_rva = 0)
-            : mem_state(seed ^ 0xFEEDFEEDFEEDFEED, std::move(binary), LOAD_BASE),
+        verifier_state(const run_params_t &params, const verification_params_t &verif_params)
+            : mem_state(params.seed ^ 0xFEEDFEEDFEEDFEED, params.binary, LOAD_BASE, params.oracle),
               bbs_entered_rvas(),
               ext_calls(),
-              verifier_context()
+              verifier_context(),
+              sentinel_oracle_(params.oracle)
         {
-            initialize_context(seed, entry_rva);
+            initialize_context(params.seed, params.entry_rva);
         }
 
         virtual ~verifier_state() = default;
@@ -279,24 +401,20 @@ namespace lifted::verification
             return ext_calls;
         }
 
-        // Set (or replace) the sentinel oracle used for memory reads.
-        // Both verifier_state and paged_memory_state own independent copies,
-        // so moves/copies of either do not create dangling pointers.
-        void set_oracle(sentinel_oracle o)
+        static run_result_t finalize(verifier_state &&state)
         {
-            sentinel_oracle_ = std::move(o);
-            mem_state.attach_oracle(sentinel_oracle_);
-        }
-
-        void clear_oracle()
-        {
-            sentinel_oracle_.reset();
-            mem_state.attach_oracle(std::nullopt);
-        }
-
-        const std::optional<sentinel_oracle> &get_oracle() const
-        {
-            return sentinel_oracle_;
+            run_result_t result =
+                {
+                    .exit_reason = state.exit_reason,
+                    .flags = state.flags,
+                    .initial_state = std::move(state.context_ptr()->initial_reg_state),
+                    .final_state = std::move(state.context_ptr()->final_reg_state),
+                    .mem_snapshot = paged_memory_state::finalize(std::move(state.mem_state)),
+                    .bb_trace = std::move(state.bbs_entered_rvas),
+                    .ext_calls = std::move(state.ext_calls),
+                    .checkpoint_record = std::move(state.checkpoint_record),
+                    .failed_checkpoint_idx = state.failed_checkpoint_idx};
+            return result;
         }
     };
 

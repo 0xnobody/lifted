@@ -1,6 +1,6 @@
 #include "checkpoint.hpp"
 
-#include <lifted/hash_mix.hpp>
+#include "../hash_mix.hpp"
 
 #include <remill/Arch/X86/Runtime/State.h>
 

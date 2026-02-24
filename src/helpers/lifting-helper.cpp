@@ -9,7 +9,7 @@
 // #include "standard-intrinsics.hpp"
 
 HELPER Memory *__lifted_ext_call(State *__restrict__, addr_t addr, Memory *);
-HELPER Memory *__lifted_bb_entered(State *state, addr_t a, Memory *m);
+HELPER Memory *__lifted_bb_entered(State *__restrict__ state, addr_t a, Memory *m);
 
 HELPER Memory *__lifted_issue_ext_call(State *__restrict__ s, addr_t addr, Memory *m) // TODO: what to do with you
 {

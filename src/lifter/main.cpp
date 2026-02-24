@@ -135,24 +135,37 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
     {
         utils::output_to_file("/home/atlas/lifted/out/lifted.ll", lift_result->Module.get());
 
+        verification::run_params_t run_params =
+            {
+                .seed = 0x1337,
+                .binary = binary,
+                .entry_rva = *rva,
+                .oracle = nullptr};
+
+        verification::verification_params_t verif_params =
+            {
+                .checkpoint_config = {
+                    .flags = verification::record_on_flags::BB,
+                    .prev_record = nullptr}};
+
         // Capture edges before the module is moved into the JIT.
         auto lift_edges = std::move(lift_result->Edges);
-
         auto exec = verification::JITExecutor::create(std::move(lift_result->Module), lift_result->LiftedFunction->getName().str());
         if (!exec)
         {
             return exec.takeError();
         }
 
-        auto state = verification::verifier_state(0x1337, binary, *rva);
+        auto result = (*exec)->run_single(run_params, verif_params);
 
-        utils::print_state(state.get_initial_state(), std::cout);
-
-        auto result = (*exec)->run_single(state);
+        if (!result)
+        {
+            return result.takeError();
+        }
 
         llvm::outs() << "External calls:\n";
         std::set<uint64_t> ext_calls_set;
-        for (const auto &ext_call : state.external_calls())
+        for (const auto &ext_call : result->ext_calls)
         {
             ext_calls_set.insert(ext_call);
 
@@ -160,9 +173,16 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
         }
 
         auto emu = verification::UnicornExecutor::create(binary, ext_calls_set, *rva);
-        auto emu_state = verification::verifier_state(0x1337, binary, *rva);
-        auto emu_result = (*emu)->run_single(emu_state);
 
+        verif_params.checkpoint_config.prev_record = &result->checkpoint_record; // Share checkpoints between JIT and Unicorn for cross-validation
+        auto emu_result = (*emu)->run_single(run_params, verif_params);
+
+        if (!emu_result)
+        {
+            return emu_result.takeError();
+        }
+
+        /*
         auto cmp_abi = lifted::abi::AllRegistersCC{};
         auto cmp_config = verification::ComparisonConfig::default_config(&cmp_abi);
 
@@ -188,6 +208,7 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
         {
             cmp_result.print_memory_diff(std::cout);
         }
+        */
     }
 }
 
