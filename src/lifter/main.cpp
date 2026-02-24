@@ -135,12 +135,17 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
     {
         utils::output_to_file("/home/atlas/lifted/out/lifted.ll", lift_result->Module.get());
 
+        auto oracle = verification::sentinel_oracle(std::vector<verification::sentinel_t>{
+            verification::sentinel_t{.size_bytes = 0, .value = 0, .inv_prob = 10},
+            verification::sentinel_t{.size_bytes = 0, .value = 0xFFFF'FFFF'FFFF'FFFF, .inv_prob = 10},
+        });
+
         verification::run_params_t run_params =
             {
                 .seed = 0x1337,
                 .binary = binary,
                 .entry_rva = *rva,
-                .oracle = nullptr};
+                .oracle = &oracle};
 
         verification::verification_params_t verif_params =
             {

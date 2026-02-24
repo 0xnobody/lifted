@@ -104,35 +104,49 @@ namespace lifted::verification
 
         bool cont = false;
 
-        // Track memory access via verifier_context callbacks
-        // Read appropriate size
+        // Read from paged_memory_state (which may sentinel-inject into its page data).
+        // Capture the returned value and write it back into Unicorn's mapped memory so
+        // the emulated CPU sees the same sentinel-injected value as the JIT executor.
+        // This hook fires BEFORE Unicorn's actual hardware read, so the write-back takes
+        // effect in time.
+        uint64_t read_value = 0;
         switch (size)
         {
         case 1:
         {
-            uint8_t dummy;
-            cont = state->context_ptr()->read8(state->context_ptr()->context, address, dummy);
+            uint8_t val;
+            cont = state->context_ptr()->read8(state->context_ptr()->context, address, val);
+            read_value = val;
             break;
         }
         case 2:
         {
-            uint16_t dummy;
-            cont = state->context_ptr()->read16(state->context_ptr()->context, address, dummy);
+            uint16_t val;
+            cont = state->context_ptr()->read16(state->context_ptr()->context, address, val);
+            read_value = val;
             break;
         }
         case 4:
         {
-            uint32_t dummy;
-            cont = state->context_ptr()->read32(state->context_ptr()->context, address, dummy);
+            uint32_t val;
+            cont = state->context_ptr()->read32(state->context_ptr()->context, address, val);
+            read_value = val;
             break;
         }
         case 8:
         {
-            uint64_t dummy;
-            cont = state->context_ptr()->read64(state->context_ptr()->context, address, dummy);
+            uint64_t val;
+            cont = state->context_ptr()->read64(state->context_ptr()->context, address, val);
+            read_value = val;
             break;
         }
         }
+
+        // Push the (possibly sentinel-patched) value into Unicorn's memory so the
+        // emulated CPU reads the same bytes that paged_memory_state returned.
+        // TODO: evaluate performance of this. If it's a problem, we can optimize by
+        // only doing this for actual sentinel injections.
+        uc_mem_write(uc, address, &read_value, size);
 
         if (!cont)
         {
