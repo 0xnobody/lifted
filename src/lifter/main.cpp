@@ -198,8 +198,11 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
             cmp.print(std::cout);
         }
 
-        auto diff = verification::diff_runs(*result, *emu_result);
-        diff.print(std::cout);
+        if (cmp.status == verification::comparison_status::FAIL_DIVERGED)
+        {
+            auto diff = verification::diff_runs(*result, *emu_result);
+            diff.print(std::cout);
+        }
     }
 }
 

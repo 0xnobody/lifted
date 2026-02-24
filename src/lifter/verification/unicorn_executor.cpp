@@ -27,9 +27,11 @@ namespace lifted::verification
 
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
 
+        State state = unicorn_to_state(uc);
+
         if (ctx->executor->external_rvas.contains(address))
         {
-            if (!ctx->state->context_ptr()->ext_call(ctx->state->context_ptr()->context, nullptr, address))
+            if (!ctx->state->context_ptr()->ext_call(ctx->state->context_ptr()->context, &state, address))
             {
                 uc_emu_stop(uc);
                 return;
@@ -52,7 +54,6 @@ namespace lifted::verification
         }
         else
         {
-            State state = unicorn_to_state(uc);
             if (!ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, &state, address - LOAD_BASE))
             {
                 uc_emu_stop(uc);
