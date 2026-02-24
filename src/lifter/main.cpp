@@ -148,7 +148,17 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
                     .flags = verification::record_on_flags::DEFAULT,
                     .prev_record = nullptr}};
 
-        auto exec = verification::JITExecutor::create(std::move(lift_result->Module), lift_result->LiftedFunction->getName().str());
+        // Get fallthrough edges from the lift result
+        std::set<std::pair<uint64_t, uint64_t>> fallthrough_edges;
+        for (const auto &edge : lift_result->Edges)
+        {
+            if (edge.Type == Edge::Type::FALLTHROUGH)
+            {
+                fallthrough_edges.insert({edge.Source, edge.Dest});
+            }
+        }
+
+        auto exec = verification::JITExecutor::create(std::move(lift_result->Module), lift_result->LiftedFunction->getName().str(), fallthrough_edges);
         if (!exec)
         {
             return exec.takeError();
