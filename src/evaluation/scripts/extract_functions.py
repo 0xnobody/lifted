@@ -173,7 +173,7 @@ def main() -> None:
                       file=sys.stderr)
 
     with out_path.open("w", newline="") as f:
-        writer = csv.writer(f)
+        writer = csv.writer(f, lineterminator="\n")
         writer.writerow(["func_name", "addr"])
         writer.writerows(rows)
 

@@ -118,12 +118,16 @@ function(define_eval_target)
         LINKER_LANGUAGE ${ET_LANGUAGE}
     )
 
-    # ── Post-build: extract functions → <name>.targets.csv ────────────────────
+    # ── CSV: extract functions → <name>.targets.csv ────────────────────────────    
+    # Uses add_custom_command(OUTPUT) so CMake tracks the CSV as a real file
+    # artifact with timestamp-based dependency checking.  This means:
+    #   • Missing CSV     → always regenerated on next build (even if .so unchanged)
+    #   • .so rebuilt     → CSV regenerated (file timestamp dependency via target)
+    #   • Nothing changed → no-op
     set(_so_path    "$<TARGET_FILE:${_so_target}>")
-    # Compute the deterministic path to the object file produced by CMake.
-    # Convention: CMakeFiles/<target>.dir/<source_filename>.o
+    # Deterministic path to the object file: CMakeFiles/<target>.dir/<src>.o
     get_filename_component(_src_name "${ET_SOURCE}" NAME)
-    set(_obj_file "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${_obj_target}.dir/${_src_name}.o")
+    set(_obj_file   "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${_obj_target}.dir/${_src_name}.o")
     set(_csv_path   "${CMAKE_CURRENT_BINARY_DIR}/${ET_NAME}.targets.csv")
     set(_script     "${_EVAL_SCRIPTS_DIR}/extract_functions.py")
 
@@ -135,15 +139,21 @@ function(define_eval_target)
         endforeach()
     endif()
 
-    add_custom_command(TARGET ${_so_target} POST_BUILD
+    add_custom_command(
+        OUTPUT  "${_csv_path}"
         COMMAND ${Python3_EXECUTABLE} "${_script}"
                 --object "${_obj_file}"
-                --so     ${_so_path}
+                --so     "${_so_path}"
                 --output "${_csv_path}"
                 ${_fn_args}
-        COMMENT "[EvalHelpers] Extracting functions from ${ET_NAME} → ${ET_NAME}.targets.csv"
+        DEPENDS ${_so_target} "${_obj_file}"
+        COMMENT "[EvalHelpers] Extracting functions from ${ET_NAME} -> ${ET_NAME}.targets.csv"
         VERBATIM
     )
+
+    # Named custom target so the CSV participates in the default build graph
+    # and so define_eval_suite can depend on it by name.
+    add_custom_target("eval-${ET_NAME}-csv" DEPENDS "${_csv_path}")
 
     # ── Export paths to parent scope ─────────────────────────────────────────
     string(TOUPPER "${ET_NAME}" _id_upper)
@@ -183,8 +193,9 @@ function(define_eval_suite)
     set(_suite_csv "${CMAKE_CURRENT_BINARY_DIR}/${ES_NAME}.targets.csv")
     set(_gen_script "${_EVAL_SCRIPTS_DIR}/generate_suite_csv.py")
 
-    set(_all_deps "")      # CMake targets/files this suite depends on
-    set(_entry_args "")    # --entry so_path:csv_path pairs for the Python script
+    set(_all_dep_targets "")   # CMake target names (for add_custom_target DEPENDS)
+    set(_all_dep_files   "")   # Actual file paths (for add_custom_command OUTPUT DEPENDS)
+    set(_entry_args "")    # --entry so_path:::csv_path pairs for the Python script
 
     foreach(_target IN LISTS ES_TARGETS)
         string(TOUPPER "${_target}" _up)
@@ -197,7 +208,8 @@ function(define_eval_suite)
             message(FATAL_ERROR "define_eval_suite: target '${_target}' not defined via define_eval_target()")
         endif()
 
-        list(APPEND _all_deps "eval-${_target}")
+        list(APPEND _all_dep_targets "eval-${_target}-csv")
+        list(APPEND _all_dep_files   "${_csv}")
         list(APPEND _entry_args "--entry" "${_so}:::${_csv}")
 
         # Obfuscated variants
@@ -237,7 +249,8 @@ function(define_eval_suite)
                 VERBATIM
             )
 
-            list(APPEND _all_deps "${_obf_so}")
+            list(APPEND _all_dep_targets "${_obf_so}")
+            list(APPEND _all_dep_files   "${_obf_so}" "${_obf_csv}")
             list(APPEND _entry_args "--entry" "${_obf_so}:::${_obf_csv}")
         endforeach()
     endforeach()
@@ -248,13 +261,13 @@ function(define_eval_suite)
         COMMAND ${Python3_EXECUTABLE} "${_gen_script}"
                 --output "${_suite_csv}"
                 ${_entry_args}
-        DEPENDS ${_all_deps}
+        DEPENDS ${_all_dep_targets} ${_all_dep_files}
         COMMENT "[EvalHelpers] Generating suite CSV: ${ES_NAME}.targets.csv"
         VERBATIM
     )
 
     add_custom_target("eval-suite-${ES_NAME}" ALL
-        DEPENDS "${_suite_csv}" ${_all_deps}
+        DEPENDS "${_suite_csv}" ${_all_dep_targets}
     )
 
     # ── Export ────────────────────────────────────────────────────────────────

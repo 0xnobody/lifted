@@ -55,7 +55,7 @@ def main() -> None:
         rows.append((so_path.strip(), csv_path.strip()))
 
     with out_path.open("w", newline="") as f:
-        writer = csv.writer(f)
+        writer = csv.writer(f, lineterminator="\n")
         writer.writerow(["so_path", "targets_csv_path"])
         writer.writerows(rows)
 

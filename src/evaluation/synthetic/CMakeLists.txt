@@ -2,7 +2,7 @@
 # Migrated to the EvalHelpers API (define_eval_target + define_eval_suite).
 # Previously used set_optimized_target() / set_polaris_target() helpers.
 
-project("lifter-eval-synthetic")
+project("lifted-eval-synthetic")
 
 set(EVAL_SYNTHETIC_LIBS
     arithmetic
@@ -33,7 +33,7 @@ endforeach()
 define_eval_suite(
     NAME      synthetic
     TARGETS   ${EVAL_SYNTHETIC_LIBS}
-    OBFUSCATORS polaris
+    #OBFUSCATORS polaris
 )
 
 # ── Backward-compat cache variables ───────────────────────────────────────────

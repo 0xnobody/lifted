@@ -5,7 +5,7 @@
 # Unix utilities.  Replace or extend with actual coreutils sources by pointing
 # SOURCE at the coreutils .c file and adjusting COMPILE_OPTIONS as needed.
 
-project("lifter-eval-tum")
+project("lifted-eval-tum")
 
 # ── Define targets ────────────────────────────────────────────────────────────
 define_eval_target(NAME cat    SOURCE cat.c    LANGUAGE C)

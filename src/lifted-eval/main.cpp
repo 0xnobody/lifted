@@ -61,6 +61,8 @@ static std::vector<TargetEntry> parse_targets_csv(const std::filesystem::path &c
     bool header = true;
     while (std::getline(f, line))
     {
+        // Strip trailing \r (csv.writer may use \r\n on some platforms)
+        if (!line.empty() && line.back() == '\r') line.pop_back();
         if (header)
         {
             header = false;
@@ -71,7 +73,7 @@ static std::vector<TargetEntry> parse_targets_csv(const std::filesystem::path &c
         auto comma = line.find(',');
         if (comma == std::string::npos)
             continue;
-        std::string name = line.substr(0, comma);
+        std::string name     = line.substr(0, comma);
         std::string addr_str = line.substr(comma + 1);
         try
         {
@@ -97,6 +99,8 @@ static std::vector<SuiteEntry> parse_suite_csv(const std::filesystem::path &csv_
     bool header = true;
     while (std::getline(f, line))
     {
+        // Strip trailing \r (csv.writer may use \r\n on some platforms)
+        if (!line.empty() && line.back() == '\r') line.pop_back();
         if (header)
         {
             header = false;
