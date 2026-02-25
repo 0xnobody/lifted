@@ -23,9 +23,12 @@ namespace lifted::verification
     // Hook callbacks
     void UnicornExecutor::hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
     {
-        printf("block: 0x%016lx\n", address);
-
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
+
+        if (has_flag(ctx->executor->flags, Flags::LOG_BASIC_BLOCKS))
+        {
+            printf("block: 0x%016lx\n", address);
+        }
 
         State state = unicorn_to_state(uc);
 
@@ -142,6 +145,11 @@ namespace lifted::verification
         }
         }
 
+        if (has_flag(ctx->executor->flags, Flags::LOG_MEMORY_ACCESSES))
+        {
+            printf("mem_read: 0x%016lx, size: %d, value: 0x%016lx\n", address, size, read_value);
+        }
+
         // Push the (possibly sentinel-patched) value into Unicorn's memory so the
         // emulated CPU reads the same bytes that paged_memory_state returned.
         // TODO: evaluate performance of this. If it's a problem, we can optimize by
@@ -161,6 +169,11 @@ namespace lifted::verification
         auto *state = ctx->state;
 
         bool cont = false;
+
+        if (has_flag(ctx->executor->flags, Flags::LOG_MEMORY_ACCESSES))
+        {
+            printf("mem_write: 0x%016lx, size: %d, value: 0x%016lx\n", address, size, value);
+        }
 
         // Track memory access via verifier_context callbacks
         switch (size)
@@ -307,13 +320,16 @@ namespace lifted::verification
                 llvm::inconvertibleErrorCode());
         }
 
-        err = uc_hook_add(uc_eng.get(), &code_hook, UC_HOOK_CODE,
-                          (void *)hook_code, nullptr, 1, 0);
-        if (err != UC_ERR_OK)
+        if (has_flag(flags, Flags::LOG_INSTRUCTIONS))
         {
-            return llvm::make_error<llvm::StringError>(
-                std::string("Failed to add code hook: ") + uc_strerror(err),
-                llvm::inconvertibleErrorCode());
+            err = uc_hook_add(uc_eng.get(), &code_hook, UC_HOOK_CODE,
+                              (void *)hook_code, nullptr, 1, 0);
+            if (err != UC_ERR_OK)
+            {
+                return llvm::make_error<llvm::StringError>(
+                    std::string("Failed to add code hook: ") + uc_strerror(err),
+                    llvm::inconvertibleErrorCode());
+            }
         }
 
         // Run emulation
@@ -324,7 +340,11 @@ namespace lifted::verification
         uc_hook_del(uc_eng.get(), mem_invalid_hook);
         uc_hook_del(uc_eng.get(), mem_read_hook);
         uc_hook_del(uc_eng.get(), mem_write_hook);
-        uc_hook_del(uc_eng.get(), code_hook);
+
+        if (has_flag(flags, Flags::LOG_INSTRUCTIONS))
+        {
+            uc_hook_del(uc_eng.get(), code_hook);
+        }
 
         // Check emulation result
         if (err != UC_ERR_OK)

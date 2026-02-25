@@ -46,6 +46,8 @@
 
 #include "passes/pass_utils.hpp"
 
+// #define LIFTER_VERBOSE
+
 namespace lifted
 {
     bool Lifter::IsExecutableSection(const uint64_t addr) const
@@ -1298,7 +1300,9 @@ namespace lifted
         Worklist.push_back((bb_id_t)entry_rva);
         while (!Worklist.empty() || !Reprove.empty())
         {
+#ifdef LIFTER_VERBOSE
             dumpLifterState();
+#endif
 
             if (Worklist.empty())
             {
@@ -1336,10 +1340,11 @@ namespace lifted
                     // Only split if current_addr is NOT at the start (otherwise it's an exact match)
                     if (original_start != current_addr)
                     {
+#ifdef LIFTER_VERBOSE
                         llvm::outs() << "    [SPLIT] Block [0x" << llvm::format_hex(original_start, 16)
                                      << ", 0x" << llvm::format_hex(original_end, 16)
                                      << ") split at 0x" << llvm::format_hex(current_addr, 16) << "\n";
-
+#endif
                         // 1. Remove original block from Explored and both Modules
                         Explored.erase(original_bb_id);
                         if (auto *old_func = Module->getFunction(original_func_name))
@@ -1401,7 +1406,9 @@ namespace lifted
                 }
             }
 
+#ifdef LIFTER_VERBOSE
             llvm::outs() << "[*] Analyzing BB 0x" << llvm::format_hex(curr_id, 16) << "\n";
+#endif
 
             LiftedBB BB;
             std::optional<bb_id_t> maybe_stop;
@@ -1437,8 +1444,10 @@ namespace lifted
                     BB.RVARange.has_value() &&
                     BB.RVARange->end() == *maybe_stop)
                 {
+#ifdef LIFTER_VERBOSE
                     llvm::outs() << "    [FALLTHROUGH] BB 0x" << llvm::format_hex(curr_id, 16)
                                  << " -> 0x" << llvm::format_hex(*maybe_stop, 16) << "\n";
+#endif
                     Edges.insert(Edge{curr_id, *maybe_stop, Edge::Type::FALLTHROUGH});
                     reproveSubtree(*maybe_stop);
                     continue;
@@ -1453,12 +1462,13 @@ namespace lifted
 
             ResolvedTargetsResult targets_result = ResolveTargets(BB, entry_rva);
 
+#ifdef LIFTER_VERBOSE
             llvm::outs() << "Resolved targets for 0x" << llvm::format_hex(BB.ID, 16) << ":\n";
             for (auto target : targets_result.Targets)
             {
                 llvm::outs() << "\t" << target << "\n";
             }
-
+#endif
             for (auto target : targets_result.Targets)
             {
                 switch (target.Type)
