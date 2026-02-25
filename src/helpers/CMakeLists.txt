@@ -36,6 +36,8 @@ set(HELPER_CLANG_FLAGS
     -fno-discard-value-names
     -fstrict-aliasing
     -fno-slp-vectorize
+    -ffreestanding
+    --target=x86_64-pc-linux-gnu-elf
     #-mllvm -enable-tbaa=true
     "-I${HELPER_REMILL_INCLUDE_DIR}"
     "-I${HELPER_KLEE_INCLUDE_DIR}"

@@ -126,8 +126,10 @@ namespace lifted
             uint8_t byte = 0;
             if (!TryReadExecutableByte(byte_addr, &byte))
             {
+#ifdef LIFTER_VERBOSE
                 DLOG(WARNING) << "Couldn't read executable byte at " << std::hex
                               << byte_addr << std::dec;
+#endif
                 break;
             }
             inst_bytes.push_back(static_cast<char>(byte));
@@ -246,7 +248,9 @@ namespace lifted
                         {
                             if (got_range.contains(const_offset->getZExtValue()))
                             {
+#ifdef LIFTER_VERBOSE
                                 DLOG(INFO) << "Heuristically resolved indirect target via GOT at offset " << std::hex << const_offset->getZExtValue() << std::dec;
+#endif
                                 return ResolvedTargetsResult{
                                     .Targets = {},
                                     .IndirectTarget = Callee{} // We can fill in more callee info here if needed
@@ -873,10 +877,11 @@ namespace lifted
         // There is no simple way of differentiating between the two cases, apart from more heurestics.
         // For now, we will just log a warning and return an empty set.
 
+#ifdef LIFTER_VERBOSE
         DLOG(WARNING) << "Warning: Failed to resolve targets for BB "
                       << std::hex << BB.ID << std::dec
                       << ". This may be due to limitations in the target resolution logic.";
-
+#endif
         return ResolvedTargetsResult{
             .Targets = {},
             .IndirectTarget = std::nullopt};
@@ -1043,8 +1048,10 @@ namespace lifted
             {
                 if (inst_addr > *stop_at)
                 {
+#ifdef LIFTER_VERBOSE
                     DLOG(WARNING) << "Warning: stop address not aligned with instruction boundary at "
                                   << std::hex << inst_addr << std::dec;
+#endif
                 }
 
                 // TODO: put this in a lambda or something
@@ -1088,9 +1095,11 @@ namespace lifted
             case remill::Instruction::kCategoryConditionalDirectFunctionCall:
             case remill::Instruction::kCategoryConditionalIndirectFunctionCall:
             {
+#ifdef LIFTER_VERBOSE
                 DLOG(WARNING) << "Warning: Unsupported instruction category "
                               << inst.category << " at "
                               << std::hex << inst_addr << std::dec;
+#endif
                 [[fallthrough]];
             }
 

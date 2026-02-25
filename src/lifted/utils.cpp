@@ -45,7 +45,14 @@ namespace lifted::utils
                 llvm::inconvertibleErrorCode());
         }
 
-        // Link the helpers module with the main module
+        // Link the helpers module with the main module.
+        // Normalize the helper module's data layout and triple to match the
+        // destination so llvm::Linker doesn't emit spurious mismatch warnings.
+        // The layouts are functionally compatible — helpers never use the
+        // address spaces (p270/p271/p272) that differ between the two.
+        helpers_module->setDataLayout(module->getDataLayout());
+        helpers_module->setTargetTriple(module->getTargetTriple());
+
         if (llvm::Linker::linkModules(*module, std::move(helpers_module)))
         {
             return llvm::make_error<llvm::StringError>(

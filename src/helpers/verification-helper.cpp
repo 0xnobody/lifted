@@ -9,7 +9,7 @@
 
 #include "standard-intrinsics.hpp"
 
-#include "../lifter/verification/jit_executor_context.hpp" // ew
+#include "../lifted/verification/jit_executor_context.hpp" // ew
 
 struct Memory
 {
