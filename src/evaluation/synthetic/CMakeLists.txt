@@ -1,44 +1,9 @@
+# ── Synthetic Evaluation Suite ────────────────────────────────────────────────
+# Migrated to the EvalHelpers API (define_eval_target + define_eval_suite).
+# Previously used set_optimized_target() / set_polaris_target() helpers.
+
 project("lifter-eval-synthetic")
 
-function(set_optimized_target target_name)
-    add_library(eval-${target_name} SHARED ${target_name}.cpp)
-    target_compile_options(eval-${target_name} PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang>:-O0 -DNDEBUG>
-        $<$<CXX_COMPILER_ID:MSVC>:/O0 /DNDEBUG>
-        -fno-stack-protector
-        -fno-tree-vectorize
-    )
-endfunction()
-
-function(set_polaris_target)
-    set(POLARIS_OUTPUTS "")
-    set(POLARIS_INPUTS "")
-
-    foreach(target ${ARGN})
-        set(so "${CMAKE_CURRENT_BINARY_DIR}/libeval-${target}-polaris.so")
-        set(source "${CMAKE_CURRENT_LIST_DIR}/${target}.cpp")
-
-        add_custom_command(
-            OUTPUT ${so}
-            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}
-            COMMAND "${POLARIS_CLANG_PATH}" -mllvm -passes="${POLARIS_PASSES}" "${source}" -shared -fPIC -o "${so}"
-            DEPENDS ${source}
-            COMMENT "Compiling Polaris binary: ${source}"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        )
-        list(APPEND POLARIS_OUTPUTS ${so})
-        list(APPEND POLARIS_INPUTS ${source})
-    endforeach()
-
-    add_custom_target(eval-polaris-bins ALL
-        DEPENDS ${POLARIS_OUTPUTS}
-        SOURCES ${POLARIS_INPUTS}
-    )
-
-    add_dependencies(eval-polaris-bins polaris_external)
-endfunction()
-
-# List of all synthetic evaluation libraries
 set(EVAL_SYNTHETIC_LIBS
     arithmetic
     branch
@@ -55,10 +20,25 @@ set(EVAL_SYNTHETIC_LIBS
     ext-call-stack-args
 )
 
-foreach(lib ${EVAL_SYNTHETIC_LIBS})
-    set_optimized_target(${lib})
+# ── Define one target per source file ─────────────────────────────────────────
+foreach(_lib IN LISTS EVAL_SYNTHETIC_LIBS)
+    define_eval_target(
+        NAME    "${_lib}"
+        SOURCE  "${_lib}.cpp"
+        LANGUAGE CXX
+    )
 endforeach()
 
-set_polaris_target(${EVAL_SYNTHETIC_LIBS})
+# ── Assemble the suite (also builds Polaris variants if registered) ────────────
+define_eval_suite(
+    NAME      synthetic
+    TARGETS   ${EVAL_SYNTHETIC_LIBS}
+    OBFUSCATORS polaris
+)
 
-set(EVAL_SYNTHETIC_LIBS_DIR "${CMAKE_BINARY_DIR}/src/evaluation/synthetic" CACHE STRING "Directory containing synthetic evaluation shared libraries")
+# ── Backward-compat cache variables ───────────────────────────────────────────
+# Keep EVAL_SYNTHETIC_LIBS_DIR so that any code still referencing it continues
+# to work unchanged.
+set(EVAL_SYNTHETIC_LIBS_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}"
+    CACHE STRING "Directory containing synthetic evaluation shared libraries" FORCE)

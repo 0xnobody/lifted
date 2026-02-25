@@ -2,6 +2,10 @@
 #include <memory>
 #include <string>
 #include <iostream>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <cstdint>
 #include <filesystem>
 
 #include <remill/Arch/Arch.h>
@@ -29,6 +33,84 @@
 #include "verification/comparator.hpp"
 
 using namespace lifted;
+
+// ── Evaluation suite CSV types ────────────────────────────────────────────────
+
+struct TargetEntry
+{
+    std::string func_name;
+    uint64_t addr;
+};
+
+struct SuiteEntry
+{
+    std::filesystem::path so_path;
+    std::filesystem::path targets_csv_path;
+};
+
+static std::vector<TargetEntry> parse_targets_csv(const std::filesystem::path &csv_path)
+{
+    std::vector<TargetEntry> result;
+    std::ifstream f(csv_path);
+    if (!f.is_open())
+    {
+        llvm::errs() << "parse_targets_csv: cannot open " << csv_path.string() << "\n";
+        return result;
+    }
+    std::string line;
+    bool header = true;
+    while (std::getline(f, line))
+    {
+        if (header)
+        {
+            header = false;
+            continue;
+        }
+        if (line.empty())
+            continue;
+        auto comma = line.find(',');
+        if (comma == std::string::npos)
+            continue;
+        std::string name = line.substr(0, comma);
+        std::string addr_str = line.substr(comma + 1);
+        try
+        {
+            result.push_back({name, static_cast<uint64_t>(std::stoull(addr_str, nullptr, 16))});
+        }
+        catch (...)
+        {
+        }
+    }
+    return result;
+}
+
+static std::vector<SuiteEntry> parse_suite_csv(const std::filesystem::path &csv_path)
+{
+    std::vector<SuiteEntry> result;
+    std::ifstream f(csv_path);
+    if (!f.is_open())
+    {
+        llvm::errs() << "parse_suite_csv: cannot open " << csv_path.string() << "\n";
+        return result;
+    }
+    std::string line;
+    bool header = true;
+    while (std::getline(f, line))
+    {
+        if (header)
+        {
+            header = false;
+            continue;
+        }
+        if (line.empty())
+            continue;
+        auto comma = line.find(',');
+        if (comma == std::string::npos)
+            continue;
+        result.push_back({line.substr(0, comma), line.substr(comma + 1)});
+    }
+    return result;
+}
 
 llvm::Expected<uint64_t> rva_from_export(const LIEF::Binary &binary, const std::string &export_name)
 {
@@ -83,10 +165,14 @@ std::optional<llvm::AddressRange> get_section_bounds(const LIEF::Binary &binary,
     }
 }
 
-llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path path, const llvm::Module *defs_module)
+// Core lifting + verification path.  Takes an explicit entry RVA so the
+// caller can supply addresses obtained from the CSV (no export lookup needed).
+llvm::Error lift_and_verify_named(llvm::LLVMContext &context,
+                                  const std::filesystem::path &path,
+                                  [[maybe_unused]] const std::string &func_name,
+                                  uint64_t entry_rva)
 {
     // TODO: figure out how to avoid loading arch/semantics for each lift
-    //
     auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
     auto lift_module = remill::LoadArchSemantics(arch.get());
 
@@ -95,12 +181,6 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
     {
         return llvm::make_error<llvm::StringError>("Failed to parse binary: " + path.string(),
                                                    llvm::inconvertibleErrorCode());
-    }
-
-    auto rva = rva_from_export(*binary, "test");
-    if (!rva)
-    {
-        return rva.takeError();
     }
 
     lifted::abi::SystemVx64CC CC;
@@ -129,7 +209,7 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
                   nullptr,
                   &CC);
 
-    auto lift_result = lifter.Lift(*rva, true);
+    auto lift_result = lifter.Lift(entry_rva, true);
 
     if (lift_result)
     {
@@ -144,7 +224,7 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
             {
                 .seed = 0x1337,
                 .binary = binary,
-                .entry_rva = *rva,
+                .entry_rva = entry_rva,
                 .oracle = &oracle};
 
         verification::verification_params_t verif_params =
@@ -185,7 +265,7 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
             llvm::outs() << "\t0x" << llvm::format_hex(ext_call, 16) << "\n";
         }
 
-        auto emu = verification::UnicornExecutor::create(binary, ext_calls_set, *rva);
+        auto emu = verification::UnicornExecutor::create(binary, ext_calls_set, entry_rva);
 
         verif_params.checkpoint_config.prev_record = &result->checkpoint_record; // Share checkpoints between JIT and Unicorn for cross-validation
         auto emu_result = (*emu)->run_single(run_params, verif_params);
@@ -219,45 +299,74 @@ llvm::Error lift_and_verify(llvm::LLVMContext &context, std::filesystem::path pa
             diff.print(std::cout);
         }
     }
+
+    return llvm::Error::success();
 }
 
-std::array<std::string, 11> synthetic_test_bins = {
-    "libeval-arithmetic",
-    "libeval-branch",
-    "libeval-ext-call-branching",
-    "libeval-ext-call-stack-args",
-    "libeval-ext-call",
-    //"libeval-indirect-call",
-    "libeval-local-vars",
-    "libeval-loop-bounded",
-    "libeval-loop-unbounded",
-    "libeval-stack-args",
-    "libeval-stack-loop",
-    //"libeval-switch",
-    "libeval-test",
-};
+// Thin wrapper for callers that want to look up an export by name at runtime.
+llvm::Error lift_and_verify(llvm::LLVMContext &context,
+                            std::filesystem::path path,
+                            const llvm::Module * /*defs_module*/)
+{
+    std::shared_ptr<LIEF::Binary> binary = LIEF::Parser::parse(path);
+    if (!binary)
+        return llvm::make_error<llvm::StringError>("Failed to parse binary: " + path.string(),
+                                                   llvm::inconvertibleErrorCode());
+    auto rva = rva_from_export(*binary, "test");
+    if (!rva)
+        return rva.takeError();
+    return lift_and_verify_named(context, path, "test", *rva);
+}
+
+// ── Suite runner ──────────────────────────────────────────────────────────────
+// Reads a suite CSV (so_path,targets_csv_path) and lifts every listed function.
+static llvm::Error lift_suite(llvm::LLVMContext &context,
+                              const std::filesystem::path &suite_csv_path)
+{
+    llvm::outs() << "\n=== Suite: " << suite_csv_path.filename().string() << " ===\n";
+
+    auto suite = parse_suite_csv(suite_csv_path);
+    if (suite.empty())
+    {
+        llvm::errs() << "lift_suite: no entries in " << suite_csv_path.string() << "\n";
+        return llvm::Error::success();
+    }
+
+    for (const auto &entry : suite)
+    {
+        auto targets = parse_targets_csv(entry.targets_csv_path);
+        if (targets.empty())
+        {
+            llvm::errs() << "  no targets in " << entry.targets_csv_path.string() << "\n";
+            continue;
+        }
+
+        for (const auto &target : targets)
+        {
+            llvm::outs() << "  Lifting " << entry.so_path.filename().string()
+                         << "::" << target.func_name
+                         << " @ " << llvm::format_hex(target.addr, 18) << "\n";
+
+            if (auto err = lift_and_verify_named(context, entry.so_path,
+                                                 target.func_name, target.addr))
+            {
+                llvm::errs() << "  FAILED: " << llvm::toString(std::move(err)) << "\n";
+            }
+        }
+    }
+
+    return llvm::Error::success();
+}
 
 int main(int argc, char **argv)
 {
     llvm::LLVMContext context;
 
-    // std::filesystem::path custom_path = EVAL_SYNTHETIC_LIBS_DIR;
-    // custom_path /= "libeval-loop-bounded.so";
-    // auto custom_r = lift_and_verify(context, custom_path, nullptr);
+    if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
+        llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
 
-    for (auto &test : synthetic_test_bins)
-    {
-        llvm::outs() << "Running test: " << test << "\n";
-        std::filesystem::path path = EVAL_SYNTHETIC_LIBS_DIR;
-        path /= test + ".so";
-
-        auto r = lift_and_verify(context, path, nullptr);
-
-        if (r)
-        {
-            llvm::errs() << "Lifting failed: " << llvm::toString(std::move(r)) << "\n";
-        }
-    }
+    if (auto err = lift_suite(context, EVAL_SUITE_TUM_EVAL_CSV))
+        llvm::errs() << "tum-eval suite error: " << llvm::toString(std::move(err)) << "\n";
 
     return EXIT_SUCCESS;
 }
