@@ -227,9 +227,7 @@ int main(int argc, char **argv)
 {
     llvm::LLVMContext context;
 
-    lift_and_verify(context, "/home/atlas/lifted/build/src/evaluation/synthetic/libeval-ext-call-stack-args.so", nullptr);
-
-    return EXIT_SUCCESS;
+    // lift_and_verify(context, "/home/atlas/lifted/build/src/evaluation/synthetic/libeval-ext-call-stack-args.so", nullptr);
 
     if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
         llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
