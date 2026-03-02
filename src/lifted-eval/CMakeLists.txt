@@ -1,6 +1,12 @@
 project("lifted-eval")
 
-add_executable(lifted-eval "main.cpp")
+add_executable(lifted-eval 
+    "main.cpp"
+    "suite.cpp"
+    "suite.hpp"
+    "utils.cpp"
+    "utils.hpp"
+)
 
 target_link_libraries(lifted-eval PRIVATE lifted)
 

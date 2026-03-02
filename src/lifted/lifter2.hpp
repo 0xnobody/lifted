@@ -143,8 +143,9 @@ namespace lifted
         {
             CONTROL_FLOW,       // Normal jumps/branches discovered via ResolveTargets
             FALLTHROUGH,        // Sequential flow created during block splitting
-            SYNTHETIC_EXTERNAL, // Edge to external call dispatcher
-            SYNTHETIC_INDIRECT  // Edge to indirect call dispatcher
+            SYNTHETIC_EXTERNAL, // Edge from a real block to an external call dispatcher
+            SYNTHETIC_INDIRECT, // Edge from a real block to an indirect call dispatcher
+            SYNTHETIC_RETURN    // Edge from a synthetic dispatcher back to its continuation (return address block)
         } Type;
 
         // Default to CONTROL_FLOW for backward compatibility
@@ -323,11 +324,31 @@ namespace lifted
             }
             llvm::outs() << "]\n";
 
+            // Use decltype to avoid the Edge::Type member/enum-class name collision.
+            using EdgeTypeEnum = std::decay_t<decltype(std::declval<Edge>().Type)>;
+            auto EdgeTypeName = [](EdgeTypeEnum t) -> llvm::StringRef
+            {
+                switch (t)
+                {
+                case EdgeTypeEnum::CONTROL_FLOW:
+                    return "CONTROL_FLOW";
+                case EdgeTypeEnum::FALLTHROUGH:
+                    return "FALLTHROUGH";
+                case EdgeTypeEnum::SYNTHETIC_EXTERNAL:
+                    return "SYNTHETIC_EXTERNAL";
+                case EdgeTypeEnum::SYNTHETIC_INDIRECT:
+                    return "SYNTHETIC_INDIRECT";
+                case EdgeTypeEnum::SYNTHETIC_RETURN:
+                    return "SYNTHETIC_RETURN";
+                default:
+                    return "UNKNOWN";
+                }
+            };
             llvm::outs() << "Edges: [";
             for (const auto &edge : Edges)
             {
                 llvm::outs() << "\n\t(0x" << llvm::format_hex(edge.Source, 16)
-                             << " -> 0x" << llvm::format_hex(edge.Dest, 16) << " [" << static_cast<int>(edge.Type) << "]),";
+                             << " -> 0x" << llvm::format_hex(edge.Dest, 16) << " [" << EdgeTypeName(edge.Type) << "]),";
             }
             llvm::outs() << "]\n";
         }

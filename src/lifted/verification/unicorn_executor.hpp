@@ -30,6 +30,7 @@ namespace lifted::verification
             LOG_INSTRUCTIONS = 1 << 0,    // Log each instruction executed (for debugging)
             LOG_BASIC_BLOCKS = 1 << 1,    // Log basic block entries (for debugging)
             LOG_MEMORY_ACCESSES = 1 << 2, // Log memory reads/writes (for debugging)
+            LOG_ALL = LOG_INSTRUCTIONS | LOG_BASIC_BLOCKS | LOG_MEMORY_ACCESSES,
         };
 
     private:
@@ -40,7 +41,7 @@ namespace lifted::verification
         uint64_t entry_rva;
         Flags flags;
 
-        UnicornExecutor(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry, Flags flags = Flags::NONE)
+        UnicornExecutor(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry, Flags flags)
             : binary(std::move(bin)),
               external_rvas(ext_rvas),
               uc_eng(nullptr, uc_close),
@@ -56,7 +57,7 @@ namespace lifted::verification
 
     public:
         static llvm::Expected<std::unique_ptr<UnicornExecutor>>
-        create(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry_rva);
+        create(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry_rva, Flags flags = Flags::NONE);
 
     private:
         static void hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);

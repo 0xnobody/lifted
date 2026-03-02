@@ -12,14 +12,6 @@
 #include <remill/Arch/Name.h>
 #include <remill/OS/OS.h>
 
-#ifdef DEBUG
-#undef DEBUG
-#include <LIEF/LIEF.hpp>
-#define DEBUG
-#else
-#include <LIEF/LIEF.hpp>
-#endif
-
 #include "helpers.hpp"
 #include "utils.hpp"
 #include "opt.hpp"
@@ -32,142 +24,11 @@
 #include "verification/unicorn_executor.hpp"
 #include "verification/comparator.hpp"
 
+#include "suite.hpp"
+#include "utils.hpp"
+
 using namespace lifted;
-
-// ── Evaluation suite CSV types ────────────────────────────────────────────────
-
-struct TargetEntry
-{
-    std::string func_name;
-    uint64_t addr;
-};
-
-struct SuiteEntry
-{
-    std::filesystem::path so_path;
-    std::filesystem::path targets_csv_path;
-};
-
-static std::vector<TargetEntry> parse_targets_csv(const std::filesystem::path &csv_path)
-{
-    std::vector<TargetEntry> result;
-    std::ifstream f(csv_path);
-    if (!f.is_open())
-    {
-        llvm::errs() << "parse_targets_csv: cannot open " << csv_path.string() << "\n";
-        return result;
-    }
-    std::string line;
-    bool header = true;
-    while (std::getline(f, line))
-    {
-        // Strip trailing \r (csv.writer may use \r\n on some platforms)
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (header)
-        {
-            header = false;
-            continue;
-        }
-        if (line.empty())
-            continue;
-        auto comma = line.find(',');
-        if (comma == std::string::npos)
-            continue;
-        std::string name     = line.substr(0, comma);
-        std::string addr_str = line.substr(comma + 1);
-        try
-        {
-            result.push_back({name, static_cast<uint64_t>(std::stoull(addr_str, nullptr, 16))});
-        }
-        catch (...)
-        {
-        }
-    }
-    return result;
-}
-
-static std::vector<SuiteEntry> parse_suite_csv(const std::filesystem::path &csv_path)
-{
-    std::vector<SuiteEntry> result;
-    std::ifstream f(csv_path);
-    if (!f.is_open())
-    {
-        llvm::errs() << "parse_suite_csv: cannot open " << csv_path.string() << "\n";
-        return result;
-    }
-    std::string line;
-    bool header = true;
-    while (std::getline(f, line))
-    {
-        // Strip trailing \r (csv.writer may use \r\n on some platforms)
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (header)
-        {
-            header = false;
-            continue;
-        }
-        if (line.empty())
-            continue;
-        auto comma = line.find(',');
-        if (comma == std::string::npos)
-            continue;
-        result.push_back({line.substr(0, comma), line.substr(comma + 1)});
-    }
-    return result;
-}
-
-llvm::Expected<uint64_t> rva_from_export(const LIEF::Binary &binary, const std::string &export_name)
-{
-    auto exports = binary.exported_functions();
-    for (const auto &exp : exports)
-    {
-        if (exp.name() == export_name)
-        {
-            return exp.address() - binary.imagebase();
-        }
-    }
-    return llvm::createStringError(llvm::inconvertibleErrorCode(), "Export not found: " + export_name);
-}
-
-std::optional<llvm::AddressRange> get_section_bounds(const LIEF::Binary &binary, std::string name)
-{
-    auto format = binary.format();
-    switch (format)
-    {
-    case LIEF::EXE_FORMATS::FORMAT_ELF:
-    {
-        auto *elf = dynamic_cast<const LIEF::ELF::Binary *>(&binary);
-        auto *section = elf->get_section(name);
-        if (!section)
-            return std::nullopt;
-        return llvm::AddressRange{section->virtual_address(), section->virtual_address() + section->size()};
-    }
-    break;
-    case LIEF::EXE_FORMATS::FORMAT_PE:
-    {
-        auto *pe = dynamic_cast<const LIEF::PE::Binary *>(&binary);
-        auto *section = pe->get_section(name);
-        if (!section)
-            return std::nullopt;
-        return llvm::AddressRange{section->virtual_address(), section->virtual_address() + section->size()};
-    }
-    break;
-    case LIEF::EXE_FORMATS::FORMAT_MACHO:
-    {
-        auto *macho = dynamic_cast<const LIEF::MachO::Binary *>(&binary);
-        auto *section = macho->get_section(name);
-        if (!section)
-            return std::nullopt;
-        return llvm::AddressRange{section->virtual_address(), section->virtual_address() + section->size()};
-    }
-    break;
-    default:
-    {
-        throw std::runtime_error("Unsupported LIEF format");
-    }
-    break;
-    }
-}
+using namespace lifted::eval;
 
 // Core lifting + verification path.  Takes an explicit entry RVA so the
 // caller can supply addresses obtained from the CSV (no export lookup needed).
@@ -269,7 +130,7 @@ llvm::Error lift_and_verify_named(llvm::LLVMContext &context,
             llvm::outs() << "\t0x" << llvm::format_hex(ext_call, 16) << "\n";
         }
 
-        auto emu = verification::UnicornExecutor::create(binary, ext_calls_set, entry_rva);
+        auto emu = verification::UnicornExecutor::create(binary, ext_calls_set, entry_rva, verification::UnicornExecutor::Flags::LOG_ALL);
 
         verif_params.checkpoint_config.prev_record = &result->checkpoint_record; // Share checkpoints between JIT and Unicorn for cross-validation
         auto emu_result = (*emu)->run_single(run_params, verif_params);
@@ -365,6 +226,10 @@ static llvm::Error lift_suite(llvm::LLVMContext &context,
 int main(int argc, char **argv)
 {
     llvm::LLVMContext context;
+
+    lift_and_verify(context, "/home/atlas/lifted/build/src/evaluation/synthetic/libeval-ext-call-stack-args.so", nullptr);
+
+    return EXIT_SUCCESS;
 
     if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
         llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";

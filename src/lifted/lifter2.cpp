@@ -46,7 +46,7 @@
 
 #include "passes/pass_utils.hpp"
 
-// #define LIFTER_VERBOSE
+#define LIFTER_VERBOSE
 
 namespace lifted
 {
@@ -1500,8 +1500,12 @@ namespace lifted
 
                     if (!edgeKnown)
                     {
-                        // Always record any newly solved edge.
-                        Edges.insert(Edge{curr_id, new_target_id, Edge::Type::CONTROL_FLOW});
+                        // Synthetic dispatchers returning to their continuation get SYNTHETIC_RETURN;
+                        // all other resolved targets keep CONTROL_FLOW.
+                        auto edgeTy = IsSynthetic(curr_id)
+                                          ? Edge::Type::SYNTHETIC_RETURN
+                                          : Edge::Type::CONTROL_FLOW;
+                        Edges.insert(Edge{curr_id, new_target_id, edgeTy});
                     }
 
                     if (!Explored.contains(new_target_id))

@@ -207,11 +207,11 @@ namespace lifted::verification
     }
 
     llvm::Expected<std::unique_ptr<UnicornExecutor>>
-    UnicornExecutor::create(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry_rva)
+    UnicornExecutor::create(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry_rva, Flags flags)
     {
         // Create executor (private constructor)
         auto executor = std::unique_ptr<UnicornExecutor>(
-            new UnicornExecutor(bin, ext_rvas, entry_rva));
+            new UnicornExecutor(bin, ext_rvas, entry_rva, flags));
 
         // Run setup
         if (auto err = executor->setup_impl())
