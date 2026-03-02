@@ -125,11 +125,30 @@ function(define_eval_target)
     #   • .so rebuilt     → CSV regenerated (file timestamp dependency via target)
     #   • Nothing changed → no-op
     set(_so_path    "$<TARGET_FILE:${_so_target}>")
-    # Deterministic path to the object file: CMakeFiles/<target>.dir/<src>.o
-    get_filename_component(_src_name "${ET_SOURCE}" NAME)
-    set(_obj_file   "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${_obj_target}.dir/${_src_name}.o")
     set(_csv_path   "${CMAKE_CURRENT_BINARY_DIR}/${ET_NAME}.targets.csv")
     set(_script     "${_EVAL_SCRIPTS_DIR}/extract_functions.py")
+
+    # --object lets the script restrict extracted symbols to those defined in
+    # this specific translation unit (not all T/t in the .so).  The simple
+    # object-path formula  CMakeFiles/<target>.dir/<src-name>.o  is only
+    # correct when the source lives directly under CMAKE_CURRENT_SOURCE_DIR:
+    # CMake encodes only the filename in that case.  For any other source
+    # (absolute paths from FetchContent in _deps/, other directories, etc.)
+    # CMake embeds more path components and the formula breaks.
+    #
+    # Omitting --object is safe: every eval target compiles a single .c into
+    # its own dedicated .so, so the .so already contains only that TU's
+    # symbols.  The script's auxiliary-symbol filter removes CRT stubs.
+    cmake_path(IS_PREFIX CMAKE_CURRENT_SOURCE_DIR "${ET_SOURCE}" NORMALIZE _src_is_local)
+    if(_src_is_local)
+        get_filename_component(_src_name "${ET_SOURCE}" NAME)
+        set(_obj_file "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${_obj_target}.dir/${_src_name}.o")
+        set(_obj_args "--object" "${_obj_file}")
+        set(_obj_deps "${_obj_file}")
+    else()
+        set(_obj_args "")
+        set(_obj_deps "")
+    endif()
 
     # Build optional --functions args
     set(_fn_args "")
@@ -142,11 +161,11 @@ function(define_eval_target)
     add_custom_command(
         OUTPUT  "${_csv_path}"
         COMMAND ${Python3_EXECUTABLE} "${_script}"
-                --object "${_obj_file}"
+                ${_obj_args}
                 --so     "${_so_path}"
                 --output "${_csv_path}"
                 ${_fn_args}
-        DEPENDS ${_so_target} "${_obj_file}"
+        DEPENDS ${_so_target} ${_obj_deps}
         COMMENT "[EvalHelpers] Extracting functions from ${ET_NAME} -> ${ET_NAME}.targets.csv"
         VERBATIM
     )
