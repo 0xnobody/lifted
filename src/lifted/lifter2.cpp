@@ -265,16 +265,35 @@ namespace lifted
         return ResolvedTargetsResult{.Targets = {}, .IndirectTarget = std::nullopt};
     }
 
+    static bool CollectReturnConstants(
+        llvm::Value *V,
+        llvm::SmallPtrSetImpl<llvm::Value *> &Visited,
+        llvm::SmallSetVector<uint64_t, 4> &Out)
+    {
+        if (!V || !Visited.insert(V).second)
+            return true;
+
+        if (auto *C = llvm::dyn_cast<llvm::ConstantInt>(V))
+        {
+            Out.insert(C->getZExtValue());
+            return true;
+        }
+        if (auto *Phi = llvm::dyn_cast<llvm::PHINode>(V))
+        {
+            for (llvm::Value *Inc : Phi->incoming_values())
+                if (!CollectReturnConstants(Inc, Visited, Out))
+                    return false;
+            return true;
+        }
+        if (auto *Sel = llvm::dyn_cast<llvm::SelectInst>(V))
+        {
+            return CollectReturnConstants(Sel->getTrueValue(), Visited, Out) && CollectReturnConstants(Sel->getFalseValue(), Visited, Out);
+        }
+        return false; // unresolvable
+    }
+
     ResolvedTargetsResult Lifter::HeuresticallyResolveTargets(llvm::Function &F)
     {
-        // TODO: use heurestics to find external targets too
-
-        // Match for single target (i.e. opaque predicate):
-        //
-        // ret i64 {const}
-
-        std::vector<ResolvedTarget> targets;
-
         auto is_external = [this](uint64_t rva)
         {
             for (const auto &ext_range : ExtFuncRvaRanges)
@@ -287,54 +306,25 @@ namespace lifted
             return false;
         };
 
-        if (auto ret_inst = llvm::dyn_cast<llvm::ReturnInst>((--F.end())->getTerminator()))
+        llvm::SmallSetVector<uint64_t, 4> rvas;
+        llvm::SmallPtrSet<llvm::Value *, 16> visited;
+
+        for (auto &BB : F)
         {
-            if (auto const_ret = llvm::dyn_cast<llvm::ConstantInt>(ret_inst->getReturnValue()))
-            {
-                uint64_t rva = const_ret->getZExtValue();
-
-                targets.push_back(ResolvedTarget{
-                    .Type = is_external(rva) ? ResolvedTarget::Type::EXTERNAL : ResolvedTarget::Type::INTERNAL,
-                    .Dest = rva,
-                    .CalleeInfo = Callee{}});
-
-                return ResolvedTargetsResult{targets, std::nullopt};
-            }
+            auto *Ret = llvm::dyn_cast<llvm::ReturnInst>(BB.getTerminator());
+            if (!Ret)
+                continue;
+            if (!CollectReturnConstants(Ret->getReturnValue(), visited, rvas))
+                return ResolvedTargetsResult{{}, std::nullopt};
         }
 
-        // Match for two targets (select):
-        //
-        // %r = select i1 %cond, i64 {const_true}, i64 {const_false}
-        // ret i64 %r
-
-        if (auto ret_inst = llvm::dyn_cast<llvm::ReturnInst>((--F.end())->getTerminator()))
-        {
-            if (auto select_inst = llvm::dyn_cast<llvm::SelectInst>(ret_inst->getReturnValue()))
-            {
-                auto true_val = select_inst->getTrueValue();
-                auto false_val = select_inst->getFalseValue();
-
-                if (auto const_true = llvm::dyn_cast<llvm::ConstantInt>(true_val))
-                {
-                    if (auto const_false = llvm::dyn_cast<llvm::ConstantInt>(false_val))
-                    {
-                        uint64_t rva_true = const_true->getZExtValue();
-                        uint64_t rva_false = const_false->getZExtValue();
-
-                        targets.push_back(ResolvedTarget{
-                            .Type = is_external(rva_true) ? ResolvedTarget::Type::EXTERNAL : ResolvedTarget::Type::INTERNAL,
-                            .Dest = rva_true,
-                            .CalleeInfo = Callee{}});
-                        targets.push_back(ResolvedTarget{
-                            .Type = is_external(rva_false) ? ResolvedTarget::Type::EXTERNAL : ResolvedTarget::Type::INTERNAL,
-                            .Dest = rva_false,
-                            .CalleeInfo = Callee{}});
-
-                        return ResolvedTargetsResult{targets, std::nullopt};
-                    }
-                }
-            }
-        }
+        std::vector<ResolvedTarget> targets;
+        for (uint64_t rva : rvas)
+            targets.push_back(ResolvedTarget{
+                .Type = is_external(rva) ? ResolvedTarget::Type::EXTERNAL
+                                         : ResolvedTarget::Type::INTERNAL,
+                .Dest = rva,
+                .CalleeInfo = Callee{}});
 
         return ResolvedTargetsResult{targets, std::nullopt};
     }

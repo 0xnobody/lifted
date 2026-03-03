@@ -100,7 +100,7 @@ llvm::Error lift_and_verify_named(llvm::LLVMContext &context,
         verification::verification_params_t verif_params =
             {
                 .checkpoint_config = {
-                    .record_on = verification::event_flags::DEFAULT,
+                    .record_on = verification::event_flags::ALL,
                     .prev_record = nullptr}};
 
         // Get fallthrough edges from the lift result
@@ -232,9 +232,8 @@ int main(int argc, char **argv)
 {
     llvm::LLVMContext context;
 
-    lift_and_verify_named(context, "/home/atlas/lifted/build/src/evaluation/tum/libeval-binarymult.so", "binarymult", 0x127A);
-
-    return EXIT_SUCCESS;
+    // lift_and_verify_named(context, "/home/atlas/lifted/build/src/evaluation/tum/libeval-binarymult.so", "binarymult", 0x127A);
+    // return EXIT_SUCCESS;
 
     // if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
     //     llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";

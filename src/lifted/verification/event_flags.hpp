@@ -14,6 +14,7 @@ namespace lifted::verification
 
         // Default: BB + MEM_WRITE + EXT_CALL  (reads off by default)
         DEFAULT = BB | MEM_WRITE | EXT_CALL,
+        ALL = BB | MEM_WRITE | MEM_READ | EXT_CALL,
     };
 
     inline event_flags operator|(event_flags a, event_flags b) noexcept
