@@ -85,10 +85,10 @@ namespace lifted::verification
 
             if (!prev_ends_in_branch)
             {
-                llvm::outs() << "REP artifact detected at 0x" << llvm::format_hex(prev_start, 16)
-                             << " same_pc=" << same_pc
-                             << " inside_prev=" << inside_prev
-                             << " prev_ends_in_branch=" << prev_ends_in_branch << "\n";
+                // llvm::outs() << "REP artifact detected at 0x" << llvm::format_hex(prev_start, 16)
+                //              << " same_pc=" << same_pc
+                //              << " inside_prev=" << inside_prev
+                //              << " prev_ends_in_branch=" << prev_ends_in_branch << "\n";
 
                 ctx->executor->rep_artifacts.insert(cur_start);
                 return;
@@ -122,11 +122,11 @@ namespace lifted::verification
             }
             else
             {
-                llvm::outs() << "Non-genuine edge detected: 0x" << llvm::format_hex(prev, 16)
-                             << " -> 0x" << llvm::format_hex(address, 16)
-                             << " is_fallthrough=" << is_fallthrough
-                             << " prev_size=" << ctx->prev_size
-                             << "\n";
+                // llvm::outs() << "Non-genuine edge detected: 0x" << llvm::format_hex(prev, 16)
+                //              << " -> 0x" << llvm::format_hex(address, 16)
+                //              << " is_fallthrough=" << is_fallthrough
+                //              << " prev_size=" << ctx->prev_size
+                //              << "\n";
                 ctx->prev_block = address;
                 ctx->prev_size = size;
                 return;
@@ -315,7 +315,8 @@ namespace lifted::verification
             return it->second;
 
         // XED state is constant for x86-64 long mode; initialize once.
-        static const xed_state_t xed_state = [] {
+        static const xed_state_t xed_state = []
+        {
             xed_state_t s;
             xed_state_init(&s, XED_MACHINE_MODE_LONG_64,
                            XED_ADDRESS_WIDTH_64b, XED_ADDRESS_WIDTH_64b);

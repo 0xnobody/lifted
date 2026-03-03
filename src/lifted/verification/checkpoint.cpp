@@ -42,8 +42,9 @@ namespace lifted::verification
         checkpoint_t cp = checkpoints.back();
         size_t index = checkpoints.size();
 
-        cp.state_hash = hash::mix(cp.state_hash, hash::mix(hash_state(s), rva));
+        cp.state_hash = hash::mix(cp.state_hash, hash_state(s));
         cp.combined_hash = make_combined(cp, index);
+        // TODO: Maybe bb_hash too?
         checkpoints.push_back(cp);
         return cp.combined_hash;
     }
@@ -77,7 +78,8 @@ namespace lifted::verification
         checkpoint_t cp = checkpoints.back();
         size_t index = checkpoints.size();
 
-        cp.ext_call_hash = hash::mix(cp.ext_call_hash, hash::mix(hash_state(s), addr));
+        cp.state_hash = hash::mix(cp.state_hash, hash_state(s));
+        cp.ext_call_hash = hash::mix(cp.ext_call_hash, addr);
         cp.combined_hash = make_combined(cp, index);
         checkpoints.push_back(cp);
         return cp.combined_hash;

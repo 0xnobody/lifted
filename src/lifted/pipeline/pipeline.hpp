@@ -57,6 +57,10 @@ struct RunOutcome
     verification::comparison_result_t     comparison;
     std::optional<verification::diff_result_t> diff;  // set iff FAIL_DIVERGED
 
+    /// Exit type of src on its INITIAL run (before any NEEDS_RERUN rerun).
+    /// Equals src_result.exit_reason when was_rerun is false.
+    verification::exit_type initial_src_exit_reason = verification::exit_type::NATURAL_EXIT;
+
     /// True iff a NEEDS_RERUN was observed and resolved (to any outcome).
     bool was_rerun = false;
     /// True iff the rerun above resolved to PASS.
@@ -71,11 +75,13 @@ struct StageReport
     size_t      total_runs     = 0;
     size_t      pass_count     = 0;  // comparison_status::PASS (includes rerun-resolved)
     size_t      fail_count     = 0;  // comparison_status::FAIL_DIVERGED
-    size_t      incomparable   = 0;  // comparison_status::FAIL_INCOMPARABLE
-    size_t      rerun_resolved = 0;  // NEEDS_RERUN that were resolved to PASS via rerun
+    size_t      incomparable      = 0;  // comparison_status::FAIL_INCOMPARABLE
+    size_t      reruns_triggered  = 0;  // runs where NEEDS_RERUN was observed (regardless of outcome)
+    size_t      rerun_resolved    = 0;  // subset of reruns_triggered that resolved to PASS
     size_t      corpus_added   = 0;  // entries added to corpus by this stage
 
-    ExitTypeCounts src_exit_types;
+    ExitTypeCounts src_exit_types;          // final (post-rerun) src exit types
+    ExitTypeCounts src_initial_exit_types;  // initial src exit types (pre-rerun); same as src_exit_types when reruns_triggered == 0
     ExitTypeCounts tgt_exit_types;
 
     /// All FAIL_DIVERGED outcomes — full RunOutcome retained for post-analysis.

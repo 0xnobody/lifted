@@ -83,11 +83,15 @@ void PipelineReport::print(std::ostream &os) const
            << "  (" << pct(s.fail_count, s.total_runs) << ")\n";
         os << "    FAIL_INCOMPARABLE:  " << std::setw(5) << s.incomparable
            << "  (" << pct(s.incomparable, s.total_runs) << ")\n";
-        os << "    NEEDS_RERUN resolved: " << std::setw(3) << s.rerun_resolved
+        os << "    NEEDS_RERUN triggered: " << std::setw(3) << s.reruns_triggered
+           << "  (" << pct(s.reruns_triggered, s.total_runs) << ")\n";
+        os << "    NEEDS_RERUN → PASS:    " << std::setw(3) << s.rerun_resolved
            << "  (" << pct(s.rerun_resolved, s.total_runs) << ")\n";
 
         if (!s.src_exit_types.empty())
-            print_exit_counts(os, s.src_exit_types, "Src");
+            print_exit_counts(os, s.src_exit_types, "Src (final)");
+        if (s.reruns_triggered > 0 && s.src_initial_exit_types != s.src_exit_types)
+            print_exit_counts(os, s.src_initial_exit_types, "Src (initial)");
         if (!s.tgt_exit_types.empty())
             print_exit_counts(os, s.tgt_exit_types, "Tgt");
 
@@ -170,11 +174,16 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
     if (!tgt_result)
         return tgt_result.takeError();
 
+    // Feed tgt's discovered ext calls back so future runs have them in external_rvas.
+    for (uint64_t addr : tgt_result->ext_calls)
+        accumulated_ext_calls.insert(addr);
+
     // ── compare ───────────────────────────────────────────────────────────────
     auto cmp = verification::compare_runs(*src_result, *tgt_result, spec_.compare_cfg);
 
-    bool was_rerun          = false;
-    bool was_rerun_resolved = false;
+    const auto initial_src_exit  = src_result->exit_reason;  // save before any rerun overwrites
+    bool was_rerun               = false;
+    bool was_rerun_resolved      = false;
 
     // ── NEEDS_RERUN: re-run src with tgt's checkpoint record ──────────────────
     // The plan's directionality: src ran further → re-run src constrained to
@@ -189,6 +198,9 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
             return src_result2.takeError();
 
         *src_result = std::move(*src_result2);
+        // Rerun may have taken a different path; persist any newly-seen ext calls.
+        for (uint64_t addr : src_result->ext_calls)
+            accumulated_ext_calls.insert(addr);
         cmp = verification::compare_runs(*src_result, *tgt_result, spec_.compare_cfg);
         was_rerun_resolved = (cmp.status == verification::comparison_status::PASS);
     }
@@ -205,8 +217,9 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
         .tgt_result         = std::move(*tgt_result),
         .comparison         = cmp,
         .diff               = std::move(diff),
-        .was_rerun          = was_rerun,
-        .was_rerun_resolved = was_rerun_resolved,
+        .initial_src_exit_reason = initial_src_exit,
+        .was_rerun               = was_rerun,
+        .was_rerun_resolved      = was_rerun_resolved,
     };
 }
 
@@ -262,6 +275,7 @@ llvm::Expected<PipelineReport> Pipeline::run(
 
             // Accumulate exit type distributions.
             ++stage_report.src_exit_types[outcome.src_result.exit_reason];
+            ++stage_report.src_initial_exit_types[outcome.initial_src_exit_reason];
             ++stage_report.tgt_exit_types[outcome.tgt_result.exit_reason];
 
             // Update comparison counters.
@@ -284,6 +298,8 @@ llvm::Expected<PipelineReport> Pipeline::run(
                 break;
             }
 
+            if (outcome.was_rerun)
+                ++stage_report.reruns_triggered;
             if (outcome.was_rerun_resolved)
                 ++stage_report.rerun_resolved;
 
