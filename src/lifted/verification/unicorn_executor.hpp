@@ -59,6 +59,8 @@ namespace lifted::verification
         static llvm::Expected<std::unique_ptr<UnicornExecutor>>
         create(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry_rva, Flags flags = Flags::NONE);
 
+        void hint_external_rvas(const std::set<uint64_t> &rvas) override;
+
     private:
         static void hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
         static void hook_edge(uc_engine *uc, uc_tb *cur_tb, uc_tb *prev_tb, void *user_data);

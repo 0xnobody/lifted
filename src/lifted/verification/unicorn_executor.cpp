@@ -342,6 +342,10 @@ namespace lifted::verification
         printf("%s\n", utils::insn_bytes_to_str(code, address).c_str());
     }
 
+    void UnicornExecutor::hint_external_rvas(const std::set<uint64_t> &rvas)
+    {
+        external_rvas.insert(rvas.begin(), rvas.end());
+    }
     llvm::Expected<std::unique_ptr<UnicornExecutor>>
     UnicornExecutor::create(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry_rva, Flags flags)
     {

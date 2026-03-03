@@ -49,6 +49,8 @@ namespace lifted::verification
     {
         checkpoint_config_t checkpoint_config;
         loop_limit_policy loop_policy = loop_limit_policy::TERMINATE;
+        uint64_t bb_limit   = UINT64_MAX;   // max basic blocks executed (UINT64_MAX = unlimited)
+        uint64_t loop_limit = UINT64_MAX;   // max back-edge arrivals per header (UINT64_MAX = unlimited)
     };
 
     struct execution_flags_t
@@ -429,6 +431,8 @@ namespace lifted::verification
         {
             checkpoint_config = verif_params.checkpoint_config;
             checkpoint_record.record_on = checkpoint_config.record_on;
+            bb_limit      = verif_params.bb_limit;
+            bb_loop_limit = verif_params.loop_limit;
             initialize_context(params.seed, params.entry_rva);
         }
 

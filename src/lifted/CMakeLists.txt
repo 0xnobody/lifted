@@ -60,6 +60,18 @@ add_library(lifted STATIC
     "verification/checkpoint.cpp"
     "third-party/nmd_assembly.h"
     "third-party/nmd_assembly.cpp"
+
+    # Pipeline framework
+    "pipeline/run_config.hpp"
+    "pipeline/corpus.hpp"
+    "pipeline/corpus.cpp"
+    "pipeline/stage.hpp"
+    "pipeline/pipeline.hpp"
+    "pipeline/pipeline.cpp"
+    "pipeline/stages/seed_sweep_stage.hpp"
+    "pipeline/stages/seed_sweep_stage.cpp"
+    "pipeline/stages/corpus_replay_stage.hpp"
+    "pipeline/stages/corpus_replay_stage.cpp"
 )
 
 # Expose src/lifted/ as a public include root so consumers can do:
