@@ -4,12 +4,21 @@
 
 #include <sstream>
 
+// XED headers have no extern "C" guards, so wrap them to prevent
+// C++ name mangling of XED's non-inline API functions.
+extern "C"
+{
+#include <xed/xed-interface.h>
+}
+
 namespace lifted::verification
 {
     struct unicorn_ctx_t
     {
         UnicornExecutor *executor;
         verifier_state *state;
+        uint64_t prev_block = 0;
+        uint32_t prev_size = 0;
     };
 
     // Helper to create Unicorn error messages
@@ -21,14 +30,148 @@ namespace lifted::verification
     }
 
     // Hook callbacks
+
+    bool last_insn_is_branch_xed(uc_engine *uc, uint64_t pc, uint16_t size)
+    {
+        xed_state_t state;
+        xed_state_init(&state, XED_MACHINE_MODE_LONG_64,
+                       XED_ADDRESS_WIDTH_64b, XED_ADDRESS_WIDTH_64b);
+
+        // Read last 15 bytes
+        uint8_t buf[15];
+        size_t tail = (size < 15) ? size : 15;
+        uint64_t tail_start = pc + size - tail;
+        if (uc_mem_read(uc, tail_start, buf, tail) != UC_ERR_OK)
+            return false;
+
+        for (size_t off = tail; off-- > 0;)
+        { // reverse: tail-1 ... 0
+            xed_decoded_inst_t xedd;
+            xed_decoded_inst_zero(&xedd);
+            xed_decoded_inst_set_mode(&xedd, state.mmode, state.stack_addr_width);
+
+            xed_error_enum_t err = xed_decode(&xedd, buf + off, (unsigned int)(tail - off));
+            if (err != XED_ERROR_NONE)
+                continue;
+
+            uint32_t len = xed_decoded_inst_get_length(&xedd);
+            if (tail_start + off + len != pc + size)
+                continue;
+
+            xed_category_enum_t cat = xed_decoded_inst_get_category(&xedd);
+            switch (cat)
+            {
+            case XED_CATEGORY_COND_BR:
+            case XED_CATEGORY_UNCOND_BR:
+            case XED_CATEGORY_CALL:
+            case XED_CATEGORY_RET:
+            case XED_CATEGORY_INTERRUPT:
+            case XED_CATEGORY_SYSTEM:
+                return true;
+            default:
+                return false;
+            }
+        }
+        return false;
+    }
+
+    // From Unicorn:
+    // > NOTE: This is different from UC_HOOK_BLOCK in 2 ways:
+    // > 1. The hook is called before executing code.
+    // > 2. The hook is only called when generation is triggered.
+    //
+    // TCG (QEMU's Tiny Code Generator) has some quirks:
+    // 1. Consider:
+    //
+    // 0x0: ins1
+    // 0x1: rep ins2
+    // 0x2: ins3
+    // 0x3: ins4
+    // ...
+    //
+    // Will fire: (0x0-0x1), then (0x1) for each rep, and finally (0x2, 0x...)
+    // In reality this is a single BB starting at 0x0. So we must deduplicate this.
+    //
+    // - If the blocks overlap, we must classify them as 'real' or 'fake' blocks
+    // - If 'fake', we add it to ignore list (known 'rep' instructions)
+    //
+    void UnicornExecutor::hook_edge(uc_engine *uc, uc_tb *cur_tb, uc_tb *prev_tb, void *user_data)
+    {
+        auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
+
+        if (!cur_tb)
+            return;
+
+        if (!prev_tb)
+        {
+            return;
+        }
+
+        const uint64_t prev_start = prev_tb->pc;
+        const uint64_t prev_end = prev_tb->pc + prev_tb->size;
+        const uint64_t cur_start = cur_tb->pc;
+
+        const bool same_pc = (cur_start == prev_start);
+        const bool inside_prev = (cur_start > prev_start && cur_start < prev_end);
+        const bool sequential = (cur_start == prev_end);
+
+        // Fast path: post-REP tail suppression
+        if (sequential && ctx->executor->rep_artifacts.contains(prev_start))
+            return;
+
+        // Only now pay the XED decode cost
+        if (same_pc || inside_prev)
+        {
+            const bool prev_ends_in_branch = last_insn_is_branch_xed(uc, prev_tb->pc, prev_tb->size);
+
+            if ((same_pc || inside_prev) && !prev_ends_in_branch)
+            {
+                llvm::outs() << "REP artifact detected at 0x" << llvm::format_hex(prev_start, 16) << " same_pc=" << same_pc << " inside_prev=" << inside_prev << " prev_ends_in_branch=" << prev_ends_in_branch << "\n";
+
+                ctx->executor->rep_artifacts.insert(cur_start);
+                return;
+            }
+        }
+
+        // Otherwise, treat as genuine boundary / graph edge
+        ctx->executor->genuine_edges.insert({prev_start, cur_start});
+    }
+
     void UnicornExecutor::hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
     {
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
 
-        if (has_flag(ctx->executor->flags, Flags::LOG_BASIC_BLOCKS))
+        const uint64_t prev = ctx->prev_block;
+
+        const bool is_first = (prev == 0);
+        const bool is_genuine_edge = ctx->executor->genuine_edges.contains({prev, address});
+
+        if (!is_first && !is_genuine_edge)
         {
-            printf("block: 0x%016lx\n", address);
+            const bool is_fallthrough =
+                (ctx->prev_size != 0) && (address == prev + ctx->prev_size);
+
+            if (ctx->prev_size != 0 &&
+                !ctx->executor->rep_artifacts.contains(prev) && // optional extra guard
+                last_insn_is_branch_xed(uc, prev, (uint16_t)ctx->prev_size))
+            {
+                ctx->executor->genuine_edges.insert({prev, address});
+                // accept (taken OR not-taken)
+            }
+            else
+            {
+                llvm::outs() << "Non-genuine edge detected: 0x" << llvm::format_hex(prev, 16) << " -> 0x" << llvm::format_hex(address, 16)
+                             << " is_fallthrough=" << is_fallthrough
+                             << " prev_size=" << ctx->prev_size
+                             << "\n";
+                ctx->prev_block = address;
+                ctx->prev_size = size;
+                return;
+            }
         }
+
+        ctx->prev_block = address;
+        ctx->prev_size = size;
 
         State state = unicorn_to_state(uc);
 
@@ -50,6 +193,7 @@ namespace lifted::verification
 
             uint64_t retaddr = ctx->state->memory().read64(rsp);
             uc_reg_write(uc, UC_X86_REG_RIP, &retaddr);
+            ctx->executor->genuine_edges.insert({address, retaddr});
 
             // Adjust rsp to restore stack
             rsp += 8;
@@ -145,11 +289,6 @@ namespace lifted::verification
         }
         }
 
-        if (has_flag(ctx->executor->flags, Flags::LOG_MEMORY_ACCESSES))
-        {
-            printf("mem_read: 0x%016lx, size: %d, value: 0x%016lx\n", address, size, read_value);
-        }
-
         // Push the (possibly sentinel-patched) value into Unicorn's memory so the
         // emulated CPU reads the same bytes that paged_memory_state returned.
         // TODO: evaluate performance of this. If it's a problem, we can optimize by
@@ -169,11 +308,6 @@ namespace lifted::verification
         auto *state = ctx->state;
 
         bool cont = false;
-
-        if (has_flag(ctx->executor->flags, Flags::LOG_MEMORY_ACCESSES))
-        {
-            printf("mem_write: 0x%016lx, size: %d, value: 0x%016lx\n", address, size, value);
-        }
 
         // Track memory access via verifier_context callbacks
         switch (size)
@@ -216,7 +350,7 @@ namespace lifted::verification
         // Run setup
         if (auto err = executor->setup_impl())
         {
-            return std::move(err);
+            return err;
         }
 
         return executor;
@@ -276,7 +410,7 @@ namespace lifted::verification
         }
 
         // Register hooks
-        uc_hook block_hook, mem_invalid_hook, mem_read_hook, mem_write_hook, code_hook;
+        uc_hook block_hook, edge_hook, mem_invalid_hook, mem_read_hook, mem_write_hook, code_hook;
 
         unicorn_ctx_t ctx = {
             .executor = this,
@@ -289,6 +423,15 @@ namespace lifted::verification
         {
             return llvm::make_error<llvm::StringError>(
                 std::string("Failed to add block hook: ") + uc_strerror(err),
+                llvm::inconvertibleErrorCode());
+        }
+
+        err = uc_hook_add(uc_eng.get(), &edge_hook, UC_HOOK_EDGE_GENERATED,
+                          (void *)hook_edge, &ctx, 1, 0);
+        if (err != UC_ERR_OK)
+        {
+            return llvm::make_error<llvm::StringError>(
+                std::string("Failed to add edge hook: ") + uc_strerror(err),
                 llvm::inconvertibleErrorCode());
         }
 
@@ -337,6 +480,7 @@ namespace lifted::verification
 
         // Cleanup hooks
         uc_hook_del(uc_eng.get(), block_hook);
+        uc_hook_del(uc_eng.get(), edge_hook);
         uc_hook_del(uc_eng.get(), mem_invalid_hook);
         uc_hook_del(uc_eng.get(), mem_read_hook);
         uc_hook_del(uc_eng.get(), mem_write_hook);

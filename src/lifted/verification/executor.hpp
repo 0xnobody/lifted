@@ -30,9 +30,9 @@ namespace lifted::verification
         virtual ~Executor() = default;
 
         /// Run a single test case.
-        llvm::Expected<run_result_t> run_single(const run_params_t &run_params, const verification_params_t &verif_params)
+        llvm::Expected<run_result_t> run_single(const run_params_t &run_params, const verification_params_t &verif_params, event_flags log_on_flags = event_flags::NONE)
         {
-            verifier_state state(run_params, verif_params);
+            verifier_state state(run_params, verif_params, log_on_flags);
             auto err = run_single_impl(state);
             if (err)
             {

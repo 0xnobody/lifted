@@ -27,10 +27,7 @@ namespace lifted::verification
         enum class Flags : uint32_t
         {
             NONE = 0,
-            LOG_INSTRUCTIONS = 1 << 0,    // Log each instruction executed (for debugging)
-            LOG_BASIC_BLOCKS = 1 << 1,    // Log basic block entries (for debugging)
-            LOG_MEMORY_ACCESSES = 1 << 2, // Log memory reads/writes (for debugging)
-            LOG_ALL = LOG_INSTRUCTIONS | LOG_BASIC_BLOCKS | LOG_MEMORY_ACCESSES,
+            LOG_INSTRUCTIONS = 1 << 0, // Log each instruction executed (for debugging)
         };
 
     private:
@@ -40,6 +37,9 @@ namespace lifted::verification
         std::unique_ptr<uc_context, decltype(&uc_context_free)> clean_ctx;
         uint64_t entry_rva;
         Flags flags;
+
+        std::set<uint64_t> rep_artifacts; // TB starts identified as REP/split artifacts
+        std::set<std::pair<uint64_t, uint64_t>> genuine_edges;
 
         UnicornExecutor(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry, Flags flags)
             : binary(std::move(bin)),
@@ -61,6 +61,7 @@ namespace lifted::verification
 
     private:
         static void hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
+        static void hook_edge(uc_engine *uc, uc_tb *cur_tb, uc_tb *prev_tb, void *user_data);
         static bool hook_mem_invalid(uc_engine *uc, uc_mem_type type, uint64_t address,
                                      int size, int64_t value, void *user_data);
         static void hook_mem_read(uc_engine *uc, uc_mem_type type, uint64_t address,

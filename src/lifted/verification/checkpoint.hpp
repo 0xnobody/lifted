@@ -1,6 +1,7 @@
 #pragma once
 
 #include "verifier_context.hpp" // State
+#include "event_flags.hpp"
 
 #include "../hash_mix.hpp"
 
@@ -14,9 +15,9 @@
 //
 //   checkpoint_t          — a single immutable snapshot (trivially copyable, ~40 B)
 //   checkpoint_record_t   — owns the checkpoints vector; all hash logic lives here
-//   checkpoint_config_t   — pure passive config (flags + optional prev_record pointer)
+//   checkpoint_config_t   — pure passive config (record_on + optional prev_record pointer)
 //
-// The caller (e.g. a verifier_state subclass) reads config.flags to decide
+// The caller (e.g. a verifier_state subclass) reads config.record_on to decide
 // whether to push an event, calls the relevant push_* method, receives the new
 // combined_hash, and may compare it against
 // config.prev_record->checkpoints[idx].combined_hash as it sees fit.
@@ -25,37 +26,6 @@
 
 namespace lifted::verification
 {
-    // ── record_on_flags ───────────────────────────────────────────────────────
-
-    enum class record_on_flags : uint32_t
-    {
-        NONE = 0,
-        BB = 1 << 0,
-        MEM_WRITE = 1 << 1,
-        MEM_READ = 1 << 2,
-        EXT_CALL = 1 << 3,
-
-        // Default: BB + MEM_WRITE + EXT_CALL  (reads off by default)
-        DEFAULT = BB | MEM_WRITE | EXT_CALL,
-    };
-
-    inline record_on_flags operator|(record_on_flags a, record_on_flags b) noexcept
-    {
-        return static_cast<record_on_flags>(
-            static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
-    }
-
-    inline record_on_flags operator&(record_on_flags a, record_on_flags b) noexcept
-    {
-        return static_cast<record_on_flags>(
-            static_cast<uint32_t>(a) & static_cast<uint32_t>(b));
-    }
-
-    inline bool has_flag(record_on_flags set, record_on_flags flag) noexcept
-    {
-        return (static_cast<uint32_t>(set) & static_cast<uint32_t>(flag)) != 0;
-    }
-
     // ── checkpoint_t ─────────────────────────────────────────────────────────
     //
     // One immutable snapshot appended on every push.  All five hashes are
@@ -83,13 +53,13 @@ namespace lifted::verification
         std::vector<checkpoint_t> checkpoints;
 
         // Which event types were recorded into this record.  Set by the
-        // verifier_state from checkpoint_config_t::flags at construction time
+        // verifier_state from checkpoint_config_t::record_on at construction time
         // and preserved into run_result_t::checkpoint_record.  The comparator
         // uses this to determine which sub-hash shortcuts are sound: a shortcut
         // for dimension X is only valid when X's flag is set in BOTH records,
         // otherwise the sub-hash is zero-filled and cannot distinguish
         // "no events occurred" from "events were not recorded".
-        record_on_flags flags = record_on_flags::NONE;
+        event_flags record_on = event_flags::NONE;
 
         checkpoint_record_t()
         {
@@ -152,14 +122,14 @@ namespace lifted::verification
     // Pure passive configuration.  No methods, no event handling, no state
     // mutation.  The caller reads these fields and decides what to do.
     //
-    //   flags       — which event types to record
+    //   record_on   — which event types to record
     //   prev_record — if non-null, comparison mode is active; the caller
     //                 compares push_* return values against
     //                 prev_record->checkpoints[idx].combined_hash
 
     struct checkpoint_config_t
     {
-        record_on_flags flags = record_on_flags::DEFAULT;
+        event_flags record_on = event_flags::DEFAULT;
         const checkpoint_record_t *prev_record = nullptr;
     };
 

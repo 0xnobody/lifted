@@ -2,6 +2,7 @@
 
 #include "paged_memory_state.hpp"
 #include "verifier_context.hpp"
+#include "event_flags.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -97,6 +98,8 @@ namespace lifted::verification
         checkpoint_config_t checkpoint_config;
         uint64_t curr_checkpoint_idx = 0;
 
+        event_flags log_on = event_flags::NONE;
+
         const sentinel_oracle *sentinel_oracle_;
 
         static verifier_state *from_context(void *context)
@@ -132,7 +135,12 @@ namespace lifted::verification
         {
             value = mem_state.read8(addr);
 
-            return has_flag(checkpoint_config.flags, record_on_flags::MEM_READ)
+            if (has_flag(log_on, event_flags::MEM_READ))
+            {
+                llvm::outs() << "on_read8 " << llvm::format_hex(addr, 16) << " -> " << llvm::format_hex(value, 2) << "\n";
+            }
+
+            return has_flag(checkpoint_config.record_on, event_flags::MEM_READ)
                        ? assert_checkpoint(checkpoint_record.push_read(addr, value, 1))
                        : true;
         }
@@ -141,7 +149,12 @@ namespace lifted::verification
         {
             value = mem_state.read16(addr);
 
-            return has_flag(checkpoint_config.flags, record_on_flags::MEM_READ)
+            if (has_flag(log_on, event_flags::MEM_READ))
+            {
+                llvm::outs() << "on_read16 " << llvm::format_hex(addr, 16) << " -> " << llvm::format_hex(value, 4) << "\n";
+            }
+
+            return has_flag(checkpoint_config.record_on, event_flags::MEM_READ)
                        ? assert_checkpoint(checkpoint_record.push_read(addr, value, 2))
                        : true;
         }
@@ -150,7 +163,12 @@ namespace lifted::verification
         {
             value = mem_state.read32(addr);
 
-            return has_flag(checkpoint_config.flags, record_on_flags::MEM_READ)
+            if (has_flag(log_on, event_flags::MEM_READ))
+            {
+                llvm::outs() << "on_read32 " << llvm::format_hex(addr, 16) << " -> " << llvm::format_hex(value, 8) << "\n";
+            }
+
+            return has_flag(checkpoint_config.record_on, event_flags::MEM_READ)
                        ? assert_checkpoint(checkpoint_record.push_read(addr, value, 4))
                        : true;
         }
@@ -159,7 +177,12 @@ namespace lifted::verification
         {
             value = mem_state.read64(addr);
 
-            return has_flag(checkpoint_config.flags, record_on_flags::MEM_READ)
+            if (has_flag(log_on, event_flags::MEM_READ))
+            {
+                llvm::outs() << "on_read64 " << llvm::format_hex(addr, 16) << " -> " << llvm::format_hex(value, 16) << "\n";
+            }
+
+            return has_flag(checkpoint_config.record_on, event_flags::MEM_READ)
                        ? assert_checkpoint(checkpoint_record.push_read(addr, value, 8))
                        : true;
         }
@@ -168,7 +191,12 @@ namespace lifted::verification
         {
             mem_state.write8(addr, value);
 
-            return has_flag(checkpoint_config.flags, record_on_flags::MEM_WRITE)
+            if (has_flag(log_on, event_flags::MEM_WRITE))
+            {
+                llvm::outs() << "on_write8 " << llvm::format_hex(addr, 16) << " <- " << llvm::format_hex(value, 2) << "\n";
+            }
+
+            return has_flag(checkpoint_config.record_on, event_flags::MEM_WRITE)
                        ? assert_checkpoint(checkpoint_record.push_write(addr, value, 1))
                        : true;
         }
@@ -177,7 +205,12 @@ namespace lifted::verification
         {
             mem_state.write16(addr, value);
 
-            return has_flag(checkpoint_config.flags, record_on_flags::MEM_WRITE)
+            if (has_flag(log_on, event_flags::MEM_WRITE))
+            {
+                llvm::outs() << "on_write16 " << llvm::format_hex(addr, 16) << " <- " << llvm::format_hex(value, 4) << "\n";
+            }
+
+            return has_flag(checkpoint_config.record_on, event_flags::MEM_WRITE)
                        ? assert_checkpoint(checkpoint_record.push_write(addr, value, 2))
                        : true;
         }
@@ -186,7 +219,12 @@ namespace lifted::verification
         {
             mem_state.write32(addr, value);
 
-            return has_flag(checkpoint_config.flags, record_on_flags::MEM_WRITE)
+            if (has_flag(log_on, event_flags::MEM_WRITE))
+            {
+                llvm::outs() << "on_write32 " << llvm::format_hex(addr, 16) << " <- " << llvm::format_hex(value, 8) << "\n";
+            }
+
+            return has_flag(checkpoint_config.record_on, event_flags::MEM_WRITE)
                        ? assert_checkpoint(checkpoint_record.push_write(addr, value, 4))
                        : true;
         }
@@ -195,7 +233,12 @@ namespace lifted::verification
         {
             mem_state.write64(addr, value);
 
-            return has_flag(checkpoint_config.flags, record_on_flags::MEM_WRITE)
+            if (has_flag(log_on, event_flags::MEM_WRITE))
+            {
+                llvm::outs() << "on_write64 " << llvm::format_hex(addr, 16) << " <- " << llvm::format_hex(value, 16) << "\n";
+            }
+
+            return has_flag(checkpoint_config.record_on, event_flags::MEM_WRITE)
                        ? assert_checkpoint(checkpoint_record.push_write(addr, value, 8))
                        : true;
         }
@@ -203,6 +246,11 @@ namespace lifted::verification
         virtual bool on_bb_entered(State *state, uint64_t rva)
         {
             bbs_entered_rvas.push_back(rva);
+
+            if (has_flag(log_on, event_flags::BB))
+            {
+                llvm::outs() << "on_bb_entered " << llvm::format_hex(rva, 16) << "\n";
+            }
 
             if (!bb_first_seen.count(rva))
             {
@@ -229,7 +277,7 @@ namespace lifted::verification
 
             bb_prev = rva;
 
-            return has_flag(checkpoint_config.flags, record_on_flags::BB)
+            return has_flag(checkpoint_config.record_on, event_flags::BB)
                        ? assert_checkpoint(checkpoint_record.push_bb(rva, state))
                        : true;
         }
@@ -238,7 +286,12 @@ namespace lifted::verification
         {
             ext_calls.push_back(addr);
 
-            return has_flag(checkpoint_config.flags, record_on_flags::EXT_CALL)
+            if (has_flag(log_on, event_flags::EXT_CALL))
+            {
+                llvm::outs() << "on_ext_call " << llvm::format_hex(addr, 16) << "\n";
+            }
+
+            return has_flag(checkpoint_config.record_on, event_flags::EXT_CALL)
                        ? assert_checkpoint(checkpoint_record.push_ext_call(addr, state))
                        : true;
         }
@@ -349,15 +402,16 @@ namespace lifted::verification
         }
 
     public:
-        verifier_state(const run_params_t &params, const verification_params_t &verif_params)
+        verifier_state(const run_params_t &params, const verification_params_t &verif_params, event_flags log_on_flags = event_flags::NONE)
             : mem_state(params.seed ^ 0xFEEDFEEDFEEDFEED, params.binary, LOAD_BASE, params.oracle),
               bbs_entered_rvas(),
               ext_calls(),
               verifier_context(),
-              sentinel_oracle_(params.oracle)
+              sentinel_oracle_(params.oracle),
+              log_on(log_on_flags)
         {
             checkpoint_config = verif_params.checkpoint_config;
-            checkpoint_record.flags = checkpoint_config.flags;
+            checkpoint_record.record_on = checkpoint_config.record_on;
             initialize_context(params.seed, params.entry_rva);
         }
 

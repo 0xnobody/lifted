@@ -295,7 +295,7 @@ namespace lifted::verification
         // not encoded in any checkpoint sub-hash.
 
         const auto common_flags =
-            r1.checkpoint_record.flags & r2.checkpoint_record.flags;
+            r1.checkpoint_record.record_on & r2.checkpoint_record.record_on;
 
         // Final checkpoint entry (sentinel always at [0]; real data at back()).
         const checkpoint_t &cf1 = r1.checkpoint_record.checkpoints.back();
@@ -325,7 +325,7 @@ namespace lifted::verification
         // state_hash is exclusively accumulated by push_bb; matching final
         // state_hash implies an identical (rva, state) sequence at every BB
         // entry, which implies an identical bb_trace vector.
-        if (has_flag(common_flags, record_on_flags::BB) &&
+        if (has_flag(common_flags, event_flags::BB) &&
             cf1.state_hash == cf2.state_hash)
             result.dimensions.bb_trace_match = true;
         else
@@ -336,7 +336,7 @@ namespace lifted::verification
         // ── ext_calls_match ───────────────────────────────────────────────────
         // ext_call_hash is exclusively accumulated by push_ext_call; matching
         // final hash implies an identical external-call address sequence.
-        if (has_flag(common_flags, record_on_flags::EXT_CALL) &&
+        if (has_flag(common_flags, event_flags::EXT_CALL) &&
             cf1.ext_call_hash == cf2.ext_call_hash)
             result.dimensions.ext_calls_match = true;
         else
@@ -350,7 +350,7 @@ namespace lifted::verification
         // MEM_READ is not required: if oracle reads diverged, any effect on
         // computation would propagate into the write sequence and cause
         // mem_write_hash to diverge first.
-        if (has_flag(common_flags, record_on_flags::MEM_WRITE) &&
+        if (has_flag(common_flags, event_flags::MEM_WRITE) &&
             cf1.mem_write_hash == cf2.mem_write_hash)
             result.dimensions.mem_snapshot_match = true;
         else
@@ -383,14 +383,17 @@ namespace lifted::verification
         CHECK_GPR(rax, "rax")
         CHECK_GPR(rbx, "rbx")
         CHECK_GPR(rcx, "rcx")
-            CHECK_GPR(rdx, "rdx") CHECK_GPR(rsi, "rsi") CHECK_GPR(rdi, "rdi")
-                CHECK_GPR(rbp, "rbp") CHECK_GPR(rsp, "rsp") CHECK_GPR(r8, "r8")
-                    CHECK_GPR(r9, "r9") CHECK_GPR(r10, "r10") CHECK_GPR(r11, "r11")
-                        CHECK_GPR(r12, "r12") CHECK_GPR(r13, "r13") CHECK_GPR(r14, "r14")
-                            CHECK_GPR(r15, "r15")
+        CHECK_GPR(rdx, "rdx")
+        CHECK_GPR(rsi, "rsi")
+        CHECK_GPR(rdi, "rdi")
+        CHECK_GPR(rbp, "rbp")
+        CHECK_GPR(rsp, "rsp") CHECK_GPR(r8, "r8")
+            CHECK_GPR(r9, "r9") CHECK_GPR(r10, "r10") CHECK_GPR(r11, "r11")
+                CHECK_GPR(r12, "r12") CHECK_GPR(r13, "r13") CHECK_GPR(r14, "r14")
+                    CHECK_GPR(r15, "r15")
 #undef CHECK_GPR
 
-                                auto f1 = static_cast<uint64_t>(s1.rflag.flat);
+                        auto f1 = static_cast<uint64_t>(s1.rflag.flat);
         auto f2 = static_cast<uint64_t>(s2.rflag.flat);
         if (f1 != f2)
             out.divergent.push_back({"rflag", f1, f2});

@@ -95,7 +95,7 @@ llvm::Error lift_and_verify_named(llvm::LLVMContext &context,
         verification::verification_params_t verif_params =
             {
                 .checkpoint_config = {
-                    .flags = verification::record_on_flags::DEFAULT,
+                    .record_on = verification::event_flags::DEFAULT,
                     .prev_record = nullptr}};
 
         // Get fallthrough edges from the lift result
@@ -114,7 +114,7 @@ llvm::Error lift_and_verify_named(llvm::LLVMContext &context,
             return exec.takeError();
         }
 
-        auto result = (*exec)->run_single(run_params, verif_params);
+        auto result = (*exec)->run_single(run_params, verif_params, verification::event_flags::DEFAULT);
 
         if (!result)
         {
@@ -130,10 +130,10 @@ llvm::Error lift_and_verify_named(llvm::LLVMContext &context,
             llvm::outs() << "\t0x" << llvm::format_hex(ext_call, 16) << "\n";
         }
 
-        auto emu = verification::UnicornExecutor::create(binary, ext_calls_set, entry_rva, verification::UnicornExecutor::Flags::LOG_ALL);
+        auto emu = verification::UnicornExecutor::create(binary, ext_calls_set, entry_rva);
 
         verif_params.checkpoint_config.prev_record = &result->checkpoint_record; // Share checkpoints between JIT and Unicorn for cross-validation
-        auto emu_result = (*emu)->run_single(run_params, verif_params);
+        auto emu_result = (*emu)->run_single(run_params, verif_params, verification::event_flags::DEFAULT);
 
         if (!emu_result)
         {
@@ -229,11 +229,17 @@ int main(int argc, char **argv)
 
     // lift_and_verify(context, "/home/atlas/lifted/build/src/evaluation/synthetic/libeval-ext-call-stack-args.so", nullptr);
 
-    if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
-        llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
+    // if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
+    //     llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
 
-    if (auto err = lift_suite(context, EVAL_SUITE_TUM_EVAL_CSV))
-        llvm::errs() << "tum-eval suite error: " << llvm::toString(std::move(err)) << "\n";
+    if (auto err = lift_suite(context, EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV))
+        llvm::errs() << "tum-basic-algorithms suite error: " << llvm::toString(std::move(err)) << "\n";
+
+    // if (auto err = lift_suite(context, EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV))
+    //     llvm::errs() << "tum-small-programs suite error: " << llvm::toString(std::move(err)) << "\n";
+    //
+    // if (auto err = lift_suite(context, EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV))
+    //    llvm::errs() << "tum-simple-hash-functions suite error: " << llvm::toString(std::move(err)) << "\n";
 
     return EXIT_SUCCESS;
 }
