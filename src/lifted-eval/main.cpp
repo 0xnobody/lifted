@@ -112,22 +112,35 @@ llvm::Error lift_and_verify_named(llvm::LLVMContext &context,
     };
 
     // ── Pipeline configuration ────────────────────────────────────────────────
-    pipeline::RunConfig base_cfg{
+    pipeline::RunConfig loop_breaker{
         .seed = 0x1337,
         .oracle = verification::sentinel_oracle(std::vector<verification::sentinel_t>{
             {.size_bytes = 0, .value = 0, .inv_prob = 10},
             {.size_bytes = 0, .value = 0xFFFF'FFFF'FFFF'FFFF, .inv_prob = 10},
         }),
         .gen_factory = std::make_shared<verification::uniform_value_generator_factory>(
-            verification::value_constraints_t{.max = 0x20'000, .alignment = 8}),
+            verification::value_constraints_t{.max = 0x10'000, .alignment = 8}),
         .bb_limit = 50'000,
-        .loop_limit = 20,
+        .loop_limit = 1000,
+    };
+
+    pipeline::RunConfig wide_cfg{
+        .seed = 0x1338,
+        .oracle = verification::sentinel_oracle(std::vector<verification::sentinel_t>{
+            {.size_bytes = 0, .value = 0, .inv_prob = 10},
+            {.size_bytes = 0, .value = 0xFFFF'FFFF'FFFF'FFFF, .inv_prob = 10},
+        }),
+        .gen_factory = std::make_shared<verification::uniform_value_generator_factory>(
+            verification::value_constraints_t{.max = 0xFFFF'FFFF'FFFF'FFFF, .alignment = 8}),
+        .bb_limit = 1000,
+        .loop_limit = 10,
     };
 
     pipeline::PipelineSpec spec;
     spec.name = "raw_vs_native[" + func_name + "]";
     spec.executors = {std::move(make_jit), std::move(make_unicorn)};
-    spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(base_cfg, 50));
+    spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(wide_cfg, 100));
+    spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(loop_breaker, 500));
 
     pipeline::Pipeline pl(std::move(spec));
     auto report = pl.run(binary, entry_rva);
