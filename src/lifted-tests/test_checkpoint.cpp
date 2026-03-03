@@ -146,10 +146,10 @@ TEST(checkpoint_write_size_sensitive)
 TEST(checkpoint_config_default_flags)
 {
     checkpoint_config_t cfg;
-    CHECK(has_flag(cfg.flags, record_on_flags::BB));
-    CHECK(has_flag(cfg.flags, record_on_flags::MEM_WRITE));
-    CHECK(has_flag(cfg.flags, record_on_flags::EXT_CALL));
-    CHECK(!has_flag(cfg.flags, record_on_flags::MEM_READ));
+    CHECK(has_flag(cfg.record_on, event_flags::BB));
+    CHECK(has_flag(cfg.record_on, event_flags::MEM_WRITE));
+    CHECK(has_flag(cfg.record_on, event_flags::EXT_CALL));
+    CHECK(!has_flag(cfg.record_on, event_flags::MEM_READ));
     CHECK(cfg.prev_record == nullptr);
 }
 

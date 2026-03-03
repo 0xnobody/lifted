@@ -3,12 +3,12 @@
 #include "paged_memory_state.hpp"
 #include "verifier_context.hpp"
 #include "event_flags.hpp"
+#include "value_generator.hpp"
 
 #include <cstdint>
 #include <memory>
 #include <utility>
 #include <vector>
-#include <random>
 
 #include <llvm/Support/Format.h>
 #include <llvm/Support/raw_ostream.h>
@@ -42,6 +42,7 @@ namespace lifted::verification
         std::shared_ptr<LIEF::Binary> binary;
         uint64_t entry_rva;
         const sentinel_oracle *oracle = nullptr;
+        const value_generator_factory *value_gen_factory = nullptr;
     };
 
     struct verification_params_t
@@ -101,6 +102,7 @@ namespace lifted::verification
         event_flags log_on = event_flags::NONE;
 
         const sentinel_oracle *sentinel_oracle_;
+        const value_generator_factory *value_gen_factory_;
 
         static verifier_state *from_context(void *context)
         {
@@ -249,7 +251,7 @@ namespace lifted::verification
 
             if (has_flag(log_on, event_flags::BB))
             {
-                llvm::outs() << "on_bb_entered " << llvm::format_hex(rva, 16) << "\n";
+                llvm::outs() << "on_bb_entered " << llvm::format_hex(rva, 16) << " (step: " << bb_step << ", loop: " << bb_header_count[rva] << ")\n";
             }
 
             if (!bb_first_seen.count(rva))
@@ -360,24 +362,38 @@ namespace lifted::verification
             initial_state.gpr.rsp.qword = STACK_MAGIC;
             mem_state.write64(STACK_MAGIC, FINISH_SENTINEL);
 
-            std::mt19937_64 rng(seed);
-            std::uniform_int_distribution<uint64_t> reg_dis(0, UINT64_MAX);
+            // Create one generator for the entire register block.
+            auto reg_gen = value_gen_factory_->create(seed);
 
-            initial_state.gpr.rax.qword = reg_dis(rng);
-            initial_state.gpr.rbx.qword = reg_dis(rng);
-            initial_state.gpr.rcx.qword = reg_dis(rng);
-            initial_state.gpr.rdx.qword = reg_dis(rng);
-            initial_state.gpr.rsi.qword = reg_dis(rng);
-            initial_state.gpr.rdi.qword = reg_dis(rng);
-            initial_state.gpr.rbp.qword = reg_dis(rng);
-            initial_state.gpr.r8.qword = reg_dis(rng);
-            initial_state.gpr.r9.qword = reg_dis(rng);
-            initial_state.gpr.r10.qword = reg_dis(rng);
-            initial_state.gpr.r11.qword = reg_dis(rng);
-            initial_state.gpr.r12.qword = reg_dis(rng);
-            initial_state.gpr.r13.qword = reg_dis(rng);
-            initial_state.gpr.r14.qword = reg_dis(rng);
-            initial_state.gpr.r15.qword = reg_dis(rng);
+            // For each register: query the sentinel oracle first (using a deterministic
+            // per-register slot seed derived from the run seed and register index);
+            // fall back to the generator if no sentinel fires.
+            auto gen_reg = [&](uint64_t reg_idx) -> uint64_t
+            {
+                if (sentinel_oracle_)
+                {
+                    uint64_t slot_seed = hash::mix(seed ^ 0xd00dd33dd00dd33d, reg_idx);
+                    if (auto s = sentinel_oracle_->query(slot_seed, 8))
+                        return s->value;
+                }
+                return reg_gen->generate64();
+            };
+
+            initial_state.gpr.rax.qword = gen_reg(0);
+            initial_state.gpr.rbx.qword = gen_reg(1);
+            initial_state.gpr.rcx.qword = gen_reg(2);
+            initial_state.gpr.rdx.qword = gen_reg(3);
+            initial_state.gpr.rsi.qword = gen_reg(4);
+            initial_state.gpr.rdi.qword = gen_reg(5);
+            initial_state.gpr.rbp.qword = gen_reg(6);
+            initial_state.gpr.r8.qword = gen_reg(7);
+            initial_state.gpr.r9.qword = gen_reg(8);
+            initial_state.gpr.r10.qword = gen_reg(9);
+            initial_state.gpr.r11.qword = gen_reg(10);
+            initial_state.gpr.r12.qword = gen_reg(11);
+            initial_state.gpr.r13.qword = gen_reg(12);
+            initial_state.gpr.r14.qword = gen_reg(13);
+            initial_state.gpr.r15.qword = gen_reg(14);
             initial_state.rflag.flat = 0x202; // default reserved bits
         }
 
@@ -403,12 +419,13 @@ namespace lifted::verification
 
     public:
         verifier_state(const run_params_t &params, const verification_params_t &verif_params, event_flags log_on_flags = event_flags::NONE)
-            : mem_state(params.seed ^ 0xFEEDFEEDFEEDFEED, params.binary, LOAD_BASE, params.oracle),
+            : mem_state(params.seed ^ 0xFEEDFEEDFEEDFEED, params.binary, LOAD_BASE, params.oracle, params.value_gen_factory),
               bbs_entered_rvas(),
               ext_calls(),
               verifier_context(),
+              log_on(log_on_flags),
               sentinel_oracle_(params.oracle),
-              log_on(log_on_flags)
+              value_gen_factory_(params.value_gen_factory)
         {
             checkpoint_config = verif_params.checkpoint_config;
             checkpoint_record.record_on = checkpoint_config.record_on;

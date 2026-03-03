@@ -7,6 +7,7 @@ add_executable(lifted-tests
     "test_checkpoint.cpp"
     "test_comparator.cpp"
     "test_comparator_diff.cpp"
+    "test_value_generator.cpp"
 )
 
 target_link_libraries(lifted-tests PRIVATE lifted)

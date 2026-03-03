@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sentinel_oracle.hpp"
+#include "value_generator.hpp"
 
 #include <cstdint>
 #include <array>
@@ -104,6 +105,9 @@ namespace lifted::verification
         // Constructor for IMAGE pages (content copied into page)
         page_t(std::array<uint8_t, 4096> content);
 
+        // Constructor for factory-filled DYNAMIC pages (pre-generated content, explicit type tag)
+        page_t(std::array<uint8_t, 4096> content, Type t);
+
         // Write byte without touching 'written' or 'sentinel_filled' — for sentinel injection.
         void raw_write8(uint64_t offset, uint8_t val)
         {
@@ -164,18 +168,18 @@ namespace lifted::verification
         std::shared_ptr<LIEF::Binary> binary_;
         uint64_t image_base_ = 0;
 
-        // Non-owning pointer to sentinel oracle, valid only during execution.
-        // paged_memory_state is transient (internal to verifier_state); the oracle
-        // pointer cannot dangle because both die with verifier_state.
+        // Non-owning pointers — valid only during execution; both outlive this object.
         const sentinel_oracle *oracle_ = nullptr;
+        const value_generator_factory *value_gen_factory_ = nullptr;
+
+        // Separate hash for oracle slot seeds — same mixing, different salt,
+        // so oracle rolls are uncorrelated with initial page data fills.
+        // Public so verifier_state can derive deterministic per-register seeds.
+        static uint64_t compute_oracle_slot_seed(uint64_t master_seed, uint64_t slot_addr);
 
         // Deterministic hash combining master_seed and page_addr
         // Uses a simple but effective mixing based on golden ratio prime
         static uint64_t compute_page_seed(uint64_t master_seed, uint64_t page_addr);
-
-        // Separate hash for oracle slot seeds — same mixing, different salt,
-        // so oracle rolls are uncorrelated with initial page data fills.
-        static uint64_t compute_oracle_slot_seed(uint64_t master_seed, uint64_t slot_addr);
 
         // Try to load page content from binary image (ELF or PE)
         // Returns true if page_addr falls within a loadable segment/section
@@ -256,10 +260,10 @@ namespace lifted::verification
 
     public:
         // Constructor for dynamic-only memory state (no binary image)
-        paged_memory_state(uint64_t seed, const sentinel_oracle *oracle = nullptr);
+        paged_memory_state(uint64_t seed, const sentinel_oracle *oracle = nullptr, const value_generator_factory *gen_factory = nullptr);
 
         // Constructor with binary reference for lazy image loading
-        paged_memory_state(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t base_addr, const sentinel_oracle *oracle = nullptr);
+        paged_memory_state(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t base_addr, const sentinel_oracle *oracle = nullptr, const value_generator_factory *gen_factory = nullptr);
 
         // Consume this transient execution object and extract the pages into a
         // lightweight snapshot suitable for storage in run_result_t.
@@ -327,6 +331,11 @@ namespace lifted::verification
         // Valid only during execution; caller must ensure oracle outlives this object.
         void set_oracle(const sentinel_oracle *oracle) { oracle_ = oracle; }
         const sentinel_oracle *get_oracle() const { return oracle_; }
+
+        // Set or clear the value generator factory pointer (non-owning).
+        // Affects future DYNAMIC page creation; already-materialized pages are unaffected.
+        void set_value_generator_factory(const value_generator_factory *f) { value_gen_factory_ = f; }
+        const value_generator_factory *get_value_generator_factory() const { return value_gen_factory_; }
 
         // Raw page access for inspection/testing during execution.
         const std::unordered_map<uint64_t, page_t> &get_pages() const { return pages; }

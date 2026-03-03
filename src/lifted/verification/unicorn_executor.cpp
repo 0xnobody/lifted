@@ -214,33 +214,35 @@ namespace lifted::verification
     {
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
 
-        // Calculate page boundaries
+        // Calculate page boundaries (guard against overflow)
         uint64_t begin_page = address & ~0xFFFULL;
-        uint64_t end_page = (address + size - 1) & ~0xFFFULL;
+        uint64_t last_byte = (static_cast<uint64_t>(size) > 0 &&
+                              address > UINT64_MAX - static_cast<uint64_t>(size - 1))
+                                 ? UINT64_MAX
+                                 : address + static_cast<uint64_t>(size - 1);
+        uint64_t end_page = last_byte & ~0xFFFULL;
 
         // Map pages from paged_memory_state
-        for (uint64_t page = begin_page; page <= end_page; page += 0x1000)
+        for (uint64_t page = begin_page;; page += 0x1000)
         {
             auto data = ctx->state->memory().map(page);
-            if (data.empty())
+            if (!data.empty())
             {
-                continue; // Skip unmapped pages
+                uc_err err = uc_mem_map(uc, page, data.size(), UC_PROT_ALL);
+                if (err != UC_ERR_OK)
+                    return false;
+
+                err = uc_mem_write(uc, page, data.data(), data.size());
+                if (err != UC_ERR_OK)
+                    return false;
             }
 
-            uc_err err = uc_mem_map(uc, page, data.size(), UC_PROT_ALL);
-            if (err != UC_ERR_OK)
-            {
-                return false;
-            }
-
-            err = uc_mem_write(uc, page, data.data(), data.size());
-            if (err != UC_ERR_OK)
-            {
-                return false;
-            }
+            // Break BEFORE incrementing to avoid wraparound past UINT64_MAX
+            if (page >= end_page)
+                break;
         }
 
-        return true; // Successfully handled
+        return true;
     }
 
     void UnicornExecutor::hook_mem_read(uc_engine *uc, uc_mem_type type, uint64_t address,

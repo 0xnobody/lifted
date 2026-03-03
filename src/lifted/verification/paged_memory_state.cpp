@@ -27,7 +27,12 @@ namespace lifted::verification
     }
 
     page_t::page_t(std::array<uint8_t, 4096> content)
-        : type(Type::IMAGE), data(std::move(content)), read{}, written{}
+        : type(Type::IMAGE), data(std::move(content)), read{}, written{}, sentinel_filled{}
+    {
+    }
+
+    page_t::page_t(std::array<uint8_t, 4096> content, Type t)
+        : type(t), data(std::move(content)), read{}, written{}, sentinel_filled{}
     {
     }
 
@@ -157,21 +162,32 @@ namespace lifted::verification
             return new_it->second;
         }
 
-        // Create new DYNAMIC page with hash-based seed
         uint64_t page_seed = compute_page_seed(master_seed, page_addr);
+
+        // If a factory is provided, use it to fill the page content.
+        if (value_gen_factory_)
+        {
+            auto gen = value_gen_factory_->create(page_seed);
+            std::array<uint8_t, 4096> data;
+            gen->fill_buffer(std::span{reinterpret_cast<std::byte *>(data.data()), 4096});
+            auto [new_it, _] = pages.emplace(page_addr, page_t(std::move(data), page_t::Type::DYNAMIC));
+            return new_it->second;
+        }
+
+        // Fallback: deterministic mt19937_64 fill via page_t(seed) constructor.
         auto [new_it, _] = pages.emplace(page_addr, page_t(page_seed));
         return new_it->second;
     }
 
     // paged_memory_state public methods
 
-    paged_memory_state::paged_memory_state(uint64_t seed, const sentinel_oracle *oracle)
-        : master_seed(seed), binary_(nullptr), image_base_(0), oracle_(oracle)
+    paged_memory_state::paged_memory_state(uint64_t seed, const sentinel_oracle *oracle, const value_generator_factory *gen_factory)
+        : master_seed(seed), binary_(nullptr), image_base_(0), oracle_(oracle), value_gen_factory_(gen_factory)
     {
     }
 
-    paged_memory_state::paged_memory_state(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t base_addr, const sentinel_oracle *oracle)
-        : master_seed(seed), binary_(std::move(binary)), image_base_(base_addr), oracle_(oracle)
+    paged_memory_state::paged_memory_state(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t base_addr, const sentinel_oracle *oracle, const value_generator_factory *gen_factory)
+        : master_seed(seed), binary_(std::move(binary)), image_base_(base_addr), oracle_(oracle), value_gen_factory_(gen_factory)
     {
     }
 

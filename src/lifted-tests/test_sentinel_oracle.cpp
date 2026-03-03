@@ -1,7 +1,7 @@
 #include "test_framework.hpp"
 #include "verification/sentinel_oracle.hpp"
 
-#include "../hash_mix.hpp"
+#include "hash_mix.hpp"
 
 #include <cstdint>
 #include <cmath>

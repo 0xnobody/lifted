@@ -85,12 +85,17 @@ llvm::Error lift_and_verify_named(llvm::LLVMContext &context,
             verification::sentinel_t{.size_bytes = 0, .value = 0xFFFF'FFFF'FFFF'FFFF, .inv_prob = 10},
         });
 
+        verification::uniform_value_generator_factory gen_factory{};
+        gen_factory.constraints.alignment = 8;
+        gen_factory.constraints.max = 0x20'000;
+
         verification::run_params_t run_params =
             {
                 .seed = 0x1337,
                 .binary = binary,
                 .entry_rva = entry_rva,
-                .oracle = &oracle};
+                .oracle = &oracle,
+                .value_gen_factory = &gen_factory};
 
         verification::verification_params_t verif_params =
             {
@@ -227,7 +232,9 @@ int main(int argc, char **argv)
 {
     llvm::LLVMContext context;
 
-    // lift_and_verify(context, "/home/atlas/lifted/build/src/evaluation/synthetic/libeval-ext-call-stack-args.so", nullptr);
+    lift_and_verify_named(context, "/home/atlas/lifted/build/src/evaluation/tum/libeval-binarymult.so", "binarymult", 0x127A);
+
+    return EXIT_SUCCESS;
 
     // if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
     //     llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";

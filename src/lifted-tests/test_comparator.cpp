@@ -337,8 +337,8 @@ TEST(comparator_no_bb_flag_falls_back_to_trace_comparison)
     auto r2 = make_result(exit_type::NATURAL_EXIT);
 
     // r1 records BB events; r2 does not (NONE flags).
-    r1.checkpoint_record.flags = record_on_flags::BB;
-    r2.checkpoint_record.flags = record_on_flags::NONE;
+    r1.checkpoint_record.record_on = event_flags::BB;
+    r2.checkpoint_record.record_on = event_flags::NONE;
 
     // BB traces differ — should be detected via full comparison.
     r1.bb_trace = {0x1000, 0x1010};
@@ -359,8 +359,8 @@ TEST(comparator_no_mem_write_flag_falls_back_to_snapshot_comparison)
     auto r1 = make_result(exit_type::NATURAL_EXIT);
     auto r2 = make_result(exit_type::NATURAL_EXIT);
 
-    r1.checkpoint_record.flags = record_on_flags::MEM_WRITE;
-    r2.checkpoint_record.flags = record_on_flags::NONE; // no write recording
+    r1.checkpoint_record.record_on = event_flags::MEM_WRITE;
+    r2.checkpoint_record.record_on = event_flags::NONE; // no write recording
 
     // Both have zero mem_write_hash (no writes pushed), but we can't use the
     // shortcut.  The actual snapshots are empty (default-constructed) and
@@ -379,8 +379,8 @@ TEST(comparator_bb_state_hash_shortcut_fires)
     auto r1 = make_result(exit_type::NATURAL_EXIT);
     auto r2 = make_result(exit_type::NATURAL_EXIT);
 
-    r1.checkpoint_record.flags = record_on_flags::BB;
-    r2.checkpoint_record.flags = record_on_flags::BB;
+    r1.checkpoint_record.record_on = event_flags::BB;
+    r2.checkpoint_record.record_on = event_flags::BB;
 
     // Push identical BB events to both — state_hashes will match.
     r1.checkpoint_record.push_bb(0x1000, &s);
@@ -404,8 +404,8 @@ TEST(comparator_ext_call_hash_shortcut_fires)
     auto r1 = make_result(exit_type::NATURAL_EXIT);
     auto r2 = make_result(exit_type::NATURAL_EXIT);
 
-    r1.checkpoint_record.flags = record_on_flags::EXT_CALL;
-    r2.checkpoint_record.flags = record_on_flags::EXT_CALL;
+    r1.checkpoint_record.record_on = event_flags::EXT_CALL;
+    r2.checkpoint_record.record_on = event_flags::EXT_CALL;
 
     r1.checkpoint_record.push_ext_call(0x4000, &s);
     r2.checkpoint_record.push_ext_call(0x4000, &s);
@@ -423,8 +423,8 @@ TEST(comparator_mem_write_hash_shortcut_fires)
     auto r1 = make_result(exit_type::NATURAL_EXIT);
     auto r2 = make_result(exit_type::NATURAL_EXIT);
 
-    r1.checkpoint_record.flags = record_on_flags::MEM_WRITE;
-    r2.checkpoint_record.flags = record_on_flags::MEM_WRITE;
+    r1.checkpoint_record.record_on = event_flags::MEM_WRITE;
+    r2.checkpoint_record.record_on = event_flags::MEM_WRITE;
 
     r1.checkpoint_record.push_write(0x4000, 0xAB, 8);
     r2.checkpoint_record.push_write(0x4000, 0xAB, 8);
