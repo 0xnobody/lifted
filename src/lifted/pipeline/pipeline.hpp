@@ -23,7 +23,7 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <set>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -136,7 +136,7 @@ private:
         std::shared_ptr<LIEF::Binary> binary,
         uint64_t                  entry_rva,
         uint64_t                  run_index,
-        std::set<uint64_t>       &accumulated_ext_calls);
+        std::unordered_set<uint64_t> &accumulated_ext_calls);
 };
 
 } // namespace lifted::pipeline

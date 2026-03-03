@@ -2,7 +2,9 @@
 
 #include "../utils.hpp"
 
+#include <mutex>
 #include <sstream>
+#include <vector>
 
 // XED headers have no extern "C" guards, so wrap them to prevent
 // C++ name mangling of XED's non-inline API functions.
@@ -30,50 +32,6 @@ namespace lifted::verification
     }
 
     // Hook callbacks
-
-    bool last_insn_is_branch_xed(uc_engine *uc, uint64_t pc, uint16_t size)
-    {
-        xed_state_t state;
-        xed_state_init(&state, XED_MACHINE_MODE_LONG_64,
-                       XED_ADDRESS_WIDTH_64b, XED_ADDRESS_WIDTH_64b);
-
-        // Read last 15 bytes
-        uint8_t buf[15];
-        size_t tail = (size < 15) ? size : 15;
-        uint64_t tail_start = pc + size - tail;
-        if (uc_mem_read(uc, tail_start, buf, tail) != UC_ERR_OK)
-            return false;
-
-        for (size_t off = tail; off-- > 0;)
-        { // reverse: tail-1 ... 0
-            xed_decoded_inst_t xedd;
-            xed_decoded_inst_zero(&xedd);
-            xed_decoded_inst_set_mode(&xedd, state.mmode, state.stack_addr_width);
-
-            xed_error_enum_t err = xed_decode(&xedd, buf + off, (unsigned int)(tail - off));
-            if (err != XED_ERROR_NONE)
-                continue;
-
-            uint32_t len = xed_decoded_inst_get_length(&xedd);
-            if (tail_start + off + len != pc + size)
-                continue;
-
-            xed_category_enum_t cat = xed_decoded_inst_get_category(&xedd);
-            switch (cat)
-            {
-            case XED_CATEGORY_COND_BR:
-            case XED_CATEGORY_UNCOND_BR:
-            case XED_CATEGORY_CALL:
-            case XED_CATEGORY_RET:
-            case XED_CATEGORY_INTERRUPT:
-            case XED_CATEGORY_SYSTEM:
-                return true;
-            default:
-                return false;
-            }
-        }
-        return false;
-    }
 
     // From Unicorn:
     // > NOTE: This is different from UC_HOOK_BLOCK in 2 ways:
@@ -122,11 +80,15 @@ namespace lifted::verification
         // Only now pay the XED decode cost
         if (same_pc || inside_prev)
         {
-            const bool prev_ends_in_branch = last_insn_is_branch_xed(uc, prev_tb->pc, prev_tb->size);
+            const bool prev_ends_in_branch =
+                ctx->executor->tb_ends_in_branch(uc, prev_tb->pc, prev_tb->size);
 
-            if ((same_pc || inside_prev) && !prev_ends_in_branch)
+            if (!prev_ends_in_branch)
             {
-                llvm::outs() << "REP artifact detected at 0x" << llvm::format_hex(prev_start, 16) << " same_pc=" << same_pc << " inside_prev=" << inside_prev << " prev_ends_in_branch=" << prev_ends_in_branch << "\n";
+                llvm::outs() << "REP artifact detected at 0x" << llvm::format_hex(prev_start, 16)
+                             << " same_pc=" << same_pc
+                             << " inside_prev=" << inside_prev
+                             << " prev_ends_in_branch=" << prev_ends_in_branch << "\n";
 
                 ctx->executor->rep_artifacts.insert(cur_start);
                 return;
@@ -153,14 +115,15 @@ namespace lifted::verification
 
             if (ctx->prev_size != 0 &&
                 !ctx->executor->rep_artifacts.contains(prev) && // optional extra guard
-                last_insn_is_branch_xed(uc, prev, (uint16_t)ctx->prev_size))
+                ctx->executor->tb_ends_in_branch(uc, prev, (uint32_t)ctx->prev_size))
             {
                 ctx->executor->genuine_edges.insert({prev, address});
                 // accept (taken OR not-taken)
             }
             else
             {
-                llvm::outs() << "Non-genuine edge detected: 0x" << llvm::format_hex(prev, 16) << " -> 0x" << llvm::format_hex(address, 16)
+                llvm::outs() << "Non-genuine edge detected: 0x" << llvm::format_hex(prev, 16)
+                             << " -> 0x" << llvm::format_hex(address, 16)
                              << " is_fallthrough=" << is_fallthrough
                              << " prev_size=" << ctx->prev_size
                              << "\n";
@@ -342,16 +305,89 @@ namespace lifted::verification
         printf("%s\n", utils::insn_bytes_to_str(code, address).c_str());
     }
 
-    void UnicornExecutor::hint_external_rvas(const std::set<uint64_t> &rvas)
+    bool UnicornExecutor::tb_ends_in_branch(uc_engine *uc, uint64_t pc, uint32_t size)
+    {
+        // Cache lookup: (tb_start, tb_size) is the stable key.
+        // Keying by both avoids stale hits for the REP-split case where the same PC
+        // appears with different TB sizes.
+        auto key = std::make_pair(pc, size);
+        if (auto it = tb_branch_cache.find(key); it != tb_branch_cache.end())
+            return it->second;
+
+        // XED state is constant for x86-64 long mode; initialize once.
+        static const xed_state_t xed_state = [] {
+            xed_state_t s;
+            xed_state_init(&s, XED_MACHINE_MODE_LONG_64,
+                           XED_ADDRESS_WIDTH_64b, XED_ADDRESS_WIDTH_64b);
+            return s;
+        }();
+
+        // Read the full translation block from emulated memory.
+        std::vector<uint8_t> buf(size);
+        if (uc_mem_read(uc, pc, buf.data(), size) != UC_ERR_OK)
+            return tb_branch_cache[key] = false;
+
+        // Forward-walk instructions from the known-good TB start boundary.
+        // x86 decoding is only reliable when started from a valid boundary; scanning
+        // backward from the TB end can misidentify mid-instruction bytes as a valid
+        // shorter instruction that happens to reach the end.
+        uint32_t off = 0;
+        while (off < size)
+        {
+            xed_decoded_inst_t xedd;
+            xed_decoded_inst_zero(&xedd);
+            xed_decoded_inst_set_mode(&xedd, xed_state.mmode, xed_state.stack_addr_width);
+
+            xed_error_enum_t err = xed_decode(&xedd, buf.data() + off, size - off);
+            if (err != XED_ERROR_NONE)
+                break; // Decode failure at a forward boundary is a real error.
+
+            uint32_t len = xed_decoded_inst_get_length(&xedd);
+            if (len == 0)
+                break; // Malformed; should not happen with well-formed code.
+
+            if (off + len == size)
+            {
+                // This instruction ends exactly at the TB boundary — it is the last one.
+                xed_category_enum_t cat = xed_decoded_inst_get_category(&xedd);
+                bool result = false;
+                switch (cat)
+                {
+                case XED_CATEGORY_COND_BR:
+                case XED_CATEGORY_UNCOND_BR:
+                case XED_CATEGORY_CALL:
+                case XED_CATEGORY_RET:
+                case XED_CATEGORY_INTERRUPT:
+                case XED_CATEGORY_SYSTEM:
+                    result = true;
+                    break;
+                default:
+                    break;
+                }
+                return tb_branch_cache[key] = result;
+            }
+
+            if (off + len > size)
+                break; // Instruction extends past TB end — malformed TB.
+
+            off += len;
+        }
+
+        // Decode did not reach the TB end — something is wrong with the TB.
+        return tb_branch_cache[key] = false;
+    }
+
+    void UnicornExecutor::hint_external_rvas(const std::unordered_set<uint64_t> &rvas)
     {
         external_rvas.insert(rvas.begin(), rvas.end());
     }
+
     llvm::Expected<std::unique_ptr<UnicornExecutor>>
-    UnicornExecutor::create(std::shared_ptr<LIEF::Binary> bin, std::set<uint64_t> ext_rvas, uint64_t entry_rva, Flags flags)
+    UnicornExecutor::create(std::shared_ptr<LIEF::Binary> bin, std::unordered_set<uint64_t> ext_rvas, uint64_t entry_rva, Flags flags)
     {
         // Create executor (private constructor)
         auto executor = std::unique_ptr<UnicornExecutor>(
-            new UnicornExecutor(bin, ext_rvas, entry_rva, flags));
+            new UnicornExecutor(bin, std::move(ext_rvas), entry_rva, flags));
 
         // Run setup
         if (auto err = executor->setup_impl())
@@ -364,6 +400,11 @@ namespace lifted::verification
 
     llvm::Error UnicornExecutor::setup_impl()
     {
+        // Initialize XED decode tables exactly once across all UnicornExecutor instances.
+        // xed_tables_init() is not documented as re-entrant; call_once guarantees safety.
+        static std::once_flag xed_init_flag;
+        std::call_once(xed_init_flag, xed_tables_init);
+
         // Create Unicorn engine
         uc_engine *uc_raw = nullptr;
         uc_err err = uc_open(UC_ARCH_X86, UC_MODE_64, &uc_raw);

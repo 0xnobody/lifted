@@ -148,7 +148,7 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
     std::shared_ptr<LIEF::Binary>  binary,
     uint64_t                       entry_rva,
     uint64_t                       run_index,
-    std::set<uint64_t>            &accumulated_ext_calls)
+    std::unordered_set<uint64_t>  &accumulated_ext_calls)
 {
     // Build run_params once.  It holds &cfg.oracle — cfg must outlive this call.
     auto run_params = cfg.to_run_params(binary, entry_rva);
@@ -226,7 +226,7 @@ llvm::Expected<PipelineReport> Pipeline::run(
     auto &tgt = **tgt_exp;
 
     // ── Shared state across all stages ────────────────────────────────────────
-    std::set<uint64_t> accumulated_ext_calls;
+    std::unordered_set<uint64_t> accumulated_ext_calls;
     Corpus             current_corpus;
 
     PipelineReport report;
