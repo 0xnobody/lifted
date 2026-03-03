@@ -1062,7 +1062,17 @@ namespace lifted
                 ir.CreateStore(ir.CreateLoad(Arch->AddressType(), next_pc_ref), pc_ref);
                 ir.CreateRet(memory);
 
-                break;
+                // The stop_at boundary actually fired — mark this before returning.
+                // This distinguishes a genuine truncation from the case where the
+                // block's natural terminator happens to end exactly at stop_at.
+                LiftedBB TruncatedBB;
+                TruncatedBB.Type = LiftedBB::Type::REAL;
+                TruncatedBB.ID = addr;
+                TruncatedBB.FuncName = F->getName();
+                TruncatedBB.RVARange = llvm::AddressRange{addr, inst_addr};
+                TruncatedBB.TerminatingCategory = std::nullopt; // no natural terminator decoded
+                TruncatedBB.WasTruncatedByStop = true;
+                return TruncatedBB;
             }
 
             auto inst_bytes = ReadInstructionBytes(inst_addr);
@@ -1444,14 +1454,16 @@ namespace lifted
                 remill::MoveFunctionIntoModule(Func, CleanModule.get()); // maybe need to remove old?
                 Explored.insert({curr_id, BB});
 
-                // If the lift was truncated by an already-explored block, record a
-                // FALLTHROUGH edge and reprove the target's subtree (new predecessor
-                // may change its backward slice). Skip ResolveTargets — the only
-                // outgoing edge is the FALLTHROUGH we just recorded.
-                if (!IsSynthetic(curr_id) &&
-                    maybe_stop.has_value() &&
-                    BB.RVARange.has_value() &&
-                    BB.RVARange->end() == *maybe_stop)
+                // If the lift was genuinely truncated by an already-explored block,
+                // record a FALLTHROUGH edge and reprove the target's subtree (new
+                // predecessor may change its backward slice).  Skip ResolveTargets —
+                // the only outgoing edge is the FALLTHROUGH we just recorded.
+                //
+                // WasTruncatedByStop is set by LiftBB when the stop_at boundary
+                // actually fired, as opposed to the block ending naturally at an
+                // address that coincides with stop_at (e.g. a JMP whose last byte
+                // lands exactly on the start of the next known block).
+                if (!IsSynthetic(curr_id) && BB.WasTruncatedByStop)
                 {
 #ifdef LIFTER_VERBOSE
                     llvm::outs() << "    [FALLTHROUGH] BB 0x" << llvm::format_hex(curr_id, 16)

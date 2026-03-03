@@ -50,6 +50,11 @@ namespace lifted
         llvm::StringRef FuncName;
         std::optional<llvm::AddressRange> RVARange;                       // Only for real BBs.
         std::optional<remill::Instruction::Category> TerminatingCategory; // Only for real BBs.
+        /// True when LiftBB was given a stop_at address and the lift was actually
+        /// cut short by it (i.e. the stop boundary fired before the block's natural
+        /// terminator was decoded).  False when the block ended naturally and its
+        /// last byte happened to coincide with stop_at.
+        bool WasTruncatedByStop = false;
 
         bool operator<(const LiftedBB &other) const
         {
