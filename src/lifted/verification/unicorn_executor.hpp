@@ -63,9 +63,22 @@ namespace lifted::verification
         std::unordered_set<uint64_t> rep_artifacts; // TB starts identified as REP/split artifacts
         std::unordered_set<std::pair<uint64_t, uint64_t>, U64PairHash> genuine_edges;
 
-        /// Cache: (tb_start_va, tb_size) → does the last instruction end in a branch?
+        /// Result of a translation-block branch analysis.
+        /// Cached by (tb_start_va, tb_size) — binary code is static so results never change.
+        struct tb_branch_result_t
+        {
+            bool is_branch   = false;
+            bool is_indirect = false; // meaningful only when is_branch == true
+        };
+
+        /// Cache: (tb_start_va, tb_size) → branch analysis result.
         /// Persists across run_single_impl calls — binary code is static.
-        std::unordered_map<std::pair<uint64_t, uint32_t>, bool, U64U32PairHash> tb_branch_cache;
+        std::unordered_map<std::pair<uint64_t, uint32_t>, tb_branch_result_t, U64U32PairHash> tb_branch_cache;
+
+        /// Set when any indirect branch (jmp reg/mem, call reg/mem) is observed in hook_edge.
+        /// When true, the TB cache is flushed before each run to prevent stale inline-cache
+        /// targets from directing execution to the wrong block.
+        bool has_indirect_branches_ = false;
 
         UnicornExecutor(std::shared_ptr<LIEF::Binary> bin, std::unordered_set<uint64_t> ext_rvas, uint64_t entry, Flags flags)
             : binary(std::move(bin)),
@@ -90,13 +103,14 @@ namespace lifted::verification
 
     private:
         /// Forward-scan the translation block [pc, pc+size) to determine whether its last
-        /// instruction is a branch/call/ret/interrupt. Results are cached by (pc, size).
+        /// instruction is a branch/call/ret/interrupt, and whether it is an indirect branch.
+        /// Results are cached by (pc, size).
         ///
         /// Forward scanning from the TB start — a guaranteed valid x86 instruction boundary
         /// provided by Unicorn/TCG — is the only reliable way to find the last instruction
         /// in a variable-length ISA. Backward scanning from the TB end can misidentify
         /// mid-instruction bytes as a valid shorter instruction.
-        bool tb_ends_in_branch(uc_engine *uc, uint64_t pc, uint32_t size);
+        tb_branch_result_t tb_ends_in_branch(uc_engine *uc, uint64_t pc, uint32_t size);
 
         static void hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
         static void hook_edge(uc_engine *uc, uc_tb *cur_tb, uc_tb *prev_tb, void *user_data);

@@ -67,6 +67,15 @@ size_t PipelineReport::total_failures() const
     return n;
 }
 
+static std::string fmt_ns(std::chrono::nanoseconds ns, size_t count)
+{
+    double total_ms  = static_cast<double>(ns.count()) / 1e6;
+    double avg_ms    = (count > 0) ? (total_ms / static_cast<double>(count)) : 0.0;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%8.1f ms total,  %6.2f ms/run avg", total_ms, avg_ms);
+    return buf;
+}
+
 void PipelineReport::print(std::ostream &os) const
 {
     os << "\n=== Pipeline: " << pipeline_name << " ===\n";
@@ -97,6 +106,9 @@ void PipelineReport::print(std::ostream &os) const
 
         os << "  Coverage:  " << s.cumulative_unique_blocks << " unique blocks\n";
         os << "  Corpus:    " << s.corpus_added << " entries added\n";
+        os << "  Timing (wall clock, executor run_single only):\n";
+        os << "    Src: " << fmt_ns(s.src_wall_ns, s.total_runs) << "\n";
+        os << "    Tgt: " << fmt_ns(s.tgt_wall_ns, s.total_runs) << "\n";
 
         if (!s.divergences.empty())
         {
@@ -136,6 +148,17 @@ void PipelineReport::print(std::ostream &os) const
        << "  (" << pct(fails, runs) << ")\n";
     os << "Unique BBs:   " << final_corpus.unique_blocks_covered() << "\n";
     os << "Corpus:       " << final_corpus.size() << " entries\n";
+
+    // Aggregate timing across all stages.
+    std::chrono::nanoseconds total_src_ns{0}, total_tgt_ns{0};
+    for (const auto &s : stages)
+    {
+        total_src_ns += s.src_wall_ns;
+        total_tgt_ns += s.tgt_wall_ns;
+    }
+    os << "Timing (totals across all stages):\n";
+    os << "  Src: " << fmt_ns(total_src_ns, runs) << "\n";
+    os << "  Tgt: " << fmt_ns(total_tgt_ns, runs) << "\n";
 }
 
 // ── Pipeline ─────────────────────────────────────────────────────────────────
@@ -154,12 +177,16 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
     uint64_t                       run_index,
     std::unordered_set<uint64_t>  &accumulated_ext_calls)
 {
+    using Clock = std::chrono::steady_clock;
+
     // Build run_params once.  It holds &cfg.oracle — cfg must outlive this call.
     auto run_params = cfg.to_run_params(binary, entry_rva);
 
-    // ── src run (no prev_record) ──────────────────────────────────────────────
+    // ── src run (no prev_record) ──────────────────────────────────────────
     auto src_verif  = cfg.to_verif_params(nullptr);
+    auto t_src0     = Clock::now();
     auto src_result = src.run_single(run_params, src_verif);
+    std::chrono::nanoseconds src_wall_ns = Clock::now() - t_src0;
     if (!src_result)
         return src_result.takeError();
 
@@ -168,9 +195,11 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
         accumulated_ext_calls.insert(addr);
     tgt.hint_external_rvas(accumulated_ext_calls);
 
-    // ── tgt run (prev_record = src's checkpoint record) ───────────────────────
+    // ── tgt run (prev_record = src's checkpoint record) ─────────────────────
     auto tgt_verif  = cfg.to_verif_params(&src_result->checkpoint_record);
+    auto t_tgt0     = Clock::now();
     auto tgt_result = tgt.run_single(run_params, tgt_verif);
+    std::chrono::nanoseconds tgt_wall_ns = Clock::now() - t_tgt0;
     if (!tgt_result)
         return tgt_result.takeError();
 
@@ -178,22 +207,24 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
     for (uint64_t addr : tgt_result->ext_calls)
         accumulated_ext_calls.insert(addr);
 
-    // ── compare ───────────────────────────────────────────────────────────────
+    // ── compare ─────────────────────────────────────────────────────────────────────────
     auto cmp = verification::compare_runs(*src_result, *tgt_result, spec_.compare_cfg);
 
     const auto initial_src_exit  = src_result->exit_reason;  // save before any rerun overwrites
     bool was_rerun               = false;
     bool was_rerun_resolved      = false;
 
-    // ── NEEDS_RERUN: re-run src with tgt's checkpoint record ──────────────────
+    // ── NEEDS_RERUN: re-run src with tgt's checkpoint record ────────────────────
     // The plan's directionality: src ran further → re-run src constrained to
     // tgt's depth so both terminate at the same checkpoint index.
     if (cmp.status == verification::comparison_status::NEEDS_RERUN)
     {
         was_rerun = true;
 
-        auto src_verif2 = cfg.to_verif_params(&tgt_result->checkpoint_record);
+        auto src_verif2  = cfg.to_verif_params(&tgt_result->checkpoint_record);
+        auto t_src_rerun = Clock::now();
         auto src_result2 = src.run_single(run_params, src_verif2);
+        src_wall_ns     += Clock::now() - t_src_rerun;
         if (!src_result2)
             return src_result2.takeError();
 
@@ -205,21 +236,23 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
         was_rerun_resolved = (cmp.status == verification::comparison_status::PASS);
     }
 
-    // ── diff if diverged ──────────────────────────────────────────────────────
+    // ── diff if diverged ──────────────────────────────────────────────────────────────────────────
     std::optional<verification::diff_result_t> diff;
     if (cmp.status == verification::comparison_status::FAIL_DIVERGED)
         diff = verification::diff_runs(*src_result, *tgt_result, spec_.compare_cfg);
 
     return RunOutcome{
-        .run_index          = run_index,
-        .config             = cfg,
-        .src_result         = std::move(*src_result),
-        .tgt_result         = std::move(*tgt_result),
-        .comparison         = cmp,
-        .diff               = std::move(diff),
+        .run_index               = run_index,
+        .config                  = cfg,
+        .src_result              = std::move(*src_result),
+        .tgt_result              = std::move(*tgt_result),
+        .comparison              = cmp,
+        .diff                    = std::move(diff),
         .initial_src_exit_reason = initial_src_exit,
         .was_rerun               = was_rerun,
         .was_rerun_resolved      = was_rerun_resolved,
+        .src_wall_ns             = src_wall_ns,
+        .tgt_wall_ns             = tgt_wall_ns,
     };
 }
 
@@ -305,6 +338,9 @@ llvm::Expected<PipelineReport> Pipeline::run(
                 ++stage_report.reruns_triggered;
             if (outcome.was_rerun_resolved)
                 ++stage_report.rerun_resolved;
+
+            stage_report.src_wall_ns += outcome.src_wall_ns;
+            stage_report.tgt_wall_ns += outcome.tgt_wall_ns;
 
             // Build corpus entry from src's trace.
             CorpusEntry entry{

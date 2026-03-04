@@ -18,6 +18,7 @@
 
 #include <llvm/Support/Error.h>
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <iosfwd>
@@ -66,6 +67,10 @@ struct RunOutcome
     bool was_rerun = false;
     /// True iff the rerun above resolved to PASS.
     bool was_rerun_resolved = false;
+
+    /// Wall-clock time spent inside run_single for each side (including reruns).
+    std::chrono::nanoseconds src_wall_ns{0};
+    std::chrono::nanoseconds tgt_wall_ns{0};
 };
 
 // ── StageReport ───────────────────────────────────────────────────────────────
@@ -84,6 +89,10 @@ struct StageReport
     ExitTypeCounts src_exit_types;          // final (post-rerun) src exit types
     ExitTypeCounts src_initial_exit_types;  // initial src exit types (pre-rerun); same as src_exit_types when reruns_triggered == 0
     ExitTypeCounts tgt_exit_types;
+
+    /// Accumulated wall-clock time spent inside run_single for each executor.
+    std::chrono::nanoseconds src_wall_ns{0};
+    std::chrono::nanoseconds tgt_wall_ns{0};
 
     /// All FAIL_DIVERGED outcomes — full RunOutcome retained for post-analysis.
     std::vector<RunOutcome> divergences;

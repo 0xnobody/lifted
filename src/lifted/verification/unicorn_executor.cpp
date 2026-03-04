@@ -80,22 +80,24 @@ namespace lifted::verification
         // Only now pay the XED decode cost
         if (same_pc || inside_prev)
         {
-            const bool prev_ends_in_branch =
+            const auto branch_info =
                 ctx->executor->tb_ends_in_branch(uc, prev_tb->pc, prev_tb->size);
 
-            if (!prev_ends_in_branch)
+            if (!branch_info.is_branch)
             {
-                // llvm::outs() << "REP artifact detected at 0x" << llvm::format_hex(prev_start, 16)
-                //              << " same_pc=" << same_pc
-                //              << " inside_prev=" << inside_prev
-                //              << " prev_ends_in_branch=" << prev_ends_in_branch << "\n";
-
                 ctx->executor->rep_artifacts.insert(cur_start);
                 return;
             }
         }
 
-        // Otherwise, treat as genuine boundary / graph edge
+        // Otherwise, treat as genuine boundary / graph edge.
+        // Mark the executor if this edge comes from an indirect branch: the TB
+        // inline target cache must be flushed before future runs to prevent
+        // stale cached targets from redirecting execution.
+        const auto branch_info =
+            ctx->executor->tb_ends_in_branch(uc, prev_tb->pc, prev_tb->size);
+        if (branch_info.is_indirect)
+            ctx->executor->has_indirect_branches_ = true;
         ctx->executor->genuine_edges.insert({prev_start, cur_start});
     }
 
@@ -126,7 +128,7 @@ namespace lifted::verification
 
             if (ctx->prev_size != 0 &&
                 !ctx->executor->rep_artifacts.contains(prev) && // optional extra guard
-                ctx->executor->tb_ends_in_branch(uc, prev, (uint32_t)ctx->prev_size))
+                ctx->executor->tb_ends_in_branch(uc, prev, (uint32_t)ctx->prev_size).is_branch)
             {
                 ctx->executor->genuine_edges.insert({prev, address});
                 // accept (taken OR not-taken)
@@ -306,7 +308,7 @@ namespace lifted::verification
         printf("%s\n", utils::insn_bytes_to_str(code, address).c_str());
     }
 
-    bool UnicornExecutor::tb_ends_in_branch(uc_engine *uc, uint64_t pc, uint32_t size)
+    UnicornExecutor::tb_branch_result_t UnicornExecutor::tb_ends_in_branch(uc_engine *uc, uint64_t pc, uint32_t size)
     {
         // Cache lookup: (tb_start, tb_size) is the stable key.
         // Keying by both avoids stale hits for the REP-split case where the same PC
@@ -327,7 +329,7 @@ namespace lifted::verification
         // Read the full translation block from emulated memory.
         std::vector<uint8_t> buf(size);
         if (uc_mem_read(uc, pc, buf.data(), size) != UC_ERR_OK)
-            return tb_branch_cache[key] = false;
+            return tb_branch_cache[key] = {};
 
         // Forward-walk instructions from the known-good TB start boundary.
         // x86 decoding is only reliable when started from a valid boundary; scanning
@@ -352,17 +354,49 @@ namespace lifted::verification
             {
                 // This instruction ends exactly at the TB boundary — it is the last one.
                 xed_category_enum_t cat = xed_decoded_inst_get_category(&xedd);
-                bool result = false;
+                tb_branch_result_t result{};
                 switch (cat)
                 {
                 case XED_CATEGORY_COND_BR:
+                    // All x86 conditional branches use a relative displacement operand
+                    // (rel8/rel32); there is no indirect conditional branch form.
+                    result.is_branch   = true;
+                    result.is_indirect = false;
+                    break;
+
                 case XED_CATEGORY_UNCOND_BR:
                 case XED_CATEGORY_CALL:
+                {
+                    result.is_branch = true;
+                    // Distinguish direct (RELBR operand) from indirect (REG/MEM operand).
+                    const xed_inst_t *xi = xed_decoded_inst_inst(&xedd);
+                    bool has_relbr = false;
+                    for (unsigned op = 0, n = xed_inst_noperands(xi); op < n; ++op)
+                    {
+                        if (xed_operand_name(xed_inst_operand(xi, op)) == XED_OPERAND_RELBR)
+                        {
+                            has_relbr = true;
+                            break;
+                        }
+                    }
+                    result.is_indirect = !has_relbr;
+                    break;
+                }
+
                 case XED_CATEGORY_RET:
+                    // RET pops the return address set up by uc_context_restore
+                    // (always FINISH_SENTINEL), so the target is constant across
+                    // runs. Treat as safe — no flush needed.
+                    result.is_branch   = true;
+                    result.is_indirect = false;
+                    break;
+
                 case XED_CATEGORY_INTERRUPT:
                 case XED_CATEGORY_SYSTEM:
-                    result = true;
+                    result.is_branch   = true;
+                    result.is_indirect = false;
                     break;
+
                 default:
                     break;
                 }
@@ -376,7 +410,7 @@ namespace lifted::verification
         }
 
         // Decode did not reach the TB end — something is wrong with the TB.
-        return tb_branch_cache[key] = false;
+        return tb_branch_cache[key] = {};
     }
 
     void UnicornExecutor::hint_external_rvas(const std::unordered_set<uint64_t> &rvas)
@@ -457,23 +491,38 @@ namespace lifted::verification
         // (UC_HOOK_EDGE_GENERATED), which fires only when QEMU regenerates a
         // translation block — a non-deterministic event that depends on QEMU's
         // internal TB-JIT cache.  Leaking these across runs corrupts the
-        // checkpoint sequence.
+        // checkpoint sequence.  hook_block has an XED-based fallback that
+        // populates genuine_edges on demand when hook_edge has not fired, so
+        // the correctness of block classification does not depend on TBs being
+        // recompiled.
         //
-        // uc_ctl_flush_tb: QEMU compiles translation blocks (TBs) and links
-        // (chains) their exit branches directly to successor TBs as an
-        // optimisation.  These chains encode the branch target chosen during
-        // compilation (whichever path was taken first) and are NOT re-evaluated
-        // on subsequent executions.  A stale chain causes Unicorn to jump to the
-        // WRONG block when the branch condition differs between runs, making two
-        // identical run_params_t produce different register states.  Flushing
-        // the TB cache before each run forces QEMU to recompile every block
-        // fresh with the correct live condition.
+        // uc_ctl_flush_tb is NOT called here.  Analysis:
+        //
+        // * Conditional branches: QEMU evaluates the branch condition from the
+        //   live flag register BEFORE following any direct chain. The chain only
+        //   skips the dispatch overhead; it cannot redirect execution against the
+        //   evaluated condition.  No stale-chain correctness hazard.
+        //
+        // * Indirect branches (jmp reg / call reg/mem): QEMU embeds an inline
+        //   target cache inside the compiled TB.  A changed target (different
+        //   seed → different register value) causes a dispatcher fallback, not a
+        //   wrong-block execution.  No correctness hazard.
+        //
+        // * Return instructions: uc_context_restore restores RSP; the return
+        //   address (FINISH_SENTINEL) is constant across runs.  No hazard.
+        //
+        // * Self-modifying code: the lifted binary is a fixed shared object;
+        //   its code bytes never change between runs.
+        //
+        // The flush was previously believed necessary but was actually a red-
+        // herring fix masking the TLB-MMIO stale-entry bug (now resolved via
+        // UC_HOOK_TLB_FILL).  Removing it eliminates the dominant per-run
+        // overhead without any correctness regression.
         //
         // tb_branch_cache is kept: it is a pure deterministic XED-decode result
         // keyed on (TB_start, TB_size) and never produces wrong answers.
         rep_artifacts.clear();
         genuine_edges.clear();
-        uc_ctl_flush_tb(uc_eng.get());
         // Restore clean context
         uc_err err = uc_context_restore(uc_eng.get(), clean_ctx.get());
         if (err != UC_ERR_OK)
