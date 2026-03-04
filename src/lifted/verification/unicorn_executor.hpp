@@ -82,6 +82,7 @@ namespace lifted::verification
         llvm::Error run_single_impl(verifier_state &state) override;
 
     public:
+        std::string_view name() const override { return "Unicorn"; }
         static llvm::Expected<std::unique_ptr<UnicornExecutor>>
         create(std::shared_ptr<LIEF::Binary> bin, std::unordered_set<uint64_t> ext_rvas, uint64_t entry_rva, Flags flags = Flags::NONE);
 
@@ -99,8 +100,8 @@ namespace lifted::verification
 
         static void hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
         static void hook_edge(uc_engine *uc, uc_tb *cur_tb, uc_tb *prev_tb, void *user_data);
-        static bool hook_mem_invalid(uc_engine *uc, uc_mem_type type, uint64_t address,
-                                     int size, int64_t value, void *user_data);
+        static bool hook_tlb_fill(uc_engine *uc, uint64_t address,
+                                   uc_mem_type type, uc_tlb_entry *result, void *user_data);
         static void hook_mem_read(uc_engine *uc, uc_mem_type type, uint64_t address,
                                   int size, int64_t value, void *user_data);
         static void hook_mem_write(uc_engine *uc, uc_mem_type type, uint64_t address,

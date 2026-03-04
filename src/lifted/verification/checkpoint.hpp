@@ -5,9 +5,11 @@
 
 #include "../hash_mix.hpp"
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <optional>
 
 // Checkpoint system: track execution traces and compare runs for divergence.
 //
@@ -26,12 +28,37 @@
 
 namespace lifted::verification
 {
+    // ── checkpoint_detail_t ───────────────────────────────────────────────────
+    //
+    // Parallel to checkpoint_t: one record per push_* call, written only when
+    // checkpoint_record_t::record_details == true.  Stores the raw event data
+    // so the deep-dive display can reconstruct a side-by-side event trace.
+    //
+    //   BB / EXT_CALL events: addr = RVA or call target; state = full register file.
+    //   MEM_READ / MEM_WRITE: addr = memory address; value = transferred value;
+    //                         size = byte width (1/2/4/8); state = nullopt.
+
+    struct checkpoint_detail_t
+    {
+        enum class kind : uint8_t { BB, MEM_READ, MEM_WRITE, EXT_CALL };
+
+        kind     type  = kind::BB;
+        uint64_t addr  = 0;   // BB RVA | mem address | ext_call target
+        uint64_t value = 0;   // mem read/write value; 0 for BB/EXT_CALL
+        uint32_t size  = 0;   // mem byte width (1/2/4/8); 0 for BB/EXT_CALL
+
+        // Full remill register file at this event.
+        // Set for BB and EXT_CALL (State* available); nullopt for mem ops.
+        // Storing the full State enables future XMM/segment-register diffs
+        // without any API change.
+        std::optional<State> state;
+    };
+
     // ── checkpoint_t ─────────────────────────────────────────────────────────
     //
     // One immutable snapshot appended on every push.  All five hashes are
     // *running* — each push copies the previous entry and mixes new data in,
     // so every checkpoint encodes the full history up to that point.
-
     struct checkpoint_t
     {
         uint64_t state_hash = 0;     // Running hash of GPR/flag state (BB + ext-call events).
@@ -66,6 +93,26 @@ namespace lifted::verification
         // otherwise the sub-hash is zero-filled and cannot distinguish
         // "no events occurred" from "events were not recorded".
         event_flags record_on = event_flags::NONE;
+
+        // ── Detail recording (opt-in) ─────────────────────────────────────────
+        // When record_details == true, every push_* call also appends to details[].
+        // details[i] is parallel to checkpoints[i] (same 1-based indexing;
+        // details[0] is a default-constructed sentinel matching checkpoints[0]).
+        //
+        // Invariant: record_details == true  →  details.size() == checkpoints.size()
+        //            record_details == false →  details.empty()
+        bool                             record_details = false;
+        std::vector<checkpoint_detail_t> details;
+
+        // Call before any push_* to activate detail recording.
+        // Asserts that no pushes have happened yet, then pushes the sentinel at [0].
+        void enable_details() noexcept
+        {
+            assert(checkpoints.size() == 1 && details.empty() &&
+                   "enable_details() must be called before any push");
+            record_details = true;
+            details.push_back({});   // sentinel at [0]
+        }
 
         checkpoint_record_t()
         {
@@ -138,6 +185,10 @@ namespace lifted::verification
     {
         event_flags record_on = event_flags::DEFAULT;
         const checkpoint_record_t *prev_record = nullptr;
+        // When true, each push_* call also appends a checkpoint_detail_t to
+        // checkpoint_record_t::details (in addition to the normal hash update).
+        // Off by default to avoid any overhead in non-debug pipeline runs.
+        bool record_details = false;
     };
 
 } // namespace lifted::verification

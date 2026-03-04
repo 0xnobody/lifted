@@ -47,6 +47,11 @@ namespace lifted::verification
         // TODO: Maybe bb_hash too?
         checkpoints.push_back(cp);
         bb_counts.push_back(bb_counts.back() + 1u);  // one more BB
+
+        if (record_details)
+            details.push_back({checkpoint_detail_t::kind::BB, rva, 0, 0,
+                               s ? std::optional<State>(*s) : std::nullopt});
+
         return cp.combined_hash;
     }
 
@@ -60,6 +65,11 @@ namespace lifted::verification
         cp.combined_hash = make_combined(cp, index);
         checkpoints.push_back(cp);
         bb_counts.push_back(bb_counts.back());  // no new BB
+
+        if (record_details)
+            details.push_back({checkpoint_detail_t::kind::MEM_WRITE, addr, value, size,
+                               std::nullopt});
+
         return cp.combined_hash;
     }
 
@@ -73,6 +83,11 @@ namespace lifted::verification
         cp.combined_hash = make_combined(cp, index);
         checkpoints.push_back(cp);
         bb_counts.push_back(bb_counts.back());  // no new BB
+
+        if (record_details)
+            details.push_back({checkpoint_detail_t::kind::MEM_READ, addr, value, size,
+                               std::nullopt});
+
         return cp.combined_hash;
     }
 
@@ -86,6 +101,11 @@ namespace lifted::verification
         cp.combined_hash = make_combined(cp, index);
         checkpoints.push_back(cp);
         bb_counts.push_back(bb_counts.back());  // no new BB
+
+        if (record_details)
+            details.push_back({checkpoint_detail_t::kind::EXT_CALL, addr, 0, 0,
+                               s ? std::optional<State>(*s) : std::nullopt});
+
         return cp.combined_hash;
     }
 

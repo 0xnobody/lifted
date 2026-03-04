@@ -68,6 +68,8 @@ add_library(lifted STATIC
     "pipeline/stage.hpp"
     "pipeline/pipeline.hpp"
     "pipeline/pipeline.cpp"
+    "pipeline/deep_dive.hpp"
+    "pipeline/deep_dive.cpp"
     "pipeline/stages/seed_sweep_stage.hpp"
     "pipeline/stages/seed_sweep_stage.cpp"
     "pipeline/stages/corpus_replay_stage.hpp"

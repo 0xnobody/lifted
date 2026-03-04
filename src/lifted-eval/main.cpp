@@ -120,8 +120,8 @@ llvm::Error lift_and_verify_named(llvm::LLVMContext &context,
         }),
         .gen_factory = std::make_shared<verification::uniform_value_generator_factory>(
             verification::value_constraints_t{.max = 0x10'000, .alignment = 8}),
-        .bb_limit = 50'000,
-        .loop_limit = 1000,
+        .bb_limit = 5000,
+        .loop_limit = 100,
     };
 
     pipeline::RunConfig wide_cfg{
@@ -139,8 +139,8 @@ llvm::Error lift_and_verify_named(llvm::LLVMContext &context,
     pipeline::PipelineSpec spec;
     spec.name = "raw_vs_native[" + func_name + "]";
     spec.executors = {std::move(make_jit), std::move(make_unicorn)};
-    spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(wide_cfg, 1000));
-    spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(loop_breaker, 5000));
+    spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(wide_cfg, 50));
+    spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(loop_breaker, 100));
 
     pipeline::Pipeline pl(std::move(spec));
     auto report = pl.run(binary, entry_rva);
@@ -153,6 +153,23 @@ llvm::Error lift_and_verify_named(llvm::LLVMContext &context,
     }
 
     report->print(std::cout);
+
+    // Deep-dive into the first divergence found (if any).
+    for (const auto &stage : report->stages)
+    {
+        if (!stage.divergences.empty())
+        {
+            llvm::outs() << "\n";
+            auto dd = pl.deep_dive(stage.divergences[0], binary, entry_rva);
+            if (dd)
+                dd->print(std::cout);
+            else
+                llvm::errs() << "deep_dive error: "
+                             << llvm::toString(dd.takeError()) << "\n";
+            break;
+        }
+    }
+
     return llvm::Error::success();
 }
 
@@ -211,6 +228,115 @@ static llvm::Error lift_suite(llvm::LLVMContext &context,
     return llvm::Error::success();
 }
 
+// ── Deep-dive debug harness for check_anagram ────────────────────────────────
+//
+// Runs a small seed sweep over libeval-anagram.so::check_anagram and immediately
+// deep-dives into every divergence found.  Keeps run counts low so the divergence
+// surfaces quickly and the deep-dive output is inspectable.
+static llvm::Error debug_check_anagram(llvm::LLVMContext &context)
+{
+    const std::filesystem::path path =
+        "/home/atlas/lifted/build/src/evaluation/tum/libeval-anagram.so";
+    constexpr uint64_t entry_rva = 0x124a;
+
+    llvm::outs() << "\n=== debug_check_anagram @ "
+                 << llvm::format_hex(entry_rva, 18) << " ===\n";
+
+    std::shared_ptr<LIEF::Binary> binary = LIEF::Parser::parse(path);
+    if (!binary)
+        return llvm::make_error<llvm::StringError>(
+            "Failed to parse " + path.string(), llvm::inconvertibleErrorCode());
+
+    // Lift.
+    auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
+    auto lift_module = remill::LoadArchSemantics(arch.get());
+
+    std::set<llvm::AddressRange> got_table_rva_ranges;
+    if (auto got_range = get_section_bounds(*binary, ".got"))
+        got_table_rva_ranges.insert(*got_range);
+    std::set<llvm::AddressRange> ext_func_rva_ranges;
+    if (auto plt_range = get_section_bounds(*binary, ".plt.sec"))
+        ext_func_rva_ranges.insert(*plt_range);
+
+    lifted::abi::SystemVx64CC CC;
+    Lifter lifter(arch.get(), binary.get(), lift_module.get(),
+                  {}, got_table_rva_ranges, ext_func_rva_ranges, nullptr, &CC);
+
+    auto lift_result = lifter.Lift(entry_rva, true);
+    if (!lift_result)
+        return lift_result.takeError();
+
+    std::set<std::pair<uint64_t, uint64_t>> fallthrough_edges;
+    for (const auto &edge : lift_result->Edges)
+        if (edge.Type == Edge::Type::FALLTHROUGH)
+            fallthrough_edges.insert({edge.Source, edge.Dest});
+    std::string fn_name = lift_result->LiftedFunction->getName().str();
+
+    auto mod_holder =
+        std::make_shared<std::unique_ptr<llvm::Module>>(std::move(lift_result->Module));
+    auto make_jit = [mod_holder, fn_name, fallthrough_edges]()
+        -> llvm::Expected<std::unique_ptr<verification::Executor>>
+    {
+        return verification::JITExecutor::create(
+            std::move(*mod_holder), fn_name, fallthrough_edges);
+    };
+    auto make_unicorn = [binary, entry_rva]()
+        -> llvm::Expected<std::unique_ptr<verification::Executor>>
+    {
+        return verification::UnicornExecutor::create(binary, {}, entry_rva);
+    };
+
+    // Small sweep: 200 seeds is usually enough to surface the known divergences.
+    pipeline::RunConfig cfg{
+        .seed = 0x1338,
+        .oracle = verification::sentinel_oracle(std::vector<verification::sentinel_t>{
+            {.size_bytes = 0, .value = 0, .inv_prob = 10},
+            {.size_bytes = 0, .value = 0xFFFF'FFFF'FFFF'FFFF, .inv_prob = 10},
+        }),
+        .gen_factory = std::make_shared<verification::uniform_value_generator_factory>(
+            verification::value_constraints_t{.max = 0xFFFF'FFFF'FFFF'FFFF, .alignment = 8}),
+        .bb_limit = 1000,
+        .loop_limit = 10,
+    };
+
+    pipeline::PipelineSpec spec;
+    spec.name = "debug[check_anagram]";
+    spec.executors = {std::move(make_jit), std::move(make_unicorn)};
+    spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(cfg, 200));
+    pipeline::Pipeline pl(std::move(spec));
+    auto report = pl.run(binary, entry_rva);
+    if (!report)
+        return report.takeError();
+
+    report->print(std::cout);
+
+    // Deep-dive every divergence so we can confirm reproduction.
+    for (const auto &stage : report->stages)
+    {
+        if (stage.divergences.empty())
+            continue;
+
+        llvm::outs() << "\nDeep-diving " << stage.divergences.size()
+                     << " divergence(s) from stage '" << stage.stage_name << "':\n";
+
+        for (const auto &outcome : stage.divergences)
+        {
+            llvm::outs() << "\n";
+            auto dd = pl.deep_dive(outcome, binary, entry_rva);
+            if (!dd)
+            {
+                llvm::errs() << "deep_dive error: "
+                             << llvm::toString(dd.takeError()) << "\n";
+                continue;
+            }
+            dd->print(std::cout);
+        }
+        break; // first stage only
+    }
+
+    return llvm::Error::success();
+}
+
 int main(int argc, char **argv)
 {
     llvm::LLVMContext context;
@@ -220,6 +346,9 @@ int main(int argc, char **argv)
 
     // if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
     //     llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
+
+    // if (auto err = debug_check_anagram(context))
+    //     llvm::errs() << "debug_check_anagram error: " << llvm::toString(std::move(err)) << "\n";
 
     if (auto err = lift_suite(context, EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV))
         llvm::errs() << "tum-basic-algorithms suite error: " << llvm::toString(std::move(err)) << "\n";

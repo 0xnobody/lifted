@@ -5,6 +5,7 @@
 #include <llvm/Support/Error.h>
 
 #include <memory>
+#include <string_view>
 #include <vector>
 #include <unordered_set>
 
@@ -30,6 +31,8 @@ namespace lifted::verification
     public:
         virtual ~Executor() = default;
 
+        /// Name of this executor for display (e.g. "JIT", "Unicorn").
+        virtual std::string_view name() const = 0;
         /// Inform the executor of newly discovered external call targets from prior src runs.
         /// Called by the pipeline before each run_single. Default no-op.
         /// UnicornExecutor overrides to insert into its live external_rvas set.

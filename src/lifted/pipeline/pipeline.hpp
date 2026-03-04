@@ -1,6 +1,7 @@
 #pragma once
 
 #include "corpus.hpp"
+#include "deep_dive.hpp"
 #include "run_config.hpp"
 #include "stage.hpp"
 
@@ -126,8 +127,19 @@ public:
         std::shared_ptr<LIEF::Binary> binary,
         uint64_t entry_rva);
 
+    /// Re-run a diverging outcome with full event-detail recording to produce a
+    /// side-by-side chronological trace display.  Requires run() to have been
+    /// called first (executors are reused).
+    llvm::Expected<DeepDiveResult> deep_dive(
+        const RunOutcome              &outcome,
+        std::shared_ptr<LIEF::Binary>  binary,
+        uint64_t                       entry_rva,
+        const DeepDiveConfig          &cfg = {});
+
 private:
     PipelineSpec spec_;
+    std::unique_ptr<verification::Executor> src_executor_;
+    std::unique_ptr<verification::Executor> tgt_executor_;
 
     /// Execute one (src, tgt) pair for the given config.
     /// Handles the fixed directionality (src first, then tgt with src's record),

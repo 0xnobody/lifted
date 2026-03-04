@@ -41,6 +41,7 @@ namespace lifted::verification
         llvm::Error run_single_impl(verifier_state &state) override;
 
     public:
+        std::string_view name() const override { return "JIT"; }
         static llvm::Expected<std::unique_ptr<JITExecutor>>
         create(std::unique_ptr<llvm::Module> module, const std::string &fn_name, const std::set<std::pair<uint64_t, uint64_t>> &fallthrough_edges = {});
     };

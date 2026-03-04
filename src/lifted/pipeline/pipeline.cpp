@@ -228,15 +228,18 @@ llvm::Expected<PipelineReport> Pipeline::run(
     uint64_t                       entry_rva)
 {
     // ── Construct executors once (reused across all stages + runs) ────────────
+    // ── Construct executors once (reused across all stages + runs) ────────────
     auto src_exp = spec_.executors.make_src();
     if (!src_exp)
         return src_exp.takeError();
-    auto &src = **src_exp;
+    src_executor_ = std::move(*src_exp);
+    auto &src = *src_executor_;
 
     auto tgt_exp = spec_.executors.make_tgt();
     if (!tgt_exp)
         return tgt_exp.takeError();
-    auto &tgt = **tgt_exp;
+    tgt_executor_ = std::move(*tgt_exp);
+    auto &tgt = *tgt_executor_;
 
     // ── Shared state across all stages ────────────────────────────────────────
     std::unordered_set<uint64_t> accumulated_ext_calls;

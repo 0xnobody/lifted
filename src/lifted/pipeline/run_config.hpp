@@ -49,6 +49,10 @@ struct RunConfig
     /// Which events to record in checkpoints (passed to checkpoint_config_t::record_on).
     verification::event_flags record_flags = verification::event_flags::DEFAULT;
 
+    /// When true, each checkpointed event also stores a full checkpoint_detail_t
+    /// (including the remill::State copy for BB/EXT_CALL events).  Off by default.
+    bool record_details = false;
+
     // ── Conversion helpers ────────────────────────────────────────────────────
 
     /// Produce the transient executor params for one run invocation.
@@ -76,8 +80,9 @@ struct RunConfig
     {
         return {
             .checkpoint_config = {
-                .record_on  = record_flags,
-                .prev_record = prev_record,
+                .record_on      = record_flags,
+                .prev_record    = prev_record,
+                .record_details = record_details,
             },
             .loop_policy = verification::loop_limit_policy::TERMINATE,
             .bb_limit    = bb_limit,

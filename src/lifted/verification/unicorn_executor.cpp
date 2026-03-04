@@ -103,6 +103,17 @@ namespace lifted::verification
     {
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
 
+        // Any address below LOAD_BASE is outside the binary's text segment.
+        // This covers FINISH_SENTINEL (the uc_emu_start 'until' address,
+        // 0x0000600000000000) and oracle-injected values that the function
+        // jumped to via an unbalanced stack — both are non-code addresses.
+        // Stop emulation without recording a bb_entered so the verifier never
+        // sees a phantom event.
+        if (address < LOAD_BASE)
+        {
+            uc_emu_stop(uc);
+            return;
+        }
         const uint64_t prev = ctx->prev_block;
 
         const bool is_first = (prev == 0);
@@ -172,39 +183,31 @@ namespace lifted::verification
         }
     }
 
-    bool UnicornExecutor::hook_mem_invalid(uc_engine *uc, uc_mem_type type, uint64_t address,
-                                           int size, int64_t value, void *user_data)
+    bool UnicornExecutor::hook_tlb_fill(uc_engine *uc, uint64_t address,
+                                        uc_mem_type type, uc_tlb_entry *result,
+                                        void *user_data)
     {
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
 
-        // Calculate page boundaries (guard against overflow)
-        uint64_t begin_page = address & ~0xFFFULL;
-        uint64_t last_byte = (static_cast<uint64_t>(size) > 0 &&
-                              address > UINT64_MAX - static_cast<uint64_t>(size - 1))
-                                 ? UINT64_MAX
-                                 : address + static_cast<uint64_t>(size - 1);
-        uint64_t end_page = last_byte & ~0xFFFULL;
-
-        // Map pages from paged_memory_state
-        for (uint64_t page = begin_page;; page += 0x1000)
+        // address is already page-aligned (unicorn_fill_tlb passes address & TARGET_PAGE_MASK).
+        // Map the page from paged_memory_state if it is not yet present in Unicorn.
+        auto data = ctx->state->memory().map(address);
+        if (!data.empty())
         {
-            auto data = ctx->state->memory().map(page);
-            if (!data.empty())
+            uc_err err = uc_mem_map(uc, address, data.size(), UC_PROT_ALL);
+            if (err == UC_ERR_OK)
             {
-                uc_err err = uc_mem_map(uc, page, data.size(), UC_PROT_ALL);
-                if (err != UC_ERR_OK)
-                    return false;
-
-                err = uc_mem_write(uc, page, data.data(), data.size());
-                if (err != UC_ERR_OK)
-                    return false;
+                // Newly mapped: write initial page data.  hook_mem_read will
+                // overwrite individual bytes with oracle-injected values on each read.
+                uc_mem_write(uc, address, data.data(), data.size());
             }
-
-            // Break BEFORE incrementing to avoid wraparound past UINT64_MAX
-            if (page >= end_page)
-                break;
+            // UC_ERR_MAP = already mapped from a prior run; hook_mem_read
+            // will inject the current oracle values on each read regardless.
         }
 
+        // Identity mapping (virtual == physical), required by UC_TLB_VIRTUAL mode.
+        result->paddr = address;
+        result->perms = UC_PROT_ALL;
         return true;
     }
 
@@ -259,13 +262,11 @@ namespace lifted::verification
         // TODO: evaluate performance of this. If it's a problem, we can optimize by
         // only doing this for actual sentinel injections.
         uc_mem_write(uc, address, &read_value, size);
-
         if (!cont)
         {
             uc_emu_stop(uc);
         }
     }
-
     void UnicornExecutor::hook_mem_write(uc_engine *uc, uc_mem_type type, uint64_t address,
                                          int size, int64_t value, void *user_data)
     {
@@ -380,7 +381,17 @@ namespace lifted::verification
 
     void UnicornExecutor::hint_external_rvas(const std::unordered_set<uint64_t> &rvas)
     {
-        external_rvas.insert(rvas.begin(), rvas.end());
+        // Replace rather than accumulate.  Cross-run accumulation violates the
+        // design invariant: two calls with the same run_params_t must produce
+        // identical execution.  If Unicorn's external_rvas grew from previous
+        // seeds, blocks that JIT visits as regular BBs could be classified as
+        // ext_call (different checkpoint hash) — a false CHECKPOINT_MISMATCH.
+        // Using only the current JIT run's ext_calls keeps Unicorn's classification
+        // aligned with JIT's view.  Any external function Unicorn encounters that
+        // JIT did not (different code path) will hit a PLT stub whose GOT slot
+        // contains an oracle-injected address — the LOAD_BASE guard in hook_block
+        // will stop emulation cleanly.
+        external_rvas = rvas;
     }
 
     llvm::Expected<std::unique_ptr<UnicornExecutor>>
@@ -439,6 +450,30 @@ namespace lifted::verification
 
     llvm::Error UnicornExecutor::run_single_impl(verifier_state &state)
     {
+        // Per-run QEMU-topology caches must be cleared so that identical
+        // run_params_t always produces identical execution.
+        //
+        // genuine_edges / rep_artifacts: populated by hook_edge
+        // (UC_HOOK_EDGE_GENERATED), which fires only when QEMU regenerates a
+        // translation block — a non-deterministic event that depends on QEMU's
+        // internal TB-JIT cache.  Leaking these across runs corrupts the
+        // checkpoint sequence.
+        //
+        // uc_ctl_flush_tb: QEMU compiles translation blocks (TBs) and links
+        // (chains) their exit branches directly to successor TBs as an
+        // optimisation.  These chains encode the branch target chosen during
+        // compilation (whichever path was taken first) and are NOT re-evaluated
+        // on subsequent executions.  A stale chain causes Unicorn to jump to the
+        // WRONG block when the branch condition differs between runs, making two
+        // identical run_params_t produce different register states.  Flushing
+        // the TB cache before each run forces QEMU to recompile every block
+        // fresh with the correct live condition.
+        //
+        // tb_branch_cache is kept: it is a pure deterministic XED-decode result
+        // keyed on (TB_start, TB_size) and never produces wrong answers.
+        rep_artifacts.clear();
+        genuine_edges.clear();
+        uc_ctl_flush_tb(uc_eng.get());
         // Restore clean context
         uc_err err = uc_context_restore(uc_eng.get(), clean_ctx.get());
         if (err != UC_ERR_OK)
@@ -458,7 +493,7 @@ namespace lifted::verification
         }
 
         // Register hooks
-        uc_hook block_hook, edge_hook, mem_invalid_hook, mem_read_hook, mem_write_hook, code_hook;
+        uc_hook block_hook, edge_hook, tlb_fill_hook, mem_read_hook, mem_write_hook, code_hook;
 
         unicorn_ctx_t ctx = {
             .executor = this,
@@ -483,13 +518,12 @@ namespace lifted::verification
                 llvm::inconvertibleErrorCode());
         }
 
-        err = uc_hook_add(uc_eng.get(), &mem_invalid_hook,
-                          UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_FETCH_UNMAPPED,
-                          (void *)hook_mem_invalid, &ctx, 1, 0);
+        err = uc_hook_add(uc_eng.get(), &tlb_fill_hook, UC_HOOK_TLB_FILL,
+                          (void *)hook_tlb_fill, &ctx, 1, 0);
         if (err != UC_ERR_OK)
         {
             return llvm::make_error<llvm::StringError>(
-                std::string("Failed to add mem_invalid hook: ") + uc_strerror(err),
+                std::string("Failed to add tlb_fill hook: ") + uc_strerror(err),
                 llvm::inconvertibleErrorCode());
         }
 
@@ -529,7 +563,7 @@ namespace lifted::verification
         // Cleanup hooks
         uc_hook_del(uc_eng.get(), block_hook);
         uc_hook_del(uc_eng.get(), edge_hook);
-        uc_hook_del(uc_eng.get(), mem_invalid_hook);
+        uc_hook_del(uc_eng.get(), tlb_fill_hook);
         uc_hook_del(uc_eng.get(), mem_read_hook);
         uc_hook_del(uc_eng.get(), mem_write_hook);
 
