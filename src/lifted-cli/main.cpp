@@ -40,6 +40,9 @@ using namespace lifted::eval;
 
 // ── Subcommands ────────────────────────────────────────────────────────────────
 
+// Hide LLVM's internal options (debug, stats, etc.) from --help output.
+// Subcommand descriptions are not options and survive this filter.
+static cl::OptionCategory LiftedCLICategory("lifted-cli options");
 static cl::SubCommand SuiteCmd("suite", "Run all targets in a named suite");
 static cl::SubCommand TargetCmd("target", "Run all functions in one suite target");
 static cl::SubCommand FnCmd("fn", "Run a single function");
@@ -553,6 +556,7 @@ static int run_fn_cmd(LLVMContext &ctx)
 int main(int argc, char **argv)
 {
     InitLLVM X(argc, argv);
+    cl::HideUnrelatedOptions(LiftedCLICategory);
     cl::ParseCommandLineOptions(argc, argv, "lifted-cli — lifting & verification CLI\n");
 
     LLVMContext ctx;

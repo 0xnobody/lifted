@@ -288,3 +288,43 @@ After implementing a new feature:
 - `EVAL_SYNTHETIC_LIBS_DIR` - compiled synthetic test binary directory (set in CMake)
 - Many test binaries currently commented out or marked with `//` (work in progress)
 - Focus is on iterative experimentation rather than production stability
+
+
+## lifted-cli
+
+`lifted-cli` is the primary tool for testing and debugging lifting, verification, and deobfuscation behaviour. Use it instead of running `main.cpp` directly whenever you need to isolate a function, a single binary, or a full suite.
+
+**Binary**: `./build/src/lifted-cli/lifted-cli`
+
+### Subcommands
+
+| Subcommand | Purpose | Key flags |
+|---|---|---|
+| `suite` | Run every function across all targets in a named suite | `--suite <name>`, `--ignore`, `--max-deep-dives` |
+| `target` | Run every function in one target binary from a suite | `--suite <name>`, `--target <stem>`, `--ignore`, `--max-deep-dives` |
+| `fn` | Run a single function (three modes below) | `--max-deep-dives` |
+
+**`fn` modes** (mutually exclusive):
+- **Mode A** — `--binary <path> --rva <hex>`
+- **Mode B** — `--binary <path> --export <symbol>`
+- **Mode C** — `--suite <name> --target <stem> --func <name>`
+
+**Exit codes**: `0` all pass · `1` at least one divergence · `2` fatal/bad arguments
+
+**Known suites** (baked in at CMake configure time): `synthetic`, `tum-small-programs`, `tum-basic-algorithms`, `tum-simple-hash-functions`
+
+### When to use it
+
+- **Reproducing a lifting bug**: use `fn` Mode B or A to pin down the exact function and inspect `[LIFTING]` / `[RESULT]` output.
+- **Verifying a pass or pipeline change**: run `suite --suite synthetic --max-deep-dives 0` before and after the patch; the summary line shows regressions immediately.
+- **Running a tight loop over one binary**: use `target` to avoid waiting for the whole suite.
+- **Deep-dive analysis**: leave `--max-deep-dives` at its default of 1 to get the first diverging test-case detail printed inline.
+
+### Where to modify pipeline behaviour
+
+All shared lifting + verification logic lives in `src/eval-suite/`:
+
+- **`eval_pipeline.cpp`** — `lift_and_verify_named()` and the two-stage default pipeline (SeedSweepStage wide ×50 + loop-breaker ×100). Edit here to change pass ordering, stage parameters, or add new pipeline stages.
+- **`eval_pipeline.hpp`** — `LiftAndVerifyResult` struct and public API. Extend if you need new output fields (e.g. a second deep-dive, per-stage stats).
+- **`eval_utils.hpp/cpp`** — `rva_from_export`, `get_section_bounds`. Add binary-introspection helpers here.
+- **`suite.hpp/cpp`** — `parse_suite_csv`, `parse_targets_csv`. Touch only if the CSV format changes.

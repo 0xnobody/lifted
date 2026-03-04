@@ -24,193 +24,193 @@ using namespace lifted;
 namespace lifted::eval
 {
 
-// ── Default two-stage pipeline ─────────────────────────────────────────────────
-//
-// Stage 1 – wide sweep: 50 runs, unconstrained inputs, low loop/bb limits.
-// Stage 2 – loop-breaker: 100 runs, small inputs, high loop/bb limits.
-//
-// This is the canonical pipeline for all eval-suite + lifted-cli runs.
-static pipeline::PipelineSpec make_default_pipeline(
-    const std::string &func_name,
-    pipeline::ExecutorPair::Factory make_jit,
-    pipeline::ExecutorPair::Factory make_unicorn)
-{
-    pipeline::RunConfig wide_cfg{
-        .seed = 0x1338,
-        .oracle = verification::sentinel_oracle(std::vector<verification::sentinel_t>{
-            {.size_bytes = 0, .value = 0, .inv_prob = 10},
-            {.size_bytes = 0, .value = 0xFFFF'FFFF'FFFF'FFFF, .inv_prob = 10},
-        }),
-        .gen_factory = std::make_shared<verification::uniform_value_generator_factory>(
-            verification::value_constraints_t{.max = 0xFFFF'FFFF'FFFF'FFFF, .alignment = 8}),
-        .bb_limit   = 1000,
-        .loop_limit = 10,
-    };
-
-    pipeline::RunConfig loop_breaker{
-        .seed = 0x1337,
-        .oracle = verification::sentinel_oracle(std::vector<verification::sentinel_t>{
-            {.size_bytes = 0, .value = 0, .inv_prob = 10},
-            {.size_bytes = 0, .value = 0xFFFF'FFFF'FFFF'FFFF, .inv_prob = 10},
-        }),
-        .gen_factory = std::make_shared<verification::uniform_value_generator_factory>(
-            verification::value_constraints_t{.max = 0x10'000, .alignment = 8}),
-        .bb_limit   = 5000,
-        .loop_limit = 100,
-    };
-
-    pipeline::PipelineSpec spec;
-    spec.name      = "raw_vs_native[" + func_name + "]";
-    spec.executors = {std::move(make_jit), std::move(make_unicorn)};
-    spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(wide_cfg, 50));
-    spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(loop_breaker, 100));
-    return spec;
-}
-
-// ── lift_and_verify_named ──────────────────────────────────────────────────────
-
-llvm::Expected<LiftAndVerifyResult>
-lift_and_verify_named(llvm::LLVMContext &context,
-                      const std::filesystem::path &path,
-                      const std::string &func_name,
-                      uint64_t entry_rva,
-                      size_t deep_dive_count)
-{
-    auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
-    auto lift_module = remill::LoadArchSemantics(arch.get());
-
-    std::shared_ptr<LIEF::Binary> binary = LIEF::Parser::parse(path);
-    if (!binary)
-        return llvm::make_error<llvm::StringError>(
-            "Failed to parse binary: " + path.string(),
-            llvm::inconvertibleErrorCode());
-
-    lifted::abi::SystemVx64CC CC;
-
-    std::set<llvm::AddressRange> const_rva_ranges;
-
-    std::set<llvm::AddressRange> got_table_rva_ranges;
-    if (auto got_range = get_section_bounds(*binary, ".got"))
-        got_table_rva_ranges.insert(*got_range);
-
-    std::set<llvm::AddressRange> ext_func_rva_ranges;
-    if (auto plt_range = get_section_bounds(*binary, ".plt.sec"))
-        ext_func_rva_ranges.insert(*plt_range);
-
-    Lifter lifter(arch.get(),
-                  binary.get(),
-                  lift_module.get(),
-                  const_rva_ranges,
-                  got_table_rva_ranges,
-                  ext_func_rva_ranges,
-                  nullptr,
-                  &CC);
-
-    auto lift_result = lifter.Lift(entry_rva, true);
-    if (!lift_result)
+    // ── Default two-stage pipeline ─────────────────────────────────────────────────
+    //
+    // Stage 1 – wide sweep: 50 runs, unconstrained inputs, low loop/bb limits.
+    // Stage 2 – loop-breaker: 100 runs, small inputs, high loop/bb limits.
+    //
+    // This is the canonical pipeline for all eval-suite + lifted-cli runs.
+    static pipeline::PipelineSpec make_default_pipeline(
+        const std::string &func_name,
+        pipeline::ExecutorPair::Factory make_jit,
+        pipeline::ExecutorPair::Factory make_unicorn)
     {
-        LiftAndVerifyResult r;
-        r.lift_failed = true;
-        r.lift_error  = llvm::toString(lift_result.takeError());
-        return r;
+        pipeline::RunConfig wide_cfg{
+            .seed = 0x1338,
+            .oracle = verification::sentinel_oracle(std::vector<verification::sentinel_t>{
+                {.size_bytes = 0, .value = 0, .inv_prob = 10},
+                {.size_bytes = 0, .value = 0xFFFF'FFFF'FFFF'FFFF, .inv_prob = 10},
+            }),
+            .gen_factory = std::make_shared<verification::uniform_value_generator_factory>(
+                verification::value_constraints_t{.max = 0xFFFF'FFFF'FFFF'FFFF, .alignment = 8}),
+            .bb_limit = 10'000,
+            .loop_limit = 200,
+        };
+
+        pipeline::RunConfig loop_breaker{
+            .seed = 0x1337,
+            .oracle = verification::sentinel_oracle(std::vector<verification::sentinel_t>{
+                {.size_bytes = 0, .value = 0, .inv_prob = 10},
+                {.size_bytes = 0, .value = 0xFFFF'FFFF'FFFF'FFFF, .inv_prob = 10},
+            }),
+            .gen_factory = std::make_shared<verification::uniform_value_generator_factory>(
+                verification::value_constraints_t{.max = 0x10'000, .alignment = 8}),
+            .bb_limit = 10'000,
+            .loop_limit = 50,
+        };
+
+        pipeline::PipelineSpec spec;
+        spec.name = "raw_vs_native[" + func_name + "]";
+        spec.executors = {std::move(make_jit), std::move(make_unicorn)};
+        spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(wide_cfg, 500));
+        spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(loop_breaker, 1000));
+        return spec;
     }
 
-    // Collect fallthrough edges before the module is moved into the JIT factory.
-    std::set<std::pair<uint64_t, uint64_t>> fallthrough_edges;
-    for (const auto &edge : lift_result->Edges)
-        if (edge.Type == Edge::Type::FALLTHROUGH)
-            fallthrough_edges.insert({edge.Source, edge.Dest});
+    // ── lift_and_verify_named ──────────────────────────────────────────────────────
 
-    std::string fn_name = lift_result->LiftedFunction->getName().str();
-
-    // std::function requires a copyable callable, so wrap the unique_ptr in a
-    // shared_ptr.  The factory is invoked exactly once by the pipeline.
-    auto mod_holder =
-        std::make_shared<std::unique_ptr<llvm::Module>>(std::move(lift_result->Module));
-
-    auto make_jit = [mod_holder, fn_name, fallthrough_edges]()
-        -> llvm::Expected<std::unique_ptr<verification::Executor>>
+    llvm::Expected<LiftAndVerifyResult>
+    lift_and_verify_named(llvm::LLVMContext &context,
+                          const std::filesystem::path &path,
+                          const std::string &func_name,
+                          uint64_t entry_rva,
+                          size_t deep_dive_count)
     {
-        return verification::JITExecutor::create(
-            std::move(*mod_holder), fn_name, fallthrough_edges);
-    };
+        auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
+        auto lift_module = remill::LoadArchSemantics(arch.get());
 
-    auto make_unicorn = [binary, entry_rva]()
-        -> llvm::Expected<std::unique_ptr<verification::Executor>>
-    {
-        return verification::UnicornExecutor::create(binary, {}, entry_rva);
-    };
+        std::shared_ptr<LIEF::Binary> binary = LIEF::Parser::parse(path);
+        if (!binary)
+            return llvm::make_error<llvm::StringError>(
+                "Failed to parse binary: " + path.string(),
+                llvm::inconvertibleErrorCode());
 
-    pipeline::Pipeline pl(
-        make_default_pipeline(func_name, std::move(make_jit), std::move(make_unicorn)));
+        lifted::abi::SystemVx64CC CC;
 
-    auto report = pl.run(binary, entry_rva);
-    if (!report)
-        return report.takeError();
+        std::set<llvm::AddressRange> const_rva_ranges;
 
-    LiftAndVerifyResult result;
-    result.report = std::move(*report);
+        std::set<llvm::AddressRange> got_table_rva_ranges;
+        if (auto got_range = get_section_bounds(*binary, ".got"))
+            got_table_rva_ranges.insert(*got_range);
 
-    if (deep_dive_count > 0)
-    {
-        for (const auto &stage : result.report->stages)
+        std::set<llvm::AddressRange> ext_func_rva_ranges;
+        if (auto plt_range = get_section_bounds(*binary, ".plt.sec"))
+            ext_func_rva_ranges.insert(*plt_range);
+
+        Lifter lifter(arch.get(),
+                      binary.get(),
+                      lift_module.get(),
+                      const_rva_ranges,
+                      got_table_rva_ranges,
+                      ext_func_rva_ranges,
+                      nullptr,
+                      &CC);
+
+        auto lift_result = lifter.Lift(entry_rva, true);
+        if (!lift_result)
         {
-            if (!stage.divergences.empty())
+            LiftAndVerifyResult r;
+            r.lift_failed = true;
+            r.lift_error = llvm::toString(lift_result.takeError());
+            return r;
+        }
+
+        // Collect fallthrough edges before the module is moved into the JIT factory.
+        std::set<std::pair<uint64_t, uint64_t>> fallthrough_edges;
+        for (const auto &edge : lift_result->Edges)
+            if (edge.Type == Edge::Type::FALLTHROUGH)
+                fallthrough_edges.insert({edge.Source, edge.Dest});
+
+        std::string fn_name = lift_result->LiftedFunction->getName().str();
+
+        // std::function requires a copyable callable, so wrap the unique_ptr in a
+        // shared_ptr.  The factory is invoked exactly once by the pipeline.
+        auto mod_holder =
+            std::make_shared<std::unique_ptr<llvm::Module>>(std::move(lift_result->Module));
+
+        auto make_jit = [mod_holder, fn_name, fallthrough_edges]()
+            -> llvm::Expected<std::unique_ptr<verification::Executor>>
+        {
+            return verification::JITExecutor::create(
+                std::move(*mod_holder), fn_name, fallthrough_edges);
+        };
+
+        auto make_unicorn = [binary, entry_rva]()
+            -> llvm::Expected<std::unique_ptr<verification::Executor>>
+        {
+            return verification::UnicornExecutor::create(binary, {}, entry_rva);
+        };
+
+        pipeline::Pipeline pl(
+            make_default_pipeline(func_name, std::move(make_jit), std::move(make_unicorn)));
+
+        auto report = pl.run(binary, entry_rva);
+        if (!report)
+            return report.takeError();
+
+        LiftAndVerifyResult result;
+        result.report = std::move(*report);
+
+        if (deep_dive_count > 0)
+        {
+            for (const auto &stage : result.report->stages)
             {
-                auto dd = pl.deep_dive(stage.divergences[0], binary, entry_rva);
-                if (dd)
-                    result.deep_dive = std::move(*dd);
-                // A failing deep_dive is non-fatal; the report still has the divergence info.
-                break; // first stage with divergences only
+                if (!stage.divergences.empty())
+                {
+                    auto dd = pl.deep_dive(stage.divergences[0], binary, entry_rva);
+                    if (dd)
+                        result.deep_dive = std::move(*dd);
+                    // A failing deep_dive is non-fatal; the report still has the divergence info.
+                    break; // first stage with divergences only
+                }
             }
         }
+
+        return result;
     }
 
-    return result;
-}
+    // ── Suite name resolution ──────────────────────────────────────────────────────
+    //
+    // Each branch is guarded by #ifdef so the library compiles even when no CSV
+    // paths were injected at configure time (e.g. standalone builds, unit tests).
 
-// ── Suite name resolution ──────────────────────────────────────────────────────
-//
-// Each branch is guarded by #ifdef so the library compiles even when no CSV
-// paths were injected at configure time (e.g. standalone builds, unit tests).
-
-std::optional<std::filesystem::path> resolve_suite_name(const std::string &name)
-{
+    std::optional<std::filesystem::path> resolve_suite_name(const std::string &name)
+    {
 #ifdef EVAL_SUITE_SYNTHETIC_CSV
-    if (name == "synthetic")
-        return std::filesystem::path{EVAL_SUITE_SYNTHETIC_CSV};
+        if (name == "synthetic")
+            return std::filesystem::path{EVAL_SUITE_SYNTHETIC_CSV};
 #endif
 #ifdef EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV
-    if (name == "tum-small-programs")
-        return std::filesystem::path{EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV};
+        if (name == "tum-small-programs")
+            return std::filesystem::path{EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV};
 #endif
 #ifdef EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV
-    if (name == "tum-basic-algorithms")
-        return std::filesystem::path{EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV};
+        if (name == "tum-basic-algorithms")
+            return std::filesystem::path{EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV};
 #endif
 #ifdef EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV
-    if (name == "tum-simple-hash-functions")
-        return std::filesystem::path{EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV};
+        if (name == "tum-simple-hash-functions")
+            return std::filesystem::path{EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV};
 #endif
-    return std::nullopt;
-}
+        return std::nullopt;
+    }
 
-std::vector<std::string> known_suite_names()
-{
-    std::vector<std::string> names;
+    std::vector<std::string> known_suite_names()
+    {
+        std::vector<std::string> names;
 #ifdef EVAL_SUITE_SYNTHETIC_CSV
-    names.push_back("synthetic");
+        names.push_back("synthetic");
 #endif
 #ifdef EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV
-    names.push_back("tum-small-programs");
+        names.push_back("tum-small-programs");
 #endif
 #ifdef EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV
-    names.push_back("tum-basic-algorithms");
+        names.push_back("tum-basic-algorithms");
 #endif
 #ifdef EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV
-    names.push_back("tum-simple-hash-functions");
+        names.push_back("tum-simple-hash-functions");
 #endif
-    return names;
-}
+        return names;
+    }
 
 } // namespace lifted::eval
