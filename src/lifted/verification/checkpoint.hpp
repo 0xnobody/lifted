@@ -52,6 +52,12 @@ namespace lifted::verification
     {
         std::vector<checkpoint_t> checkpoints;
 
+        // Parallel to checkpoints: bb_counts[i] is the number of push_bb calls
+        // that have occurred in events 1..i (sentinel at [0] = 0).  Kept separate
+        // so checkpoint_t stays a plain 40-byte value type.  Used post-hoc to map
+        // a checkpoint event index back to a bb_trace position for diff display.
+        std::vector<uint32_t> bb_counts;
+
         // Which event types were recorded into this record.  Set by the
         // verifier_state from checkpoint_config_t::record_on at construction time
         // and preserved into run_result_t::checkpoint_record.  The comparator
@@ -64,6 +70,7 @@ namespace lifted::verification
         checkpoint_record_t()
         {
             checkpoints.push_back({}); // sentinel
+            bb_counts.push_back(0);    // sentinel: 0 BBs before event 0
         }
 
         // ── State hashing ─────────────────────────────────────────────────────

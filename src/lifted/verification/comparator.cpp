@@ -457,7 +457,26 @@ namespace lifted::verification
         out.len_r1 = r1.checkpoint_record.event_count();
         out.len_r2 = r2.checkpoint_record.event_count();
 
-        static constexpr checkpoint_t kZero{};
+        static constexpr checkpoint_t  kZero{};
+        static constexpr size_t        kBBContext = 6;
+
+        // Returns true when checkpoint event i was produced by push_bb.
+        const auto is_bb_event = [](const checkpoint_record_t &rec, size_t i) -> bool {
+            const auto &bbc = rec.bb_counts;
+            return i > 0 && i < bbc.size() && bbc[i] > bbc[i - 1];
+        };
+
+        // Returns the last ≤ kBBContext entries of bb_trace up to and including
+        // event i (i.e. bb_counts[i] BBs have occurred by then).  r1 and r2 are
+        // identical before any divergence, so we always draw from r1.
+        const auto preceding_bbs = [&](size_t i) -> std::vector<uint64_t> {
+            const auto &bbc = r1.checkpoint_record.bb_counts;
+            if (i >= bbc.size())
+                return {};
+            size_t bb_end = std::min(static_cast<size_t>(bbc[i]), r1.bb_trace.size());
+            size_t bb_start = bb_end > kBBContext ? bb_end - kBBContext : 0;
+            return {r1.bb_trace.begin() + bb_start, r1.bb_trace.begin() + bb_end};
+        };
 
         size_t common = std::min(cp1.size(), cp2.size());
         // Walk shared prefix (skip sentinel at [0]).
@@ -477,6 +496,8 @@ namespace lifted::verification
                 narrow_checkpoint_field(cp1[i], cp2[i]),
                 cp1[i],
                 cp2[i],
+                preceding_bbs(i),
+                is_bb_event(r1.checkpoint_record, i),
             });
         }
 
@@ -487,11 +508,16 @@ namespace lifted::verification
                 cp1.size() > cp2.size() ? cp1[common] : kZero;
             const checkpoint_t &shorter_cp =
                 cp2.size() > cp1.size() ? cp2[common] : kZero;
+            // Preceding BBs from the shared prefix (last matched event = common-1).
+            const auto &longer_r  = cp1.size() > cp2.size() ? r1 : r2;
+            bool div_is_bb = is_bb_event(longer_r.checkpoint_record, common);
             out.entries.push_back({
                 common,
                 checkpoint_field::STATE, // placeholder for length-only divergence
                 cp1.size() > cp2.size() ? longer_cp : kZero,
                 cp2.size() > cp1.size() ? shorter_cp : kZero,
+                preceding_bbs(common > 0 ? common - 1 : 0),
+                div_is_bb,
             });
         }
 
@@ -614,6 +640,22 @@ namespace lifted::verification
             {
                 os << "    [" << e.index << "] field=" << field_str(e.first_diverging_field)
                    << "\n";
+
+                // ── BB context ───────────────────────────────────────────────
+                if (!e.preceding_bbs.empty())
+                {
+                    os << "      last " << e.preceding_bbs.size() << " BB"
+                       << (e.preceding_bbs.size() == 1 ? "" : "s") << ": ";
+                    for (uint64_t rva : e.preceding_bbs)
+                        os << "0x" << std::hex << rva << std::dec << "  ";
+                    if (e.diverging_event_is_bb)
+                        os << "  ← state diverged at this BB entry";
+                    else
+                        os << "  ← " << field_str(e.first_diverging_field) << " event followed";
+                    os << "\n";
+                }
+
+                // ── sub-hash lines ───────────────────────────────────────────
                 os << "      r1: state=0x" << std::hex << e.cp_r1.state_hash
                    << " mem_write=0x" << e.cp_r1.mem_write_hash
                    << " read=0x" << e.cp_r1.read_hash
@@ -622,6 +664,23 @@ namespace lifted::verification
                    << " mem_write=0x" << e.cp_r2.mem_write_hash
                    << " read=0x" << e.cp_r2.read_hash
                    << " ext_call=0x" << e.cp_r2.ext_call_hash << std::dec << "\n";
+
+                // ── ext_call without address divergence: explain callsite-state gap ──
+                // ext_call_hash encodes (hash_state(callsite_regs), addr).  If it
+                // diverges while call address sequences are identical, the divergence
+                // is in the register state AT the callsite, not the call target.
+                // state_hash only snapshots registers at BB ENTRY; register changes
+                // between the last BB entry and the call instruction are not captured
+                // there and first become observable here.
+                if (e.first_diverging_field == checkpoint_field::EXT_CALL &&
+                    (!ext_call_diff || ext_call_diff->entries.empty()))
+                {
+                    os << "      NOTE: ext_call_hash diverged but call sequences are identical.\n"
+                          "            Divergence is register state at callsite, not call target.\n"
+                          "            state_hash captures state at BB entry only; inter-BB\n"
+                          "            register drift is not visible there.\n"
+                          "            Check the registers diff for the root cause.\n";
+                }
             }
         }
 

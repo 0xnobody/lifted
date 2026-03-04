@@ -38,28 +38,39 @@ TEST(checkpoint_identical_sequences)
     CHECK(a == b);
 }
 
-// A single differing BB rva causes diverging hashes at that event index.
+// RVA is not mixed into any hash, so two runs that visit different BBs but carry
+// identical register state produce equal checkpoint records.  State divergence —
+// not address divergence — is what checkpoints track.
 TEST(checkpoint_diverge_on_bb)
 {
-    State s = make_state(1);
+    State s1 = make_state(1);   // rax = 1
+    State s2 = make_state(2);   // rax = 2
 
-    checkpoint_record_t a, b;
+    // ── Same state, different RVAs: records must be equal.
+    {
+        checkpoint_record_t a, b;
+        a.push_bb(0x1000, &s1);
+        b.push_bb(0x1000, &s1);
+        CHECK_EQ(a.final_hash(), b.final_hash());
 
-    a.push_bb(0x1000, &s);
-    b.push_bb(0x1000, &s);
+        a.push_bb(0x1010, &s1);  // different RVA, same state
+        b.push_bb(0x2000, &s1);
+        CHECK(a == b);
+        CHECK_EQ(a.checkpoints[2].state_hash, b.checkpoints[2].state_hash);
+        CHECK_EQ(a.checkpoints[2].combined_hash, b.checkpoints[2].combined_hash);
+    }
 
-    // Identical so far
-    CHECK_EQ(a.final_hash(), b.final_hash());
-
-    // Second BB: same state, different rva
-    a.push_bb(0x1010, &s);
-    b.push_bb(0x2000, &s);
-
-    CHECK(a != b);
-    CHECK_NE(a.checkpoints[2].state_hash, b.checkpoints[2].state_hash);
-    CHECK_NE(a.checkpoints[2].combined_hash, b.checkpoints[2].combined_hash);
-    // Mem-write hash should still be equal (no writes happened)
-    CHECK_EQ(a.checkpoints[2].mem_write_hash, b.checkpoints[2].mem_write_hash);
+    // ── Different state at first BB: records must diverge.
+    {
+        checkpoint_record_t a, b;
+        a.push_bb(0x1000, &s1);
+        b.push_bb(0x1000, &s2);  // same RVA, different state
+        CHECK(a != b);
+        CHECK_NE(a.checkpoints[1].state_hash, b.checkpoints[1].state_hash);
+        CHECK_NE(a.checkpoints[1].combined_hash, b.checkpoints[1].combined_hash);
+        // Mem-write hash unaffected (no writes).
+        CHECK_EQ(a.checkpoints[1].mem_write_hash, b.checkpoints[1].mem_write_hash);
+    }
 }
 
 // A single differing write value causes divergence in mem_write_hash.

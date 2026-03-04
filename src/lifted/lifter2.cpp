@@ -46,7 +46,7 @@
 
 #include "passes/pass_utils.hpp"
 
-#define LIFTER_VERBOSE
+// #define LIFTER_VERBOSE
 
 namespace lifted
 {

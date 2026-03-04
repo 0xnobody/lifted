@@ -199,6 +199,15 @@ namespace lifted::verification
         checkpoint_field first_diverging_field;
         checkpoint_t cp_r1; // raw checkpoint_t at this index on r1's side
         checkpoint_t cp_r2; // raw checkpoint_t at this index on r2's side
+
+        // Up to kBBContext BBs ending at-or-before the diverging event, in
+        // execution order.  Drawn from r1's bb_trace (r2 is identical up to
+        // this point because all preceding checkpoints matched).
+        std::vector<uint64_t> preceding_bbs;
+        // True when the diverging event itself is a BB entry (field == STATE
+        // and the checkpoint was produced by push_bb, not push_ext_call).
+        // In that case the last entry of preceding_bbs IS the diverging BB.
+        bool diverging_event_is_bb = false;
     };
 
     struct checkpoint_diff_t
