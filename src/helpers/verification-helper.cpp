@@ -104,7 +104,8 @@ HELPER Memory *__lifted_ext_call(State *state, addr_t addr, Memory *m)
     return m;
 }
 
-extern "C" Memory *__lifted_rebuilt_cfg(State &state, addr_t rva, Memory *memory, uint64_t base);
+// extern "C" Memory *__lifted_rebuilt_cfg(State &state, addr_t rva, Memory *memory, uint64_t base);
+extern "C" Memory *__lifted_rebuilt_cfg_concrete(State &state, Memory *memory, uint64_t base);
 
 extern "C" void __lifter_verifier_begin(jit_executor_context_t *executor_ctx)
 {
@@ -114,7 +115,8 @@ extern "C" void __lifter_verifier_begin(jit_executor_context_t *executor_ctx)
     int jump_val = setjmp(executor_ctx->exit_jmp);
     if (jump_val == 0)
     {
-        __lifted_rebuilt_cfg(state, executor_ctx->verifier_context->entry_rva, nullptr, LOAD_BASE);
+        // __lifted_rebuilt_cfg(state, executor_ctx->verifier_context->entry_rva, nullptr, LOAD_BASE);
+        __lifted_rebuilt_cfg_concrete(state, nullptr, LOAD_BASE);
     }
 
     synchronize_flags(&state);

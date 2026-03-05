@@ -18,6 +18,12 @@ namespace lifted::abi
     class SystemVx64CC final : public CallingConvention
     {
     public:
+        static const SystemVx64CC &get()
+        {
+            static const SystemVx64CC instance;
+            return instance;
+        }
+
         llvm::ArrayRef<ABIRegister> getArgRegisters() const override
         {
             static constexpr std::array<ABIRegister, 6> Regs = {
@@ -96,5 +102,4 @@ namespace lifted::abi
                                            {Int64Ty, Int64Ty, Int64Ty, Int64Ty, Int64Ty, Int64Ty}, false);
         }
     };
-
 } // namespace lifted::abi

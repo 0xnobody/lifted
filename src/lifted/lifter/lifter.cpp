@@ -712,6 +712,10 @@ namespace lifted::lifter
         stats.bbs_total = reachable_blocks.size();
         stats.total_time_ms = elapsed_ms(total_start);
 
+        auto concretize_entry_pc_result = concretize_entry_pc(final_func, 1, entry_rva);
+        if (!concretize_entry_pc_result)
+            return concretize_entry_pc_result.takeError();
+
         // Link deobfuscation helpers.
         helpers::link_deobfuscation_intrinsics(final_module.get());
         helpers::link_ram_helpers(final_module.get());
@@ -720,7 +724,7 @@ namespace lifted::lifter
 
         return lift_result_t{
             .module = std::move(final_module),
-            .lifted_function = final_func,
+            .lifted_function = concretize_entry_pc_result.get(),
             .edges = std::move(reachable_edges),
             .basic_blocks = std::move(reachable_blocks),
             .stats = stats};

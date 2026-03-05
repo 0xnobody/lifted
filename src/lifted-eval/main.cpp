@@ -18,6 +18,7 @@
 #include "lifter/lifter.hpp"
 #include "lifter/standard_lifter_callbacks.hpp"
 #include "opt.hpp"
+#include "utils.hpp"
 
 #include "verification/jit_executor.hpp"
 #include "verification/unicorn_executor.hpp"
@@ -105,6 +106,8 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
         return lift_result.takeError();
     }
 
+    lift_result->stats.print(llvm::outs());
+
     // Collect fallthrough edges.
     std::set<std::pair<uint64_t, uint64_t>> fallthrough_edges;
     for (const auto &edge : lift_result->edges)
@@ -134,6 +137,7 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
         return r1.takeError();
 
     r1->print(std::cout);
+    utils::output_to_file("/home/atlas/lifted/out/raw_lifted.ll", lift_result->module.get());
 
     // Run some 'deobfuscations'
     opt::always_inline(lift_result->module.get());
@@ -153,20 +157,26 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
     if (!r2)
         return r2.takeError();
 
+    r2->print(std::cout);
+    utils::output_to_file("/home/atlas/lifted/out/raw_lifted_opt1.ll", lift_result->module.get());
+
     return llvm::Error::success();
 }
 
-int main(int /*argc*/, char ** /*argv*/)
+int main(int argc, char **argv)
 {
+    FLAGS_minloglevel = 1;
+    google::InitGoogleLogging(argv[0]);
+
     llvm::LLVMContext context;
 
-    test_full_pipeline(context, "/home/atlas/lifted/build/src/evaluation/tum/libeval-anagram.so", 0x124A);
+    // test_full_pipeline(context, "/home/atlas/lifted/build/src/evaluation/tum/libeval-anagram.so", 0x124A);
 
     // if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
     //     llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
 
-    // if (auto err = lift_suite(context, EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV))
-    //     llvm::errs() << "tum-basic-algorithms suite error: " << llvm::toString(std::move(err)) << "\n";
+    if (auto err = lift_suite(context, EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV))
+        llvm::errs() << "tum-basic-algorithms suite error: " << llvm::toString(std::move(err)) << "\n";
 
     // if (auto err = lift_suite(context, EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV))
     //     llvm::errs() << "tum-small-programs suite error: " << llvm::toString(std::move(err)) << "\n";

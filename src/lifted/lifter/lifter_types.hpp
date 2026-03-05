@@ -183,15 +183,16 @@ namespace lifted::lifter
         double stitch_time_ms = 0;  ///< Time in build_forward_cfg.
         double total_time_ms = 0;   ///< Wall clock for the entire lift() call.
 
-        void print(llvm::raw_ostream &os) const
+        void print(llvm::raw_fd_ostream &os) const
         {
-            os << "lifted=" << bbs_lifted
-               << " cached=" << bbs_cached
-               << " total=" << bbs_total
-               << " lift=" << lift_time_ms << "ms"
-               << " resolve=" << resolve_time_ms << "ms"
-               << " stitch=" << stitch_time_ms << "ms"
-               << " total=" << total_time_ms << "ms";
+            os << "[LIFT REPORT]"
+               << "\n  lifted=" << bbs_lifted
+               << "\n  cached=" << bbs_cached
+               << "\n  total=" << bbs_total
+               << "\n  lift=" << lift_time_ms << "ms"
+               << "\n  resolve=" << resolve_time_ms << "ms"
+               << "\n  stitch=" << stitch_time_ms << "ms"
+               << "\n  total=" << total_time_ms << "ms";
         }
     };
 
@@ -208,7 +209,7 @@ namespace lifted::lifter
 
     // ── operator<< ───────────────────────────────────────────────────────────
 
-    inline llvm::raw_ostream &operator<<(llvm::raw_ostream &os, const resolved_target_t &t)
+    inline llvm::raw_fd_ostream &operator<<(llvm::raw_fd_ostream &os, const resolved_target_t &t)
     {
         switch (t.type)
         {

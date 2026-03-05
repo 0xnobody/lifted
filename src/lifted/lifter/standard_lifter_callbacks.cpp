@@ -31,8 +31,7 @@ namespace lifted::lifter
         if (auto plt_range = utils::get_section_bounds(binary, ".plt.sec"))
             config.ext_func_rva_ranges.insert(*plt_range);
 
-        auto CC = abi::SystemVx64CC();
-        config.default_cc = &CC;
+        config.default_cc = &abi::SystemVx64CC::get();
         config.artifact_dir = artifact_dir;
 
         return config;
@@ -61,61 +60,6 @@ namespace lifted::lifter
             return;
         std::string path = std::string(artifact_dir) + "/" + std::string(name) + ".ll";
         utils::output_to_file(path, &const_cast<llvm::Module &>(module));
-    }
-
-    /*static*/ llvm::Expected<llvm::Function *>
-    StandardLifterCallbacks::concretize_entry_pc(llvm::Function *F,
-                                                 unsigned pc_param_idx,
-                                                 uint64_t concrete_pc)
-    {
-        auto *M = F->getParent();
-        auto *old_fty = F->getFunctionType();
-
-        if (pc_param_idx >= old_fty->getNumParams())
-            return llvm::make_error<llvm::StringError>(
-                "concretize_entry_pc: parameter index " +
-                    std::to_string(pc_param_idx) + " out of bounds",
-                llvm::inconvertibleErrorCode());
-
-        auto *pc_param_ty = old_fty->getParamType(pc_param_idx);
-        if (!pc_param_ty->isIntegerTy())
-            return llvm::make_error<llvm::StringError>(
-                "concretize_entry_pc: parameter " + std::to_string(pc_param_idx) +
-                    " is not an integer type",
-                llvm::inconvertibleErrorCode());
-
-        std::vector<llvm::Type *> new_params;
-        for (unsigned i = 0; i < old_fty->getNumParams(); ++i)
-            if (i != pc_param_idx)
-                new_params.push_back(old_fty->getParamType(i));
-
-        auto *new_fty = llvm::FunctionType::get(
-            old_fty->getReturnType(), new_params, old_fty->isVarArg());
-        auto *new_f = llvm::Function::Create(
-            new_fty, F->getLinkage(), F->getName() + ".concrete", M);
-
-        auto old_attrs = F->getAttributes();
-        std::vector<llvm::AttributeSet> param_attrs;
-        for (unsigned i = 0; i < old_fty->getNumParams(); ++i)
-            if (i != pc_param_idx)
-                param_attrs.push_back(old_attrs.getParamAttrs(i));
-        new_f->setAttributes(llvm::AttributeList::get(
-            M->getContext(), old_attrs.getFnAttrs(), old_attrs.getRetAttrs(),
-            param_attrs));
-
-        llvm::IRBuilder<> irb(
-            llvm::BasicBlock::Create(M->getContext(), "", new_f));
-        std::vector<llvm::Value *> args;
-        unsigned new_arg_idx = 0;
-        for (unsigned i = 0; i < old_fty->getNumParams(); ++i)
-        {
-            if (i == pc_param_idx)
-                args.push_back(llvm::ConstantInt::get(pc_param_ty, concrete_pc));
-            else
-                args.push_back(new_f->getArg(new_arg_idx++));
-        }
-        irb.CreateRet(irb.CreateCall(F, args));
-        return new_f;
     }
 
     // ── StandardLifterCallbacks::resolve_targets ────────────────────────────────

@@ -64,16 +64,6 @@ namespace lifted::lifter
 
         const standard_lifter_config_t &config() const { return config_; }
 
-        /// Create a wrapper for `F` with the parameter at `pc_param_idx` removed
-        /// and replaced by the concrete constant `concrete_pc`.
-        ///
-        /// Returns an error if `pc_param_idx` is out of bounds or the parameter
-        /// type is not an integer.
-        static llvm::Expected<llvm::Function *> concretize_entry_pc(
-            llvm::Function *F,
-            unsigned pc_param_idx,
-            uint64_t concrete_pc);
-
     private:
         standard_lifter_config_t config_;
 
