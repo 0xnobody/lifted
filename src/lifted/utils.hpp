@@ -8,11 +8,17 @@
 
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/Error.h>
+#include <llvm/ADT/AddressRanges.h>
 
 namespace llvm
 {
     class Module;
     class LLVMContext;
+}
+
+namespace LIEF
+{
+    class Binary;
 }
 
 struct State;
@@ -28,4 +34,8 @@ namespace lifted::utils
     std::string insn_bytes_to_str(std::span<const uint8_t> bytes, uintptr_t addr = 0);
 
     void print_state(const State &state, std::ostream &os);
+
+    llvm::Expected<uint64_t> rva_from_export(const LIEF::Binary &binary, const std::string &export_name);
+
+    std::optional<llvm::AddressRange> get_section_bounds(const LIEF::Binary &binary, std::string name);
 }

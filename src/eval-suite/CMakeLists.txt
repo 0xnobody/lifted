@@ -3,8 +3,6 @@ project(eval-suite)
 add_library(eval-suite STATIC
     suite.hpp
     suite.cpp
-    eval_utils.hpp
-    eval_utils.cpp
     eval_pipeline.hpp
     eval_pipeline.cpp
 )

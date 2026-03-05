@@ -65,4 +65,33 @@ namespace lifted::opt
     return FPM.run(F, FAM);
   }
 
+  template <typename FuncPassT, typename... CtorArgs>
+  llvm::PreservedAnalyses run_fnc_pass_on_module(
+      llvm::Module &M,
+      CtorArgs &&...args)
+  {
+    using namespace llvm;
+
+    // New PM managers
+    PassBuilder PB;
+    LoopAnalysisManager LAM;
+    FunctionAnalysisManager FAM;
+    CGSCCAnalysisManager CGAM;
+    ModuleAnalysisManager MAM;
+
+    // Register standard analyses
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    // Build and run the function pipeline
+    FunctionPassManager FPM;
+    FPM.addPass(FuncPassT(std::forward<CtorArgs>(args)...));
+    ModulePassManager MPM;
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+    return MPM.run(M, MAM);
+  }
+
 }

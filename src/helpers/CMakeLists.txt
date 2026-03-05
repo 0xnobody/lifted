@@ -56,6 +56,7 @@ set(HELPER_SOURCES
     "${HELPER_DIR}/verification-helper.cpp"
     "${HELPER_DIR}/state-utils.cpp"
     "${HELPER_DIR}/lifting-helper.cpp"
+    "${HELPER_DIR}/ram-helper.cpp"
 )
 
 foreach(source ${HELPER_SOURCES})
@@ -80,6 +81,7 @@ set(HELPERS_VERIFICATION_HARNESS_PATH "${HELPER_BINARY_DIR}/verification-harness
 set(HELPERS_STATE_UTILS_PATH "${HELPER_BINARY_DIR}/state-utils.ll" CACHE STRING "state-utils.ll path")
 set(HELPERS_SYMBOLIC_PATH "${HELPER_BINARY_DIR}/symbolic-helper.ll" CACHE STRING "symbolic-helper.ll path")
 set(HELPERS_LIFTING_PATH "${HELPER_BINARY_DIR}/lifting-helper.ll" CACHE STRING "lifting-helper.ll path")
+set(HELPERS_RAM_PATH "${HELPER_BINARY_DIR}/ram-helper.ll" CACHE STRING "ram-helper.ll path")
 
 add_custom_target(helpers ALL
     DEPENDS ${HELPER_OUTPUTS}

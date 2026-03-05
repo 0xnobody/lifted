@@ -4,6 +4,7 @@
 #include "../abi/calling_convention.hpp"
 #include "../opt.hpp"
 #include "../utils.hpp"
+#include "../abi/systemv_x64.hpp"
 
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
@@ -14,6 +15,28 @@
 
 namespace lifted::lifter
 {
+    standard_lifter_config_t standard_lifter_config_t::from_standard_linux_binary(
+        const LIEF::Binary &binary,
+        std::string artifact_dir)
+    {
+        standard_lifter_config_t config;
+
+        config.binary = &binary;
+
+        std::set<llvm::AddressRange> got_table_rva_ranges;
+        if (auto got_range = utils::get_section_bounds(binary, ".got"))
+            config.got_table_rva_ranges.insert(*got_range);
+
+        std::set<llvm::AddressRange> ext_func_rva_ranges;
+        if (auto plt_range = utils::get_section_bounds(binary, ".plt.sec"))
+            config.ext_func_rva_ranges.insert(*plt_range);
+
+        auto CC = abi::SystemVx64CC();
+        config.default_cc = &CC;
+        config.artifact_dir = artifact_dir;
+
+        return config;
+    }
 
     // ── StandardLifterCallbacks ─────────────────────────────────────────────────
 

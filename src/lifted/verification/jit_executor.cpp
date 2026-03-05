@@ -5,7 +5,10 @@
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/Support/TargetSelect.h>
 
+#include "../passes/verification/memory_intrinsic_lowering_pass.hpp"
+
 #include "../utils.hpp"
+#include "../opt.hpp"
 
 #include "jit_executor_context.hpp"
 
@@ -34,6 +37,22 @@ namespace lifted::verification
         if (auto err = helpers::link_verification_intrinsics(module.get()))
         {
             return err;
+        }
+
+        utils::output_to_file("/home/atlas/lifted/out/jit_input.ll", module.get());
+
+        // Lower verification memory intrinsics
+        opt::run_fnc_pass_on_module<MemoryIntrinsicLoweringPass>(*module.get());
+
+        utils::output_to_file("/home/atlas/lifted/out/jit_input.ll", module.get());
+
+        // Sanity check that RAM global either doesn't exist, or has 0 uses.
+        auto *ram_global = module->getGlobalVariable("RAM");
+        if (ram_global && !ram_global->hasNUses(0))
+        {
+            return llvm::make_error<llvm::StringError>(
+                "RAM global still has uses after memory intrinsic lowering. All memory intrinsics must be lowered to RAM[...] before JIT execution.",
+                llvm::inconvertibleErrorCode());
         }
 
         auto *extCallFunc = module->getFunction("__lifted_ext_call");

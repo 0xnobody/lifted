@@ -34,4 +34,9 @@ namespace lifted::helpers
     {
         return utils::link_from_file(module, HELPERS_LIFTING_PATH);
     }
+
+    llvm::Error link_ram_helpers(llvm::Module *module)
+    {
+        return utils::link_from_file(module, HELPERS_RAM_PATH);
+    }
 }

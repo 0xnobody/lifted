@@ -29,9 +29,6 @@ add_library(lifted STATIC
     "passes/pass_utils.cpp"
     "passes/pass_utils.hpp"
 
-    "passes/redefine_external_calls_pass.cpp"
-    "passes/redefine_external_calls_pass.hpp"
-
     "passes/deobfuscation/ram_direct_access_pass.cpp"
     "passes/deobfuscation/canonicalize_stack_pass.cpp"
     "passes/deobfuscation/canonicalize_stack_pass.hpp"
@@ -107,6 +104,7 @@ target_compile_definitions(lifted PRIVATE
     "KLEE_RUNTIME_LIBRARY_PATH=\"${KLEE_RUNTIME_LIBRARY_PATH}\""
     "HELPERS_ABI_PATH=\"${HELPERS_ABI_PATH}\""
     "HELPERS_LIFTING_PATH=\"${HELPERS_LIFTING_PATH}\""
+    "HELPERS_RAM_PATH=\"${HELPERS_RAM_PATH}\""
 )
 
 add_dependencies(lifted helpers z3_external)

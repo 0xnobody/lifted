@@ -48,7 +48,7 @@ PreservedAnalyses MemoryIntrinsicLoweringPass::run(Function &F, FunctionAnalysis
   LLVMContext &Ctx = M->getContext();
   const DataLayout &DL = M->getDataLayout();
 
-  Type *PtrTy = PointerType::get(Ctx, 0);
+  Type *VoidTy = Type::getVoidTy(Ctx);
   Type *I64Ty = Type::getInt64Ty(Ctx);
 
   GlobalVariable *RAM = findRAMGlobal(*M);
@@ -58,36 +58,22 @@ PreservedAnalyses MemoryIntrinsicLoweringPass::run(Function &F, FunctionAnalysis
     return PreservedAnalyses::all();
   }
 
-  auto findMemoryValue = [&](Function &Fn) -> Value *
-  {
-    if (Fn.arg_empty())
-      return nullptr;
-    return Fn.arg_begin() + 1;
-  };
-
-  Value *MemoryVal = findMemoryValue(F);
-  if (!MemoryVal)
-  {
-    errs() << "[memory-intrinsic-lowering] No Memory* found in function " << F.getName() << "\n";
-    return PreservedAnalyses::all();
-  }
-
   auto getReadFunc = [&](unsigned bits) -> FunctionCallee
   {
     Type *RetTy = IntegerType::get(Ctx, bits);
     FunctionType *FT =
-        FunctionType::get(RetTy, {PtrTy, I64Ty}, false);
+        FunctionType::get(RetTy, {I64Ty}, false);
     return M->getOrInsertFunction(
-        ("__remill_read_memory_" + std::to_string(bits)).c_str(), FT);
+        ("__lifted_read_memory_" + std::to_string(bits)).c_str(), FT);
   };
 
   auto getWriteFunc = [&](unsigned bits) -> FunctionCallee
   {
     Type *ValTy = IntegerType::get(Ctx, bits);
     FunctionType *FT =
-        FunctionType::get(PtrTy, {PtrTy, I64Ty, ValTy}, false);
+        FunctionType::get(VoidTy, {I64Ty, ValTy}, false);
     return M->getOrInsertFunction(
-        ("__remill_write_memory_" + std::to_string(bits)).c_str(), FT);
+        ("__lifted_write_memory_" + std::to_string(bits)).c_str(), FT);
   };
 
   auto isRAMAccessGEP = [&](Value *P) -> GetElementPtrInst *
@@ -100,12 +86,12 @@ PreservedAnalyses MemoryIntrinsicLoweringPass::run(Function &F, FunctionAnalysis
   };
 
   SmallVector<Instruction *> ToErase;
+  SmallVector<Instruction *> ToEraseGEP;
 
   for (BasicBlock &BB : F)
   {
     for (Instruction &I : BB)
     {
-
       // ---- LOAD ----
       if (auto *LI = dyn_cast<LoadInst>(&I))
       {
@@ -120,26 +106,22 @@ PreservedAnalyses MemoryIntrinsicLoweringPass::run(Function &F, FunctionAnalysis
         if (Bits != 8 && Bits != 16 && Bits != 32 && Bits != 64)
           continue;
 
-        IRBuilder<> B(LI);
-
-        Value *Addr = nullptr;
         if (auto GEP = isRAMAccessGEP(LI->getPointerOperand()))
         {
-          Addr = GEP->getOperand(GEP->getNumOperands() - 1);
+          Value *Addr = GEP->getOperand(GEP->getNumOperands() - 1);
+
+          IRBuilder<> B(LI);
+
+          FunctionCallee Callee = getReadFunc(Bits);
+          Value *Call = B.CreateCall(Callee, {Addr}, "remill.load");
+
+          if (Call->getType() != Ty)
+            Call = B.CreateZExtOrTrunc(Call, Ty);
+          LI->replaceAllUsesWith(Call);
+
+          ToErase.push_back(LI);
+          ToEraseGEP.push_back(GEP);
         }
-        else
-        {
-          Addr = B.CreatePtrToInt(LI->getPointerOperand(), I64Ty);
-        }
-
-        FunctionCallee Callee = getReadFunc(Bits);
-        Value *Call = B.CreateCall(Callee, {MemoryVal, Addr}, "remill.load");
-
-        if (Call->getType() != Ty)
-          Call = B.CreateZExtOrTrunc(Call, Ty);
-        LI->replaceAllUsesWith(Call);
-
-        ToErase.push_back(LI);
       }
 
       // ---- STORE ----
@@ -157,26 +139,23 @@ PreservedAnalyses MemoryIntrinsicLoweringPass::run(Function &F, FunctionAnalysis
         if (Bits != 8 && Bits != 16 && Bits != 32 && Bits != 64)
           continue;
 
-        IRBuilder<> B(SI);
-
-        Value *Addr = nullptr;
         if (auto GEP = isRAMAccessGEP(SI->getPointerOperand()))
         {
-          Addr = GEP->getOperand(GEP->getNumOperands() - 1);
-        }
-        else
-        {
-          Addr = B.CreatePtrToInt(SI->getPointerOperand(), I64Ty);
-        }
+          Value *Addr = GEP->getOperand(GEP->getNumOperands() - 1);
 
-        FunctionCallee Callee = getWriteFunc(Bits);
-        B.CreateCall(Callee, {MemoryVal, Addr, Val});
-        ToErase.push_back(SI);
+          IRBuilder<> B(SI);
+          FunctionCallee Callee = getWriteFunc(Bits);
+          B.CreateCall(Callee, {Addr, Val});
+          ToErase.push_back(SI);
+          ToEraseGEP.push_back(GEP);
+        }
       }
     }
   }
 
   for (Instruction *I : ToErase)
+    I->eraseFromParent();
+  for (Instruction *I : ToEraseGEP)
     I->eraseFromParent();
 
   return PreservedAnalyses::none();

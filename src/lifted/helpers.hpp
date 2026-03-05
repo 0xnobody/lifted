@@ -22,4 +22,6 @@ namespace lifted::helpers
     llvm::Error link_lifting_helpers(llvm::Module *module);
 
     llvm::Error link_abi_helpers(llvm::Module *module);
+
+    llvm::Error link_ram_helpers(llvm::Module *module);
 }

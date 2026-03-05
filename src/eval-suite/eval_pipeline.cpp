@@ -1,5 +1,4 @@
 #include "eval_pipeline.hpp"
-#include "eval_utils.hpp"
 
 #include <remill/Arch/Arch.h>
 #include <remill/Arch/Name.h>
@@ -14,6 +13,7 @@
 #include "verification/sentinel_oracle.hpp"
 #include "pipeline/pipeline.hpp"
 #include "pipeline/stages/seed_sweep_stage.hpp"
+#include "utils.hpp"
 
 #include <llvm/IR/Module.h>
 #include <llvm/Support/Error.h>
@@ -21,17 +21,9 @@
 #include <memory>
 #include <set>
 
-
 namespace lifted::eval
 {
-
-    // ── Default two-stage pipeline ─────────────────────────────────────────────────
-    //
-    // Stage 1 – wide sweep: 50 runs, unconstrained inputs, low loop/bb limits.
-    // Stage 2 – loop-breaker: 100 runs, small inputs, high loop/bb limits.
-    //
-    // This is the canonical pipeline for all eval-suite + lifted-cli runs.
-    static pipeline::PipelineSpec make_default_pipeline(
+    pipeline::PipelineSpec make_default_pipeline(
         const std::string &func_name,
         pipeline::ExecutorPair::Factory make_jit,
         pipeline::ExecutorPair::Factory make_unicorn)
@@ -85,22 +77,8 @@ namespace lifted::eval
                 "Failed to parse binary: " + path.string(),
                 llvm::inconvertibleErrorCode());
 
-        lifted::abi::SystemVx64CC CC;
+        lifter::standard_lifter_config_t cb_config = lifter::standard_lifter_config_t::from_standard_linux_binary(*binary);
 
-        std::set<llvm::AddressRange> got_table_rva_ranges;
-        if (auto got_range = get_section_bounds(*binary, ".got"))
-            got_table_rva_ranges.insert(*got_range);
-
-        std::set<llvm::AddressRange> ext_func_rva_ranges;
-        if (auto plt_range = get_section_bounds(*binary, ".plt.sec"))
-            ext_func_rva_ranges.insert(*plt_range);
-
-        lifter::standard_lifter_config_t cb_config{
-            .binary               = binary.get(),
-            .got_table_rva_ranges = got_table_rva_ranges,
-            .ext_func_rva_ranges  = ext_func_rva_ranges,
-            .default_cc           = &CC,
-        };
         lifter::StandardLifterCallbacks callbacks(std::move(cb_config));
         auto the_lifter_or = lifter::Lifter::create(arch.get(), binary.get(), &callbacks);
         if (!the_lifter_or)

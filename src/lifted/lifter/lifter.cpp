@@ -589,6 +589,8 @@ namespace lifted::lifter
             // Link helpers needed by the optimizer.
             if (auto err = helpers::link_deobfuscation_intrinsics(clone.get()))
                 return std::move(err);
+            if (auto err = helpers::link_ram_helpers(clone.get()))
+                return std::move(err);
             if (auto err = helpers::link_state_utils(clone.get()))
                 return std::move(err);
             if (auto err = helpers::link_lifting_helpers(clone.get()))
@@ -710,6 +712,10 @@ namespace lifted::lifter
         stats.bbs_total = reachable_blocks.size();
         stats.total_time_ms = elapsed_ms(total_start);
 
+        // Link deobfuscation helpers.
+        helpers::link_deobfuscation_intrinsics(final_module.get());
+        helpers::link_ram_helpers(final_module.get());
+
         callbacks_->on_function_built(final_func, ctx);
 
         return lift_result_t{
@@ -719,5 +725,4 @@ namespace lifted::lifter
             .basic_blocks = std::move(reachable_blocks),
             .stats = stats};
     }
-
 } // namespace lifted::lifter
