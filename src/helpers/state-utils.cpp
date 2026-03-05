@@ -1,6 +1,12 @@
 
 #include "types.hpp"
 
+// Helper to force LLVM to emit the __lifted_bb_entered symbol in the module (a bit spaghet yes)
+HELPER void __lifted_declare()
+{
+    __lifted_bb_entered({}, 0, nullptr);
+}
+
 // Register extraction helpers
 //
 HELPER uint64_t __extract_rip(State *__restrict__ state)

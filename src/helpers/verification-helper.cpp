@@ -93,13 +93,13 @@ HELPER Memory *__remill_write_memory_64(Memory *m, addr_t a, uint64_t v)
     return m;
 }
 
-HELPER Memory *__lifted_bb_entered(State *state, addr_t a, Memory *m)
+HELPER __attribute__((pure)) Memory *__lifted_bb_entered(State state, addr_t a, Memory *m) // Pass state byval so it's not an optimization barrier.
 {
-    synchronize_flags(state);
+    synchronize_flags(&state);
 
     if (!m->ctx->is_fallthrough_edge(m->ctx->last_bb_rva, a, m->ctx->executor_data))
     {
-        assert_exit(m, m->ctx->verifier_context->bb_entered(m->ctx->verifier_context->context, state, a));
+        assert_exit(m, m->ctx->verifier_context->bb_entered(m->ctx->verifier_context->context, &state, a));
     }
     m->ctx->last_bb_rva = a;
     return m;

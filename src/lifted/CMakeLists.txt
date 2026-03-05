@@ -3,8 +3,6 @@ project(lifted)
 # ── Static library: all sources except main.cpp ──────────────────────────────
 
 add_library(lifted STATIC
-    "tester.cpp"
-    "tester.hpp"
     "helpers.cpp"
     "helpers.hpp"
     "utils.hpp"
@@ -13,8 +11,20 @@ add_library(lifted STATIC
     "opt.cpp"
     "slicer.cpp"
     "slicer.hpp"
-    "lifter2.cpp"
-    "lifter2.hpp"
+
+    "compat/lief_compat.hpp"
+
+    "lifter/lifter_types.hpp"
+    "lifter/lift_context.hpp"
+    "lifter/lifter_utils.hpp"
+    "lifter/lifter_utils.cpp"
+    "lifter/lifter_callbacks.hpp"
+    "lifter/lifter_callbacks.cpp"
+    "lifter/standard_lifter_callbacks.hpp"
+    "lifter/standard_lifter_callbacks.cpp"
+    "lifter/lifter.hpp"
+    "lifter/lifter.cpp"
+    "lifter/cfg.cpp"
 
     "passes/pass_utils.cpp"
     "passes/pass_utils.hpp"

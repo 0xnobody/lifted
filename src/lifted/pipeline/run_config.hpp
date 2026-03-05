@@ -6,13 +6,7 @@
 #include "../verification/checkpoint.hpp"
 #include "../verification/event_flags.hpp"
 
-#ifdef DEBUG
-#undef DEBUG
-#include <LIEF/LIEF.hpp>
-#define DEBUG
-#else
-#include <LIEF/LIEF.hpp>
-#endif
+#include "compat/lief_compat.hpp"
 
 #include <cstdint>
 #include <climits>

@@ -3,13 +3,7 @@
 
 #include "../hash_mix.hpp"
 
-#ifdef DEBUG
-#undef DEBUG
-#include <LIEF/LIEF.hpp>
-#define DEBUG
-#else
-#include <LIEF/LIEF.hpp>
-#endif
+#include "compat/lief_compat.hpp"
 
 namespace lifted::verification
 {

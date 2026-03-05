@@ -5,7 +5,9 @@
 #include <remill/Arch/Name.h>
 #include <remill/OS/OS.h>
 
-#include "lifter2.hpp"
+#include "lifter/lifter.hpp"
+#include "lifter/standard_lifter_callbacks.hpp"
+#include "lifter/lifter_types.hpp"
 #include "abi/systemv_x64.hpp"
 #include "verification/jit_executor.hpp"
 #include "verification/unicorn_executor.hpp"
@@ -19,7 +21,6 @@
 #include <memory>
 #include <set>
 
-using namespace lifted;
 
 namespace lifted::eval
 {
@@ -77,7 +78,6 @@ namespace lifted::eval
                           size_t deep_dive_count)
     {
         auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
-        auto lift_module = remill::LoadArchSemantics(arch.get());
 
         std::shared_ptr<LIEF::Binary> binary = LIEF::Parser::parse(path);
         if (!binary)
@@ -87,8 +87,6 @@ namespace lifted::eval
 
         lifted::abi::SystemVx64CC CC;
 
-        std::set<llvm::AddressRange> const_rva_ranges;
-
         std::set<llvm::AddressRange> got_table_rva_ranges;
         if (auto got_range = get_section_bounds(*binary, ".got"))
             got_table_rva_ranges.insert(*got_range);
@@ -97,16 +95,19 @@ namespace lifted::eval
         if (auto plt_range = get_section_bounds(*binary, ".plt.sec"))
             ext_func_rva_ranges.insert(*plt_range);
 
-        Lifter lifter(arch.get(),
-                      binary.get(),
-                      lift_module.get(),
-                      const_rva_ranges,
-                      got_table_rva_ranges,
-                      ext_func_rva_ranges,
-                      nullptr,
-                      &CC);
+        lifter::standard_lifter_config_t cb_config{
+            .binary               = binary.get(),
+            .got_table_rva_ranges = got_table_rva_ranges,
+            .ext_func_rva_ranges  = ext_func_rva_ranges,
+            .default_cc           = &CC,
+        };
+        lifter::StandardLifterCallbacks callbacks(std::move(cb_config));
+        auto the_lifter_or = lifter::Lifter::create(arch.get(), binary.get(), &callbacks);
+        if (!the_lifter_or)
+            return the_lifter_or.takeError();
+        auto &the_lifter = *the_lifter_or;
 
-        auto lift_result = lifter.Lift(entry_rva, true);
+        auto lift_result = the_lifter.lift(entry_rva, {.instrument_bb_entry = true});
         if (!lift_result)
         {
             LiftAndVerifyResult r;
@@ -117,16 +118,16 @@ namespace lifted::eval
 
         // Collect fallthrough edges before the module is moved into the JIT factory.
         std::set<std::pair<uint64_t, uint64_t>> fallthrough_edges;
-        for (const auto &edge : lift_result->Edges)
-            if (edge.Type == Edge::Type::FALLTHROUGH)
-                fallthrough_edges.insert({edge.Source, edge.Dest});
+        for (const auto &edge : lift_result->edges)
+            if (edge.type == lifter::edge_t::Type::FALLTHROUGH)
+                fallthrough_edges.insert({edge.source, edge.dest});
 
-        std::string fn_name = lift_result->LiftedFunction->getName().str();
+        std::string fn_name = lift_result->lifted_function->getName().str();
 
         // std::function requires a copyable callable, so wrap the unique_ptr in a
         // shared_ptr.  The factory is invoked exactly once by the pipeline.
         auto mod_holder =
-            std::make_shared<std::unique_ptr<llvm::Module>>(std::move(lift_result->Module));
+            std::make_shared<std::unique_ptr<llvm::Module>>(std::move(lift_result->module));
 
         auto make_jit = [mod_holder, fn_name, fallthrough_edges]()
             -> llvm::Expected<std::unique_ptr<verification::Executor>>

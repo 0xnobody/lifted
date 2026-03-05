@@ -7,6 +7,8 @@
 #include <llvm/Support/Format.h>
 #include <llvm/Support/raw_ostream.h>
 
+#include <glog/logging.h>
+
 #include "suite.hpp"
 #include "eval_pipeline.hpp"
 

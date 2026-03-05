@@ -6,13 +6,7 @@
 
 #include <llvm/Support/Error.h>
 
-#ifdef DEBUG
-#undef DEBUG
-#include <LIEF/LIEF.hpp>
-#define DEBUG
-#else
-#include <LIEF/LIEF.hpp>
-#endif
+#include "compat/lief_compat.hpp"
 
 #include "../hash_mix.hpp"
 

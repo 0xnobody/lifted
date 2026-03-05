@@ -19,13 +19,7 @@
 #include "eval_pipeline.hpp"
 #include "eval_utils.hpp"
 
-#ifdef DEBUG
-#undef DEBUG
-#include <LIEF/LIEF.hpp>
-#define DEBUG
-#else
-#include <LIEF/LIEF.hpp>
-#endif
+#include "compat/lief_compat.hpp"
 
 #include <filesystem>
 #include <iostream>

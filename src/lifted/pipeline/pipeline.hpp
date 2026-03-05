@@ -8,13 +8,7 @@
 #include "../verification/comparator.hpp"
 #include "../verification/executor.hpp"
 
-#ifdef DEBUG
-#undef DEBUG
-#include <LIEF/LIEF.hpp>
-#define DEBUG
-#else
-#include <LIEF/LIEF.hpp>
-#endif
+#include "compat/lief_compat.hpp"
 
 #include <llvm/Support/Error.h>
 

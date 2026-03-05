@@ -20,6 +20,14 @@ set(EVAL_SYNTHETIC_LIBS
     ext-call-stack-args
 )
 
+# ── two-funcs: used by unit tests to verify multi-function lift from one Lifter ─
+define_eval_target(
+    NAME     two-funcs
+    SOURCE   two-funcs.cpp
+    LANGUAGE CXX
+    FUNCTIONS func_a func_b
+)
+
 # ── Define one target per source file ─────────────────────────────────────────
 foreach(_lib IN LISTS EVAL_SYNTHETIC_LIBS)
     define_eval_target(
@@ -42,3 +50,8 @@ define_eval_suite(
 set(EVAL_SYNTHETIC_LIBS_DIR
     "${CMAKE_CURRENT_BINARY_DIR}"
     CACHE STRING "Directory containing synthetic evaluation shared libraries" FORCE)
+
+# Expose the two-funcs binary path as a cache variable for lifted-tests.
+set(EVAL_TWO_FUNCS_SO
+    "${CMAKE_CURRENT_BINARY_DIR}/libeval-two-funcs.so"
+    CACHE STRING "Path to libeval-two-funcs.so for multi-function lift tests" FORCE)

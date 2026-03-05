@@ -10,9 +10,7 @@
 #include <llvm/IR/Operator.h>
 #include <llvm/Support/raw_ostream.h>
 
-#undef DEBUG
-#include <LIEF/LIEF.hpp>
-#define DEBUG 1
+#include "compat/lief_compat.hpp"
 
 // Debug logging for constant memory folding
 #define CMFP_DEBUG 0
