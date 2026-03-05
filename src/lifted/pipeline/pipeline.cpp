@@ -260,18 +260,14 @@ llvm::Expected<PipelineReport> Pipeline::run(
     std::shared_ptr<LIEF::Binary> binary,
     uint64_t                       entry_rva)
 {
-    // ── Construct executors once (reused across all stages + runs) ────────────
-    // ── Construct executors once (reused across all stages + runs) ────────────
-    auto src_exp = spec_.executors.make_src();
-    if (!src_exp)
-        return src_exp.takeError();
-    src_executor_ = std::move(*src_exp);
+    // ── Assign executors (shared, created eagerly by caller) ────────────────
+    src_executor_ = spec_.executors.src;
+    tgt_executor_ = spec_.executors.tgt;
+    if (!src_executor_ || !tgt_executor_)
+        return llvm::make_error<llvm::StringError>(
+            "Pipeline::run(): src and tgt executors must be non-null",
+            llvm::inconvertibleErrorCode());
     auto &src = *src_executor_;
-
-    auto tgt_exp = spec_.executors.make_tgt();
-    if (!tgt_exp)
-        return tgt_exp.takeError();
-    tgt_executor_ = std::move(*tgt_exp);
     auto &tgt = *tgt_executor_;
 
     // ── Shared state across all stages ────────────────────────────────────────

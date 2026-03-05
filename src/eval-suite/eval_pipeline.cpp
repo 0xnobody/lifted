@@ -25,8 +25,8 @@ namespace lifted::eval
 {
     pipeline::PipelineSpec make_default_pipeline(
         const std::string &func_name,
-        pipeline::ExecutorPair::Factory make_jit,
-        pipeline::ExecutorPair::Factory make_unicorn)
+        std::shared_ptr<verification::Executor> src,
+        std::shared_ptr<verification::Executor> tgt)
     {
         pipeline::RunConfig wide_cfg{
             .seed = 0x1338,
@@ -54,7 +54,7 @@ namespace lifted::eval
 
         pipeline::PipelineSpec spec;
         spec.name = "raw_vs_native[" + func_name + "]";
-        spec.executors = {std::move(make_jit), std::move(make_unicorn)};
+        spec.executors = {std::move(src), std::move(tgt)};
         spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(wide_cfg, 100));
         spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(loop_breaker, 500));
         return spec;
@@ -94,7 +94,7 @@ namespace lifted::eval
             return r;
         }
 
-        // Collect fallthrough edges before the module is moved into the JIT factory.
+        // Collect fallthrough edges before the module is moved into the JIT.
         std::set<std::pair<uint64_t, uint64_t>> fallthrough_edges;
         for (const auto &edge : lift_result->edges)
             if (edge.type == lifter::edge_t::Type::FALLTHROUGH)
@@ -102,26 +102,19 @@ namespace lifted::eval
 
         std::string fn_name = lift_result->lifted_function->getName().str();
 
-        // std::function requires a copyable callable, so wrap the unique_ptr in a
-        // shared_ptr.  The factory is invoked exactly once by the pipeline.
-        auto mod_holder =
-            std::make_shared<std::unique_ptr<llvm::Module>>(std::move(lift_result->module));
+        // Create executors eagerly — no factory indirection.
+        auto jit_or = verification::JITExecutor::create(
+            std::move(lift_result->module), fn_name, fallthrough_edges);
+        if (!jit_or)
+            return jit_or.takeError();
+        auto jit = std::shared_ptr<verification::Executor>(std::move(*jit_or));
 
-        auto make_jit = [mod_holder, fn_name, fallthrough_edges]()
-            -> llvm::Expected<std::unique_ptr<verification::Executor>>
-        {
-            return verification::JITExecutor::create(
-                std::move(*mod_holder), fn_name, fallthrough_edges);
-        };
+        auto uc_or = verification::UnicornExecutor::create(binary, {}, entry_rva);
+        if (!uc_or)
+            return uc_or.takeError();
+        auto uc = std::shared_ptr<verification::Executor>(std::move(*uc_or));
 
-        auto make_unicorn = [binary, entry_rva]()
-            -> llvm::Expected<std::unique_ptr<verification::Executor>>
-        {
-            return verification::UnicornExecutor::create(binary, {}, entry_rva);
-        };
-
-        pipeline::Pipeline pl(
-            make_default_pipeline(func_name, std::move(make_jit), std::move(make_unicorn)));
+        pipeline::Pipeline pl(make_default_pipeline(func_name, jit, uc));
 
         auto report = pl.run(binary, entry_rva);
         if (!report)

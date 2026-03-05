@@ -14,7 +14,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <functional>
 #include <iosfwd>
 #include <map>
 #include <memory>
@@ -26,16 +25,12 @@
 namespace lifted::pipeline {
 
 // ── ExecutorPair ──────────────────────────────────────────────────────────────
-// Both factories have identical signatures; ext_calls are discovered at runtime
-// via Executor::hint_external_rvas rather than at construction time.
+// Executors are created eagerly by the caller and shared across pipelines.
 
 struct ExecutorPair
 {
-    using Factory =
-        std::function<llvm::Expected<std::unique_ptr<verification::Executor>>()>;
-
-    Factory make_src;
-    Factory make_tgt;
+    std::shared_ptr<verification::Executor> src;
+    std::shared_ptr<verification::Executor> tgt;
 };
 
 // ── ExitTypeCounts ────────────────────────────────────────────────────────────
@@ -141,8 +136,8 @@ public:
 
 private:
     PipelineSpec spec_;
-    std::unique_ptr<verification::Executor> src_executor_;
-    std::unique_ptr<verification::Executor> tgt_executor_;
+    std::shared_ptr<verification::Executor> src_executor_;
+    std::shared_ptr<verification::Executor> tgt_executor_;
 
     /// Execute one (src, tgt) pair for the given config.
     /// Handles the fixed directionality (src first, then tgt with src's record),

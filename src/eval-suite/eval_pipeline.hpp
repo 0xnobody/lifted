@@ -31,8 +31,8 @@ namespace lifted::eval
     // This is the canonical pipeline for all eval-suite + lifted-cli runs.
     pipeline::PipelineSpec make_default_pipeline(
         const std::string &func_name,
-        pipeline::ExecutorPair::Factory make_jit,
-        pipeline::ExecutorPair::Factory make_unicorn);
+        std::shared_ptr<verification::Executor> src,
+        std::shared_ptr<verification::Executor> tgt);
 
     // Core: lift binary at entry_rva, run the default two-stage pipeline.
     // deep_dive_count: 0 = skip deep-dive; >= 1 = deep-dive the first divergence found.

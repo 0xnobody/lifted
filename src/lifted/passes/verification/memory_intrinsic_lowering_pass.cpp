@@ -4,6 +4,7 @@
 //   __remill_read_memory_{8,16,32,64}(ptr, i64)
 //   __remill_write_memory_{8,16,32,64}(ptr, i64, iN)
 
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
@@ -86,7 +87,7 @@ PreservedAnalyses MemoryIntrinsicLoweringPass::run(Function &F, FunctionAnalysis
   };
 
   SmallVector<Instruction *> ToErase;
-  SmallVector<Instruction *> ToEraseGEP;
+  SmallPtrSet<Instruction *, 8> ToEraseGEPSet;
 
   for (BasicBlock &BB : F)
   {
@@ -120,7 +121,7 @@ PreservedAnalyses MemoryIntrinsicLoweringPass::run(Function &F, FunctionAnalysis
           LI->replaceAllUsesWith(Call);
 
           ToErase.push_back(LI);
-          ToEraseGEP.push_back(GEP);
+          ToEraseGEPSet.insert(GEP);
         }
       }
 
@@ -147,7 +148,7 @@ PreservedAnalyses MemoryIntrinsicLoweringPass::run(Function &F, FunctionAnalysis
           FunctionCallee Callee = getWriteFunc(Bits);
           B.CreateCall(Callee, {Addr, Val});
           ToErase.push_back(SI);
-          ToEraseGEP.push_back(GEP);
+          ToEraseGEPSet.insert(GEP);
         }
       }
     }
@@ -155,8 +156,9 @@ PreservedAnalyses MemoryIntrinsicLoweringPass::run(Function &F, FunctionAnalysis
 
   for (Instruction *I : ToErase)
     I->eraseFromParent();
-  for (Instruction *I : ToEraseGEP)
-    I->eraseFromParent();
+  for (Instruction *I : ToEraseGEPSet)
+    if (I->use_empty())
+      I->eraseFromParent();
 
   return PreservedAnalyses::none();
 }

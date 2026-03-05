@@ -105,7 +105,7 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
         return lift_result.takeError();
     }
 
-    // Collect fallthrough edges before the module is moved into the JIT factory.
+    // Collect fallthrough edges.
     std::set<std::pair<uint64_t, uint64_t>> fallthrough_edges;
     for (const auto &edge : lift_result->edges)
         if (edge.type == lifter::edge_t::Type::FALLTHROUGH)
@@ -113,25 +113,21 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
 
     std::string fn_name = lift_result->lifted_function->getName().str();
 
-    // std::function requires a copyable callable, so wrap the unique_ptr in a
-    // shared_ptr.  The factory is invoked exactly once by the pipeline.
-    auto mod_holder =
-        std::make_shared<std::unique_ptr<llvm::Module>>(llvm::CloneModule(*lift_result->module));
+    // Create executors eagerly — no factory indirection.
+    // Clone module so original is still available for optimization later.
+    auto jit_or = verification::JITExecutor::create(
+        llvm::CloneModule(*lift_result->module), fn_name, fallthrough_edges);
+    if (!jit_or)
+        return jit_or.takeError();
+    auto jit = std::shared_ptr<verification::Executor>(std::move(*jit_or));
 
-    auto make_jit = [mod_holder, fn_name, fallthrough_edges]()
-        -> llvm::Expected<std::unique_ptr<verification::Executor>>
-    {
-        return verification::JITExecutor::create(
-            std::move(*mod_holder), fn_name, fallthrough_edges);
-    };
+    auto uc_or = verification::UnicornExecutor::create(binary, {}, entry_rva);
+    if (!uc_or)
+        return uc_or.takeError();
+    auto uc = std::shared_ptr<verification::Executor>(std::move(*uc_or));
 
-    auto make_unicorn = [binary, entry_rva]()
-        -> llvm::Expected<std::unique_ptr<verification::Executor>>
-    {
-        return verification::UnicornExecutor::create(binary, {}, entry_rva);
-    };
-
-    pipeline::Pipeline p1(eval::make_default_pipeline("raw_lifted", std::move(make_jit), std::move(make_unicorn)));
+    // Pipeline 1: raw JIT vs Unicorn.
+    pipeline::Pipeline p1(eval::make_default_pipeline("raw_lifted", jit, uc));
 
     auto r1 = p1.run(binary, entry_rva);
     if (!r1)
@@ -143,17 +139,15 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
     opt::always_inline(lift_result->module.get());
     opt::default_opt(lift_result->module.get());
 
-    auto opt_mod_holder =
-        std::make_shared<std::unique_ptr<llvm::Module>>(llvm::CloneModule(*lift_result->module));
+    // Create new JIT from optimized module.
+    auto opt_jit_or = verification::JITExecutor::create(
+        llvm::CloneModule(*lift_result->module), fn_name, fallthrough_edges);
+    if (!opt_jit_or)
+        return opt_jit_or.takeError();
+    auto opt_jit = std::shared_ptr<verification::Executor>(std::move(*opt_jit_or));
 
-    auto make_opt_jit = [opt_mod_holder, fn_name, fallthrough_edges]()
-        -> llvm::Expected<std::unique_ptr<verification::Executor>>
-    {
-        return verification::JITExecutor::create(
-            std::move(*opt_mod_holder), fn_name, fallthrough_edges);
-    };
-
-    pipeline::Pipeline p2(eval::make_default_pipeline("opt_vs_raw_lifted", std::move(make_jit), std::move(make_opt_jit)));
+    // Pipeline 2: reuse raw JIT as baseline, compare against optimized JIT.
+    pipeline::Pipeline p2(eval::make_default_pipeline("opt_vs_raw_lifted", jit, opt_jit));
 
     auto r2 = p2.run(binary, entry_rva);
     if (!r2)
