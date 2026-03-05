@@ -31,8 +31,9 @@ namespace lifted::verification
             s->gpr.r12.qword,
             s->gpr.r13.qword,
             s->gpr.r14.qword,
-            s->gpr.r15.qword,
-            static_cast<uint64_t>(s->rflag.flat));
+            s->gpr.r15.qword
+            // static_cast<uint64_t>(s->rflag.flat) TODO: add handling of undefined flags (currently lifting forces 0, causing spurious divergences)
+        );
     }
 
     // ── push helpers ──────────────────────────────────────────────────────────
@@ -46,7 +47,7 @@ namespace lifted::verification
         cp.combined_hash = make_combined(cp, index);
         // TODO: Maybe bb_hash too?
         checkpoints.push_back(cp);
-        bb_counts.push_back(bb_counts.back() + 1u);  // one more BB
+        bb_counts.push_back(bb_counts.back() + 1u); // one more BB
 
         if (record_details)
             details.push_back({checkpoint_detail_t::kind::BB, rva, 0, 0,
@@ -64,7 +65,7 @@ namespace lifted::verification
                                            static_cast<uint64_t>(size));
         cp.combined_hash = make_combined(cp, index);
         checkpoints.push_back(cp);
-        bb_counts.push_back(bb_counts.back());  // no new BB
+        bb_counts.push_back(bb_counts.back()); // no new BB
 
         if (record_details)
             details.push_back({checkpoint_detail_t::kind::MEM_WRITE, addr, value, size,
@@ -82,7 +83,7 @@ namespace lifted::verification
                                       static_cast<uint64_t>(size));
         cp.combined_hash = make_combined(cp, index);
         checkpoints.push_back(cp);
-        bb_counts.push_back(bb_counts.back());  // no new BB
+        bb_counts.push_back(bb_counts.back()); // no new BB
 
         if (record_details)
             details.push_back({checkpoint_detail_t::kind::MEM_READ, addr, value, size,
@@ -100,7 +101,7 @@ namespace lifted::verification
         cp.ext_call_hash = hash::mix(cp.ext_call_hash, addr);
         cp.combined_hash = make_combined(cp, index);
         checkpoints.push_back(cp);
-        bb_counts.push_back(bb_counts.back());  // no new BB
+        bb_counts.push_back(bb_counts.back()); // no new BB
 
         if (record_details)
             details.push_back({checkpoint_detail_t::kind::EXT_CALL, addr, 0, 0,

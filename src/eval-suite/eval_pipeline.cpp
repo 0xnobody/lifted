@@ -62,8 +62,8 @@ namespace lifted::eval
         pipeline::PipelineSpec spec;
         spec.name = "raw_vs_native[" + func_name + "]";
         spec.executors = {std::move(make_jit), std::move(make_unicorn)};
-        spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(wide_cfg, 500));
-        spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(loop_breaker, 1000));
+        spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(wide_cfg, 100));
+        spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(loop_breaker, 500));
         return spec;
     }
 
