@@ -689,6 +689,17 @@ namespace lifted::lifter
                     ctx.worklist.push_back(disp_id);
                 }
             }
+
+            // The callback signals the return site of a call-like block via
+            // return_continuation.  Enqueue it so intra-function returns
+            // (self-recursion, obfuscated call emulation) land on lifted code.
+            if (targets_result.return_continuation.has_value())
+            {
+                bb_id_t return_site = *targets_result.return_continuation;
+                ctx.return_continuation_sites.insert(return_site);
+                if (!explored_.count(return_site))
+                    ctx.worklist.push_back(return_site);
+            }
         } // end main loop
 
         // ── Build final CFG ─────────────────────────────────────────────────

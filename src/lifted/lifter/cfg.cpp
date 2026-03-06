@@ -233,7 +233,17 @@ namespace lifted::lifter
 
             if (successors.empty())
             {
-                B.CreateRet(B.CreateLoad(mem_ptr_ty, mem_var));
+                // No statically-known successors — typical for `ret`-terminated
+                // blocks whose target is the dynamic return address in RIP.
+                // Instead of bailing out, dispatch over every block in the
+                // stitched set: if next_rva matches a known block (e.g. a
+                // return-continuation site reached by self-recursion unwind),
+                // land there; otherwise fall to dead_end which yields a
+                // NATURAL_EXIT.
+                auto *fallback_sw = B.CreateSwitch(next_rva, dead_end,
+                                                   static_cast<unsigned>(blocks.size()));
+                for (bb_id_t any_id : blocks)
+                    fallback_sw->addCase(B.getInt64(any_id), block_map.at(any_id));
                 continue;
             }
 
@@ -410,6 +420,13 @@ namespace lifted::lifter
                 }
             }
         }
+
+        // Return-continuation blocks (return sites of intra-function calls) are
+        // dynamically reachable via `ret` but have no static incoming edge.
+        // Add any that were actually lifted so the dispatcher can resolve them.
+        for (bb_id_t rcs : ctx.return_continuation_sites)
+            if (explored_.count(rcs))
+                reachable.insert(rcs);
 
         // Populate optional output sets.
         if (out_blocks)

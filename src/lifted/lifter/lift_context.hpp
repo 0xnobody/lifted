@@ -37,6 +37,14 @@ struct lift_context_t
     /// A BB can have at most one indirect outgoing edge.
     std::map<bb_id_t, bb_id_t> indirect_synthetic_index;
 
+
+    // ── Return-site tracking (for self-recursive / intra-function calls) ──────
+
+    /// Return sites of intra-function call instructions (e.g. self-recursion).
+    /// `resolve_targets` returns the callee as INTERNAL but never records the
+    /// instruction immediately after the `call` — these are dynamically reached
+    /// via `ret` and would otherwise be invisible to `build_forward_cfg`.
+    std::set<bb_id_t> return_continuation_sites;
     // ── Entry point (for resolve_context_t) ──────────────────────────────
 
     uint64_t entry_rva = 0;

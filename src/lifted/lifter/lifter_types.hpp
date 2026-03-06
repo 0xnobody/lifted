@@ -102,6 +102,11 @@ namespace lifted::lifter
     {
         std::vector<resolved_target_t> targets;
         std::optional<callee_t> indirect_target;
+        /// If the block acts as a call (e.g. a `call` instruction or a push+jmp
+        /// emulation), the callback sets this to the address of the instruction
+        /// immediately after the call — the return site that must also be lifted.
+        /// Unset for blocks that do not return (tail calls, etc.).
+        std::optional<bb_id_t> return_continuation;
 
         explicit operator bool() const
         {

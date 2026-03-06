@@ -123,16 +123,28 @@ namespace lifted::lifter
         // Step 6 – extract targets.
         auto result = extract_constant_targets(*analysis_func,
                                                config_.ext_func_rva_ranges);
-        if (result)
-            return result;
+        if (!result)
+            result = extract_indirect_targets(*analysis_func, config_.got_table_rva_ranges);
+        if (!result)
+            DLOG(WARNING) << "resolve_targets: failed to resolve targets for BB 0x"
+                          << std::hex << ctx.bb.id;
 
-        result = extract_indirect_targets(*analysis_func, config_.got_table_rva_ranges);
-        if (result)
-            return result;
+        // For standard call instructions, signal the lifter to also lift the
+        // return site (the instruction immediately after the call).  Custom
+        // callbacks override this for obfuscated call patterns (push+jmp, etc.)
+        // or leave it unset when the call is non-returning.
+        if (ctx.bb.rva_range.has_value() &&
+            ctx.bb.terminating_category.has_value() &&
+            (*ctx.bb.terminating_category ==
+                 remill::Instruction::kCategoryDirectFunctionCall ||
+             *ctx.bb.terminating_category ==
+                 remill::Instruction::kCategoryIndirectFunctionCall))
+        {
+            result.return_continuation =
+                static_cast<bb_id_t>(ctx.bb.rva_range->end());
+        }
 
-        DLOG(WARNING) << "resolve_targets: failed to resolve targets for BB 0x"
-                      << std::hex << ctx.bb.id;
-        return {};
+        return result;
     }
 
 } // namespace lifted::lifter
