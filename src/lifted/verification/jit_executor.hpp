@@ -7,6 +7,7 @@
 #include <llvm/Support/Error.h>
 
 #include <memory>
+#include <set>
 #include <string>
 
 struct jit_executor_context_t;

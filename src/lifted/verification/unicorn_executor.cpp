@@ -123,8 +123,6 @@ namespace lifted::verification
 
         if (!is_first && !is_genuine_edge)
         {
-            const bool is_fallthrough =
-                (ctx->prev_size != 0) && (address == prev + ctx->prev_size);
 
             if (ctx->prev_size != 0 &&
                 !ctx->executor->rep_artifacts.contains(prev) && // optional extra guard
@@ -177,7 +175,8 @@ namespace lifted::verification
         }
         else
         {
-            if (!ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, &state, address - LOAD_BASE))
+            const uint64_t from_rva_uc = (prev < LOAD_BASE) ? uint64_t(-1) : (prev - LOAD_BASE);
+            if (!ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, &state, from_rva_uc, address - LOAD_BASE))
             {
                 uc_emu_stop(uc);
                 return;

@@ -14,6 +14,7 @@
 namespace lifted::eval
 {
 
+
     // Result of a single lift+verify run.
     struct LiftAndVerifyResult
     {
@@ -23,10 +24,11 @@ namespace lifted::eval
         std::string lift_error; // populated when lift_failed
     };
 
-    // ── Default two-stage pipeline ─────────────────────────────────────────────────
+    // ── Default fast pipeline (3-stage) ──────────────────────────────────────
     //
-    // Stage 1 – wide sweep: 50 runs, unconstrained inputs, low loop/bb limits.
-    // Stage 2 – loop-breaker: 100 runs, small inputs, high loop/bb limits.
+    // Stage 1 – wide discovery:  50 runs, full-range inputs,  bb=5000, loop=100
+    // Stage 2 – small inputs:   100 runs, max=0x10000 inputs, bb=2000, loop=50
+    // Stage 3 – corpus replay:   replay interesting entries + 30 medium seeds, bb=3000, loop=75
     //
     // This is the canonical pipeline for all eval-suite + lifted-cli runs.
     pipeline::PipelineSpec make_default_pipeline(
@@ -34,7 +36,7 @@ namespace lifted::eval
         std::shared_ptr<verification::Executor> src,
         std::shared_ptr<verification::Executor> tgt);
 
-    // Core: lift binary at entry_rva, run the default two-stage pipeline.
+    // Core: lift binary at entry_rva, run the default pipeline.
     // deep_dive_count: 0 = skip deep-dive; >= 1 = deep-dive the first divergence found.
     llvm::Expected<LiftAndVerifyResult>
     lift_and_verify_named(llvm::LLVMContext &context,

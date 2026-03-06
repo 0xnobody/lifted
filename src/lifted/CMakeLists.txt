@@ -81,6 +81,8 @@ add_library(lifted STATIC
     "pipeline/stages/seed_sweep_stage.cpp"
     "pipeline/stages/corpus_replay_stage.hpp"
     "pipeline/stages/corpus_replay_stage.cpp"
+    "pipeline/stages/time_budget_stage.hpp"
+    "pipeline/stages/time_budget_stage.cpp"
 )
 
 # Expose src/lifted/ as a public include root so consumers can do:

@@ -90,7 +90,7 @@ HELPER __attribute__((pure)) Memory *__lifted_bb_entered(State state, addr_t a, 
 
     if (!__ctx->is_fallthrough_edge(__ctx->last_bb_rva, a, __ctx->executor_data))
     {
-        assert_exit(__ctx->verifier_context->bb_entered(__ctx->verifier_context->context, &state, a));
+        assert_exit(__ctx->verifier_context->bb_entered(__ctx->verifier_context->context, &state, __ctx->last_bb_rva, a));
     }
     __ctx->last_bb_rva = a;
     return m;

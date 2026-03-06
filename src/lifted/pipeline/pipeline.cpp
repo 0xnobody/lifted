@@ -286,6 +286,9 @@ llvm::Expected<PipelineReport> Pipeline::run(
         stage_report.stage_name = stage->name();
         stage_report.total_runs = configs.size();
 
+        if (llvm::errs().is_displayed())
+            llvm::errs() << "[" << stage->name() << "] ";
+
         for (uint64_t run_idx = 0; run_idx < configs.size(); ++run_idx)
         {
             const RunConfig &cfg = configs[run_idx];
@@ -346,7 +349,12 @@ llvm::Expected<PipelineReport> Pipeline::run(
                 .run_index   = run_idx,
             };
             current_corpus.add_if_interesting(std::move(entry), spec_.classifier);
+            if (llvm::errs().is_displayed() && (run_idx + 1) % 10 == 0)
+                llvm::errs() << '.';
         }
+
+        if (llvm::errs().is_displayed())
+            llvm::errs() << '\n';
 
         stage_report.corpus_added             = current_corpus.size() - corpus_before;
         stage_report.cumulative_unique_blocks = current_corpus.unique_blocks_covered();

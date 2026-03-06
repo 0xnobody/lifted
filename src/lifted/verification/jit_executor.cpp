@@ -1,3 +1,5 @@
+#include <set>
+
 #include "jit_executor.hpp"
 #include "../helpers.hpp"
 
@@ -39,12 +41,8 @@ namespace lifted::verification
             return err;
         }
 
-        utils::output_to_file("/home/atlas/lifted/out/jit_input.ll", module.get());
-
         // Lower verification memory intrinsics
         opt::run_fnc_pass_on_module<MemoryIntrinsicLoweringPass>(*module.get());
-
-        utils::output_to_file("/home/atlas/lifted/out/jit_input.ll", module.get());
 
         // Sanity check that RAM global either doesn't exist, or has 0 uses.
         auto *ram_global = module->getGlobalVariable("RAM");
@@ -72,8 +70,6 @@ namespace lifted::verification
             }
         }
 
-        utils::output_to_file("/home/atlas/lifted/out/jit_input.ll", module.get());
-
         // Initialize native target for JIT
         llvm::InitializeNativeTarget();
         llvm::InitializeNativeTargetAsmPrinter();
@@ -100,7 +96,6 @@ namespace lifted::verification
         jit->getMainJITDylib().addGenerator(std::move(*process_symbols_or_err));
 
         // Add module to JIT
-        auto &ctx = module->getContext();
         auto tsm = llvm::orc::ThreadSafeModule(std::move(module), std::make_unique<llvm::LLVMContext>());
 
         // Note: We need to transfer ownership properly
@@ -109,7 +104,7 @@ namespace lifted::verification
             return err;
         }
 
-        // Lookup entry function
+        // Lookup entry function (triggers JIT compilation)
         auto sym = jit->lookup("__lifter_verifier_begin");
         if (!sym)
         {
@@ -120,12 +115,6 @@ namespace lifted::verification
         entry_fn = reinterpret_cast<fn_verifier_begin>(sym->getValue());
 
         return llvm::Error::success();
-    }
-
-    bool JITExecutor::is_fallthrough_edge(uint64_t from, uint64_t to, void *executor_data)
-    {
-        auto *executor = static_cast<JITExecutor *>(executor_data);
-        return executor->fallthrough_edges.contains({from, to});
     }
 
     llvm::Error JITExecutor::run_single_impl(verifier_state &state)
@@ -139,6 +128,12 @@ namespace lifted::verification
         entry_fn(&executor_ctx);
 
         return llvm::Error::success();
+    }
+
+    bool JITExecutor::is_fallthrough_edge(uint64_t from, uint64_t to, void *executor_data)
+    {
+        auto *executor = static_cast<JITExecutor *>(executor_data);
+        return executor->fallthrough_edges.contains({from, to});
     }
 
 } // namespace lifted::verification

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <utility>
+#include <map>
 #include <vector>
 
 #include <llvm/Support/Format.h>
@@ -84,10 +85,10 @@ namespace lifted::verification
         std::vector<uint64_t> ext_calls;
 
         std::vector<uint64_t> bbs_entered_rvas;
-        std::unordered_map<uint64_t, uint64_t> bb_first_seen;   // addr -> step when first seen
-        std::unordered_map<uint64_t, uint32_t> bb_header_count; // addr -> back-edge arrivals
+        std::unordered_map<uint64_t, uint64_t>                  bb_first_seen;       // addr -> step when first seen
+        std::map<std::pair<uint64_t, uint64_t>, uint64_t>        back_edge_count;     // (from,to) -> times crossed
+        std::unordered_map<uint64_t, uint64_t>                  last_external_from_; // rva -> last non-self from_rva
         uint64_t bb_step = 0;
-        uint64_t bb_prev = -1;
         uint64_t bb_loop_limit = -1;
         uint64_t bb_limit = -1;
 
@@ -247,39 +248,62 @@ namespace lifted::verification
                        : true;
         }
 
-        virtual bool on_bb_entered(State *state, uint64_t rva)
+        virtual bool on_bb_entered(State *state, uint64_t from_rva, uint64_t rva)
         {
             bbs_entered_rvas.push_back(rva);
 
             if (has_flag(log_on, event_flags::BB))
             {
-                llvm::outs() << "on_bb_entered " << llvm::format_hex(rva, 16) << " (step: " << bb_step << ", loop: " << bb_header_count[rva] << ")\n";
+                llvm::outs() << "on_bb_entered " << llvm::format_hex(from_rva, 18) << " -> "
+                             << llvm::format_hex(rva, 18) << " (step: " << bb_step << ")\n";
+            }
+
+            // Count traversals of each directed edge.  When any edge is traversed
+            // bb_loop_limit times, the function is looping on that edge.
+            //
+            // Per-edge counting correctly handles dispatchers (A->B->A->C->A->D->...):
+            // each unique (from,to) pair has its own counter, so a block that fans
+            // out to different successors never accumulates toward the limit.  True
+            // loops (A->B->A->B->...) repeat the same edge and are detected quickly.
+            //
+            // Self-edge normalisation: when from_rva == rva, Unicorn's QEMU has merged
+            // the body and condition basic blocks into one translation block (they are
+            // physically adjacent with no branch between them).  From JIT's perspective,
+            // those are two separate LLVM IR blocks connected by a FALLTHROUGH edge that
+            // __lifted_bb_entered skips.  The loop back-edge JIT counts is therefore
+            // (condition_bb → body_bb), while Unicorn's QEMU produces (body_bb → body_bb)
+            // for every subsequent iteration.  To keep both executors on the same edge
+            // key, map any self-edge to the last non-self predecessor of that block.
+            if (from_rva != uint64_t(-1))
+            {
+                uint64_t effective_from = from_rva;
+                if (from_rva == rva)
+                {
+                    // Self-edge: use the last external predecessor if we have one.
+                    if (auto it = last_external_from_.find(rva); it != last_external_from_.end())
+                        effective_from = it->second;
+                }
+                else
+                {
+                    // Non-self entry: record this as the last external predecessor.
+                    last_external_from_[rva] = from_rva;
+                }
+
+                if (++back_edge_count[{effective_from, rva}] >= bb_loop_limit)
+                {
+                    exit_reason = exit_type::LOOP_LIMIT;
+                    return false;
+                }
             }
 
             if (!bb_first_seen.count(rva))
-            {
                 bb_first_seen[rva] = bb_step;
-            }
 
             if (++bb_step > bb_limit)
             {
                 exit_reason = exit_type::BB_LIMIT;
                 return false;
             }
-
-            if (bb_prev != -1 && bb_first_seen[rva] < bb_first_seen[bb_prev])
-                // back edge: addr was seen before prev → addr is a loop header
-                if (++bb_header_count[rva] >= bb_loop_limit)
-                {
-                    //
-                    // TODO: implement forced execution here if user specifies this.
-                    //
-
-                    exit_reason = exit_type::LOOP_LIMIT;
-                    return false;
-                }
-
-            bb_prev = rva;
 
             return has_flag(checkpoint_config.record_on, event_flags::BB)
                        ? assert_checkpoint(checkpoint_record.push_bb(rva, state))
@@ -342,9 +366,9 @@ namespace lifted::verification
             return from_context(context)->on_write64(addr, value);
         }
 
-        static bool bb_entered_proxy(void *context, State *state, uint64_t rva)
+        static bool bb_entered_proxy(void *context, State *state, uint64_t from_rva, uint64_t rva)
         {
-            return from_context(context)->on_bb_entered(state, rva);
+            return from_context(context)->on_bb_entered(state, from_rva, rva);
         }
 
         static bool ext_call_proxy(void *context, State *state, uint64_t addr)

@@ -16,7 +16,7 @@ using fn_write16 = bool (*)(void *context, uint64_t addr, uint16_t value);
 using fn_write32 = bool (*)(void *context, uint64_t addr, uint32_t value);
 using fn_write64 = bool (*)(void *context, uint64_t addr, uint64_t value);
 
-using fn_bb_entered = bool (*)(void *context, State *state, uint64_t rva);
+using fn_bb_entered = bool (*)(void *context, State *state, uint64_t from_rva, uint64_t rva);
 using fn_ext_call = bool (*)(void *context, State *state, uint64_t addr);
 
 struct verifier_context_t

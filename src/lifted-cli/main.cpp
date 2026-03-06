@@ -1,6 +1,7 @@
 // lifted-cli — interactive and agent-driven lifting & verification tool.
 //
 // Subcommands:
+//   list    List all known suites, targets, and functions.
 //   suite   Run all targets in a named suite (or CSV file).
 //   target  Run all functions in one suite target.
 //   fn      Run a single function (three input modes).
@@ -9,7 +10,6 @@
 //   0  All tested functions PASS.
 //   1  At least one divergence (FAIL_DIVERGED).
 //   2  Fatal error (parse/lift/pipeline failure, or invalid arguments).
-
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/InitLLVM.h>
 #include <llvm/Support/Format.h>
@@ -17,7 +17,7 @@
 
 #include "suite.hpp"
 #include "eval_pipeline.hpp"
-#include "eval_utils.hpp"
+#include "utils.hpp"
 
 #include "compat/lief_compat.hpp"
 
@@ -37,10 +37,17 @@ using namespace lifted::eval;
 // Hide LLVM's internal options (debug, stats, etc.) from --help output.
 // Subcommand descriptions are not options and survive this filter.
 static cl::OptionCategory LiftedCLICategory("lifted-cli options");
-static cl::SubCommand SuiteCmd("suite", "Run all targets in a named suite");
+static cl::SubCommand ListCmd("list",   "List suites, targets and functions");
+static cl::SubCommand SuiteCmd("suite",  "Run all targets in a named suite");
 static cl::SubCommand TargetCmd("target", "Run all functions in one suite target");
-static cl::SubCommand FnCmd("fn", "Run a single function");
+static cl::SubCommand FnCmd("fn",       "Run a single function");
+// ── list options ───────────────────────────────────────────────────────────────
 
+static cl::opt<std::string> ListSuite(
+    "suite",
+    cl::desc("Suite to inspect (default: all known suites)"),
+    cl::sub(ListCmd),
+    cl::Optional);
 // ── suite options ──────────────────────────────────────────────────────────────
 
 static cl::opt<std::string> SuiteName(
@@ -156,18 +163,18 @@ static Expected<fs::path> resolve_suite_arg(const std::string &arg)
         known_list += known[i];
     }
     return createStringError(inconvertibleErrorCode(),
-        "Unknown suite '" + arg + "'. Known names: [" + known_list + "]. "
-        "Pass a path to a suite CSV or use a known name.");
+                             "Unknown suite '" + arg + "'. Known names: [" + known_list + "]. "
+                                                                                          "Pass a path to a suite CSV or use a known name.");
 }
 
 // ── Run summary ────────────────────────────────────────────────────────────────
 
 struct RunSummary
 {
-    size_t tested  = 0;
-    size_t pass    = 0;
-    size_t fail    = 0;
-    size_t errors  = 0;
+    size_t tested = 0;
+    size_t pass = 0;
+    size_t fail = 0;
+    size_t errors = 0;
     std::vector<std::string> failing;
 
     // Record the outcome of one function run.
@@ -422,11 +429,11 @@ static int run_target_cmd(LLVMContext &ctx)
 static int run_fn_cmd(LLVMContext &ctx)
 {
     bool has_binary = !FnBinary.empty();
-    bool has_rva    = !FnRva.empty();
+    bool has_rva = !FnRva.empty();
     bool has_export = !FnExport.empty();
-    bool has_suite  = !FnSuite.empty();
+    bool has_suite = !FnSuite.empty();
     bool has_target = !FnTarget.empty();
-    bool has_func   = !FnFunc.empty();
+    bool has_func = !FnFunc.empty();
 
     size_t deep_count = static_cast<size_t>(FnMaxDeepDives < 0 ? 0 : FnMaxDeepDives);
 
@@ -461,7 +468,7 @@ static int run_fn_cmd(LLVMContext &ctx)
             errs() << "fn error: failed to parse binary '" << FnBinary << "'\n";
             return 2;
         }
-        auto rva_result = rva_from_export(*binary, FnExport);
+        auto rva_result = lifted::utils::rva_from_export(*binary, FnExport);
         if (!rva_result)
         {
             errs() << "fn error: " << toString(rva_result.takeError()) << "\n";
@@ -517,8 +524,8 @@ static int run_fn_cmd(LLVMContext &ctx)
         }
 
         binary_path = found_entry->so_path;
-        rva         = found_fn->addr;
-        func_name   = FnDisplayName.empty() ? std::string(FnFunc) : std::string(FnDisplayName);
+        rva = found_fn->addr;
+        func_name = FnDisplayName.empty() ? std::string(FnFunc) : std::string(FnDisplayName);
     }
     else
     {
@@ -545,7 +552,46 @@ static int run_fn_cmd(LLVMContext &ctx)
     return (result->report && result->report->total_failures() > 0) ? 1 : 0;
 }
 
-// ── Entry point ────────────────────────────────────────────────────────────────
+// ── Subcommand: list ───────────────────────────────────────────────────────────────
+
+static int run_list_cmd()
+{
+    auto print_suite = [](const std::string &suite_name) {
+        auto csv_path = resolve_suite_name(suite_name);
+        if (!csv_path) {
+            errs() << "  [ERROR] Cannot resolve suite '" << suite_name << "'\n";
+            return;
+        }
+        auto suite = parse_suite_csv(*csv_path);
+        outs() << "Suite: " << suite_name << "  (" << suite.size() << " targets)\n";
+        for (const auto &entry : suite) {
+            std::string stem = entry.so_path.stem().string();
+            if (stem.starts_with("libeval-")) stem = stem.substr(8);
+            else if (stem.starts_with("lib")) stem = stem.substr(3);
+            auto targets = parse_targets_csv(entry.targets_csv_path);
+            outs() << "  " << stem << "  (" << targets.size() << " function(s))\n";
+            for (const auto &t : targets)
+                outs() << "    " << t.func_name
+                       << "  @ " << format_hex(t.addr, 10) << "\n";
+        }
+        outs() << "\n";
+    };
+
+    if (!ListSuite.empty()) {
+        print_suite(std::string(ListSuite));
+    } else {
+        auto names = known_suite_names();
+        if (names.empty()) {
+            errs() << "list error: no known suites (built without CSV paths)\n";
+            return 2;
+        }
+        for (const auto &n : names)
+            print_suite(n);
+    }
+    return 0;
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv)
 {
@@ -555,6 +601,8 @@ int main(int argc, char **argv)
 
     LLVMContext ctx;
 
+    if (ListCmd)
+        return run_list_cmd();
     if (SuiteCmd)
         return run_suite_cmd(ctx);
     if (TargetCmd)
