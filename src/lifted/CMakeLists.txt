@@ -9,8 +9,6 @@ add_library(lifted STATIC
     "utils.cpp"
     "opt.hpp"
     "opt.cpp"
-    "slicer.cpp"
-    "slicer.hpp"
 
     "compat/lief_compat.hpp"
 
@@ -81,8 +79,14 @@ add_library(lifted STATIC
     "pipeline/stages/seed_sweep_stage.cpp"
     "pipeline/stages/corpus_replay_stage.hpp"
     "pipeline/stages/corpus_replay_stage.cpp"
-    "pipeline/stages/time_budget_stage.hpp"
-    "pipeline/stages/time_budget_stage.cpp"
+
+    # Visualization
+    "visualization/cfg_data.hpp"
+    "visualization/dot_helpers.hpp"
+    "visualization/cfg_dot.hpp"
+    "visualization/cfg_dot.cpp"
+    "visualization/pipeline_overlay.hpp"
+    "visualization/pipeline_overlay.cpp"
 )
 
 # Expose src/lifted/ as a public include root so consumers can do:

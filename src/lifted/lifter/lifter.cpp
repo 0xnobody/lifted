@@ -727,6 +727,7 @@ namespace lifted::lifter
             .lifted_function = concretize_entry_pc_result.get(),
             .edges = std::move(reachable_edges),
             .basic_blocks = std::move(reachable_blocks),
+            .synthetic_blocks = ctx.synthetic_blocks,
             .stats = stats};
     }
 } // namespace lifted::lifter

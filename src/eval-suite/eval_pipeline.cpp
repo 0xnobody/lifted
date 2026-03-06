@@ -118,6 +118,8 @@ namespace lifted::eval
             if (edge.type == lifter::edge_t::Type::FALLTHROUGH)
                 fallthrough_edges.insert({edge.source, edge.dest});
 
+        // Capture CFG snapshot before the module is moved into the JIT.
+        auto cfg_snapshot = visualization::make_cfg_snapshot(*lift_result, entry_rva, func_name);
         std::string fn_name = lift_result->lifted_function->getName().str();
 
         // Create executors eagerly — no factory indirection.
@@ -140,7 +142,7 @@ namespace lifted::eval
 
         LiftAndVerifyResult result;
         result.report = std::move(*report);
-
+        result.cfg    = std::move(cfg_snapshot);
         if (deep_dive_count > 0)
         {
             for (const auto &stage : result.report->stages)

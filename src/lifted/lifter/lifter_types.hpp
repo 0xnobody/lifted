@@ -204,8 +204,10 @@ namespace lifted::lifter
         llvm::Function *lifted_function = nullptr;
         std::set<edge_t> edges;
         std::set<lifted_bb_t> basic_blocks;
+        std::map<bb_id_t, synthetic_block_info_t> synthetic_blocks;
         lift_stats_t stats;
     };
+
 
     // ── operator<< ───────────────────────────────────────────────────────────
 

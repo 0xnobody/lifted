@@ -27,6 +27,14 @@
 #include <set>
 #include <string>
 #include <vector>
+#include "visualization/cfg_dot.hpp"
+#include "visualization/pipeline_overlay.hpp"
+
+#include <remill/Arch/Arch.h>
+#include <remill/Arch/Name.h>
+#include <remill/OS/OS.h>
+#include "lifter/lifter.hpp"
+#include "lifter/standard_lifter_callbacks.hpp"
 
 namespace fs = std::filesystem;
 using namespace llvm;
@@ -41,6 +49,7 @@ static cl::SubCommand ListCmd("list",   "List suites, targets and functions");
 static cl::SubCommand SuiteCmd("suite",  "Run all targets in a named suite");
 static cl::SubCommand TargetCmd("target", "Run all functions in one suite target");
 static cl::SubCommand FnCmd("fn",       "Run a single function");
+static cl::SubCommand GraphCmd("graph", "Generate CFG DOT output for a single function");
 // ── list options ───────────────────────────────────────────────────────────────
 
 static cl::opt<std::string> ListSuite(
@@ -129,6 +138,65 @@ static cl::opt<int> FnMaxDeepDives(
     cl::desc("Deep-dive divergences: 0=skip, 1=first (default)"),
     cl::sub(FnCmd),
     cl::init(1));
+
+// ── graph options ──────────────────────────────────────────────────────────────
+
+static cl::opt<std::string> GraphBinary(
+    "binary",
+    cl::desc("Path to ELF/PE/MachO binary"),
+    cl::sub(GraphCmd));
+static cl::opt<std::string> GraphRva(
+    "rva",
+    cl::desc("Entry RVA in hex (e.g. 0x1234) -- Mode A"),
+    cl::sub(GraphCmd));
+static cl::opt<std::string> GraphExport(
+    "export",
+    cl::desc("Export symbol name; RVA resolved at runtime -- Mode B"),
+    cl::sub(GraphCmd));
+static cl::opt<std::string> GraphSuite(
+    "suite",
+    cl::desc("Suite name or CSV path -- Mode C"),
+    cl::sub(GraphCmd));
+static cl::opt<std::string> GraphTarget(
+    "target",
+    cl::desc("Target stem to locate in suite -- Mode C"),
+    cl::sub(GraphCmd));
+static cl::opt<std::string> GraphFunc(
+    "func",
+    cl::desc("Function name to locate in target CSV -- Mode C"),
+    cl::sub(GraphCmd));
+static cl::opt<std::string> GraphDisplayName(
+    "name",
+    cl::desc("Display name for output (default: derived from export/func/rva)"),
+    cl::sub(GraphCmd));
+static cl::opt<std::string> GraphOutput(
+    "output",
+    cl::desc("Write DOT to file (default: stdout)"),
+    cl::sub(GraphCmd));
+static cl::opt<std::string> GraphRender(
+    "render",
+    cl::desc("Render DOT to image via graphviz dot (svg, png, pdf); implies --output"),
+    cl::sub(GraphCmd));
+static cl::opt<bool> GraphOverlay(
+    "overlay",
+    cl::desc("Run pipeline and overlay results on CFG"),
+    cl::sub(GraphCmd),
+    cl::init(false));
+static cl::opt<bool> GraphMergeSynthetic(
+    "merge-synthetic",
+    cl::desc("Merge synthetic blocks into callers (IDA-style)"),
+    cl::sub(GraphCmd),
+    cl::init(false));
+static cl::opt<int> GraphMaxDeepDives(
+    "max-deep-dives",
+    cl::desc("Deep-dive divergences for overlay mode: 0=skip, 1=first (default)"),
+    cl::sub(GraphCmd),
+    cl::init(1));
+static cl::opt<int> GraphDivergenceIdx(
+    "divergence-idx",
+    cl::desc("Which divergence to highlight in overlay (0 = first, default)"),
+    cl::sub(GraphCmd),
+    cl::init(0));
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -591,6 +659,216 @@ static int run_list_cmd()
     return 0;
 }
 
+// -- Subcommand: graph --------------------------------------------------------
+
+static int run_graph_cmd(LLVMContext &ctx)
+{
+    // -- Resolve input (replicated from run_fn_cmd) ---------------------------
+    bool has_binary = !GraphBinary.empty();
+    bool has_rva    = !GraphRva.empty();
+    bool has_export = !GraphExport.empty();
+    bool has_suite  = !GraphSuite.empty();
+    bool has_target = !GraphTarget.empty();
+    bool has_func   = !GraphFunc.empty();
+
+    fs::path    binary_path;
+    uint64_t    rva = 0;
+    std::string func_name;
+
+    if (has_binary && has_rva && !has_export && !has_suite) {
+        // Mode A: --binary + --rva
+        binary_path = fs::path(std::string(GraphBinary));
+        try {
+            rva = std::stoull(GraphRva, nullptr, 16);
+        } catch (...) {
+            errs() << "graph error: invalid RVA '" << GraphRva << "'\n";
+            return 2;
+        }
+        func_name = GraphDisplayName.empty()
+                        ? ("sub_" + llvm::utohexstr(rva))
+                        : std::string(GraphDisplayName);
+    } else if (has_binary && has_export && !has_rva && !has_suite) {
+        // Mode B: --binary + --export
+        binary_path = fs::path(std::string(GraphBinary));
+        auto binary = LIEF::Parser::parse(binary_path.string());
+        if (!binary) {
+            errs() << "graph error: failed to parse binary '" << GraphBinary << "'\n";
+            return 2;
+        }
+        auto rva_result = lifted::utils::rva_from_export(*binary, GraphExport);
+        if (!rva_result) {
+            errs() << "graph error: " << toString(rva_result.takeError()) << "\n";
+            return 2;
+        }
+        rva = *rva_result;
+        func_name = GraphDisplayName.empty() ? std::string(GraphExport) : std::string(GraphDisplayName);
+    } else if (has_suite && has_target && has_func && !has_binary && !has_rva && !has_export) {
+        // Mode C: --suite + --target + --func
+        auto csv_path = resolve_suite_arg(GraphSuite);
+        if (!csv_path) {
+            errs() << "graph error: " << toString(csv_path.takeError()) << "\n";
+            return 2;
+        }
+        auto suite = parse_suite_csv(*csv_path);
+        std::optional<SuiteEntry> found_entry;
+        for (const auto &entry : suite) {
+            if (target_stem(entry.so_path) == std::string(GraphTarget)) {
+                found_entry = entry;
+                break;
+            }
+        }
+        if (!found_entry) {
+            errs() << "graph error: no target '" << GraphTarget
+                   << "' in suite '" << GraphSuite << "'\n";
+            return 2;
+        }
+        auto targets = parse_targets_csv(found_entry->targets_csv_path);
+        std::optional<TargetEntry> found_fn;
+        for (const auto &t : targets) {
+            if (t.func_name == std::string(GraphFunc)) {
+                found_fn = t;
+                break;
+            }
+        }
+        if (!found_fn) {
+            errs() << "graph error: no function '" << GraphFunc
+                   << "' in target '" << GraphTarget << "'\n";
+            return 2;
+        }
+        binary_path = found_entry->so_path;
+        rva         = found_fn->addr;
+        func_name   = GraphDisplayName.empty() ? std::string(GraphFunc) : std::string(GraphDisplayName);
+    } else {
+        errs() << "graph error: specify one of:\n"
+               << "  Mode A: --binary <path> --rva <hex>\n"
+               << "  Mode B: --binary <path> --export <name>\n"
+               << "  Mode C: --suite <name> --target <stem> --func <name>\n";
+        return 2;
+    }
+
+    // -- Build CfgDotOptions from flags ---------------------------------------
+    lifted::visualization::CfgDotOptions cfg_opts;
+    cfg_opts.merge_synthetic = GraphMergeSynthetic;
+    cfg_opts.graph_title     = func_name + " @ 0x" + llvm::utohexstr(rva);
+
+    // -- Generate DOT string --------------------------------------------------
+    std::string dot;
+
+    if (GraphOverlay) {
+        // Overlay mode: run the full pipeline, then overlay execution data.
+        size_t deep_count = static_cast<size_t>(GraphMaxDeepDives < 0 ? 0 : GraphMaxDeepDives);
+        auto result = lift_and_verify_named(ctx, binary_path, func_name, rva, deep_count);
+        if (!result) {
+            errs() << "  [FATAL] " << toString(result.takeError()) << "\n";
+            return 2;
+        }
+        if (result->lift_failed) {
+            errs() << "  [LIFTING] FAILED: " << result->lift_error << "\n";
+            return 2;
+        }
+        if (!result->cfg) {
+            errs() << "graph error: no CFG snapshot produced (internal error)\n";
+            return 2;
+        }
+
+        // Build overlay data.
+        lifted::visualization::OverlayData od;
+        if (result->report)
+            od.block_hits = &result->report->src_block_hits;
+
+        // Find the requested divergence (GraphDivergenceIdx).
+        const lifted::pipeline::RunOutcome *div_ptr = nullptr;
+        if (result->report) {
+            int want = GraphDivergenceIdx < 0 ? 0 : GraphDivergenceIdx;
+            int seen = 0;
+            for (const auto &stage : result->report->stages) {
+                for (const auto &d : stage.divergences) {
+                    if (seen == want) { div_ptr = &d; break; }
+                    ++seen;
+                }
+                if (div_ptr) break;
+            }
+        }
+        od.divergence = div_ptr;
+
+        // Print pipeline summary to stderr.
+        if (result->report)
+            result->report->print(std::cerr);
+
+        lifted::visualization::OverlayOptions oo;
+        oo.cfg_opts = cfg_opts;
+        dot = lifted::visualization::overlay_to_dot(*result->cfg, od, oo);
+    } else {
+        // CFG-only mode: lift without running the pipeline.
+        auto arch = remill::Arch::Get(ctx, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
+        auto binary = LIEF::Parser::parse(binary_path.string());
+        if (!binary) {
+            errs() << "graph error: failed to parse binary '" << binary_path.string() << "'\n";
+            return 2;
+        }
+        auto cb_cfg = lifted::lifter::standard_lifter_config_t::from_standard_linux_binary(*binary);
+        lifted::lifter::StandardLifterCallbacks callbacks(std::move(cb_cfg));
+        auto lifter_or = lifted::lifter::Lifter::create(arch.get(), binary.get(), &callbacks);
+        if (!lifter_or) {
+            errs() << "graph error: " << toString(lifter_or.takeError()) << "\n";
+            return 2;
+        }
+        auto lift_result = (*lifter_or).lift(rva, {.instrument_bb_entry = false});
+        if (!lift_result) {
+            errs() << "graph error: " << toString(lift_result.takeError()) << "\n";
+            return 2;
+        }
+        auto snapshot = lifted::visualization::make_cfg_snapshot(*lift_result, rva, func_name);
+        dot = lifted::visualization::cfg_to_dot(snapshot, cfg_opts);
+    }
+
+    // -- Write or render output -----------------------------------------------
+    std::string dot_path;
+    bool        render = !GraphRender.empty();
+
+    if (!GraphOutput.empty()) {
+        dot_path = std::string(GraphOutput);
+    } else if (render) {
+        // Default DOT file name when rendering.
+        dot_path = GraphOverlay ? "overlay.dot" : "cfg.dot";
+    }
+
+    if (!dot_path.empty()) {
+        // Write DOT to file.
+        std::error_code ec;
+        raw_fd_ostream os(dot_path, ec);
+        if (ec) {
+            errs() << "graph error: cannot open '" << dot_path << "': " << ec.message() << "\n";
+            return 2;
+        }
+        os << dot;
+    } else {
+        // Write DOT to stdout.
+        outs() << dot;
+    }
+
+    // Render via graphviz if requested.
+    if (render) {
+        const std::string &fmt = GraphRender;
+        // Derive rendered output path: same base as dot_path but with .fmt extension.
+        std::string render_path;
+        {
+            fs::path dp(dot_path);
+            render_path = dp.replace_extension("." + fmt).string();
+        }
+        std::string cmd = "dot -T" + fmt + " -o " + render_path + " " + dot_path;
+        int rc = std::system(cmd.c_str());
+        if (rc != 0) {
+            errs() << "graph warning: graphviz 'dot' returned " << rc
+                   << "; is graphviz installed?\n";
+        } else {
+            errs() << "Rendered: " << render_path << "\n";
+        }
+    }
+
+    return 0;
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv)
@@ -609,6 +887,8 @@ int main(int argc, char **argv)
         return run_target_cmd(ctx);
     if (FnCmd)
         return run_fn_cmd(ctx);
+    if (GraphCmd)
+        return run_graph_cmd(ctx);
 
     cl::PrintHelpMessage();
     return 2;

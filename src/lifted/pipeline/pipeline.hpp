@@ -97,6 +97,8 @@ struct PipelineReport
     std::string              pipeline_name;
     std::vector<StageReport> stages;
     Corpus                   final_corpus;
+    /// Aggregate hit counts across all runs: rva -> number of times that BB was entered.
+    std::unordered_map<uint64_t, uint64_t> src_block_hits;
 
     size_t total_runs()     const;
     size_t total_failures() const;

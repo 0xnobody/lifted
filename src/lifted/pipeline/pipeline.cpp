@@ -341,6 +341,10 @@ llvm::Expected<PipelineReport> Pipeline::run(
             stage_report.src_wall_ns += outcome.src_wall_ns;
             stage_report.tgt_wall_ns += outcome.tgt_wall_ns;
 
+            // Accumulate block hit counts for visualization.
+            for (uint64_t rva : outcome.src_result.bb_trace)
+                ++report.src_block_hits[rva];
+
             // Build corpus entry from src's trace.
             CorpusEntry entry{
                 .config      = cfg,
