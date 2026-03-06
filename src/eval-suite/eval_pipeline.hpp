@@ -11,18 +11,19 @@
 #include "pipeline/pipeline.hpp"
 #include "pipeline/deep_dive.hpp"
 #include "visualization/cfg_data.hpp"
+#include "lifter/lifter_types.hpp"
 
 namespace lifted::eval
 {
 
-
     // Result of a single lift+verify run.
     struct LiftAndVerifyResult
     {
-        std::optional<pipeline::PipelineReport>   report;    // null only if lifting failed
-        std::optional<pipeline::DeepDiveResult>    deep_dive; // null if no divergence or skipped
-        std::optional<visualization::CfgSnapshot> cfg;       // populated on successful lift
-        bool        lift_failed = false;
+        std::optional<lifter::lift_stats_t> lift_stats;    // populated on successful lift
+        std::optional<pipeline::PipelineReport> report;    // null only if lifting failed
+        std::optional<pipeline::DeepDiveResult> deep_dive; // null if no divergence or skipped
+        std::optional<visualization::CfgSnapshot> cfg;     // populated on successful lift
+        bool lift_failed = false;
         std::string lift_error; // populated when lift_failed
     };
 

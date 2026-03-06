@@ -27,9 +27,13 @@ std::string overlay_to_dot(const CfgSnapshot    &cfg,
 
     // ── Build RVA → bb_id_t lookup for REAL blocks ──────────────────────────
     std::unordered_map<uint64_t, lifter::bb_id_t> rva_to_id;
-    for (const auto &bb : cfg.basic_blocks)
-        if (bb.type == BBT::REAL && bb.rva_range)
+    std::unordered_map<lifter::bb_id_t, uint64_t> id_to_rva;
+    for (const auto &bb : cfg.basic_blocks) {
+        if (bb.type == BBT::REAL && bb.rva_range) {
             rva_to_id[bb.rva_range->start()] = bb.id;
+            id_to_rva[bb.id] = bb.rva_range->start();
+        }
+    }
 
     // ── Compute max_hits for heat-map normalisation ──────────────────────────
     uint64_t max_hits = 0;
@@ -116,22 +120,57 @@ std::string overlay_to_dot(const CfgSnapshot    &cfg,
         }
     }
 
-    // ── Back-edge detection ───────────────────────────────────────────────────
-    // Detect directed back-edges (to a block seen earlier in the trace)
-    // and count how many times each was crossed.
-    std::map<std::pair<uint64_t, uint64_t>, uint64_t> back_edge_rva_counts;
+    // ── Back-edge detection (structural DFS from entry block) ─────────────────
+    // A back edge is (u, v) where v is GRAY (on the DFS stack) when the edge is
+    // first encountered.  This is a CFG property — no divergence required.
+    // Hit-count label uses block_hits[source_rva] as a traversal-count proxy.
+    std::set<std::pair<lifter::bb_id_t, lifter::bb_id_t>> structural_back_edges;
 
-    if (div && opts.show_loop_counts) {
-        const auto &trace = div->src_result.bb_trace;
-        std::unordered_map<uint64_t, size_t> first_seen_at;
-        for (size_t i = 0; i < trace.size(); ++i)
-            first_seen_at.emplace(trace[i], i);
-        for (size_t i = 0; i + 1 < trace.size(); ++i) {
-            uint64_t from = trace[i];
-            uint64_t to   = trace[i + 1];
-            auto     it   = first_seen_at.find(to);
-            if (it != first_seen_at.end() && it->second < i)
-                back_edge_rva_counts[{from, to}]++;
+    if (opts.show_loop_counts) {
+        // Build adjacency list over all edges.
+        std::unordered_map<lifter::bb_id_t, std::vector<lifter::bb_id_t>> adj;
+        for (const auto &e : cfg.edges)
+            adj[e.source].push_back(e.dest);
+
+        // Locate the entry block ID.
+        lifter::bb_id_t entry_id    = 0;
+        bool            found_entry = false;
+        for (const auto &bb : cfg.basic_blocks) {
+            if (bb.type == BBT::REAL && bb.rva_range &&
+                bb.rva_range->start() == cfg.entry_rva) {
+                entry_id    = bb.id;
+                found_entry = true;
+                break;
+            }
+        }
+
+        if (found_entry) {
+            enum class Color : uint8_t { WHITE, GRAY, BLACK };
+            std::unordered_map<lifter::bb_id_t, Color> color;
+            for (const auto &bb : cfg.basic_blocks)
+                color[bb.id] = Color::WHITE;
+
+            // Iterative DFS: stack holds (node_id, index into neighbour list).
+            std::vector<std::pair<lifter::bb_id_t, size_t>> stk;
+            color[entry_id] = Color::GRAY;
+            stk.push_back({entry_id, 0});
+
+            while (!stk.empty()) {
+                auto &[u, idx] = stk.back();
+                auto  it       = adj.find(u);
+                if (it == adj.end() || idx >= it->second.size()) {
+                    color[u] = Color::BLACK;
+                    stk.pop_back();
+                    continue;
+                }
+                const lifter::bb_id_t v = it->second[idx++];
+                if (color[v] == Color::GRAY) {
+                    structural_back_edges.insert({u, v});
+                } else if (color[v] == Color::WHITE) {
+                    color[v] = Color::GRAY;
+                    stk.push_back({v, 0});
+                }
+            }
         }
     }
 
@@ -293,21 +332,11 @@ std::string overlay_to_dot(const CfgSnapshot    &cfg,
 
     os << "\n";
 
-    // ── Edges ─────────────────────────────────────────────────────────────────
-    // Build back-edge counts keyed by block ID pair.
-    std::map<std::pair<lifter::bb_id_t, lifter::bb_id_t>, uint64_t> back_edge_id_counts;
-    for (const auto &[rva_pair, cnt] : back_edge_rva_counts) {
-        auto it1 = rva_to_id.find(rva_pair.first);
-        auto it2 = rva_to_id.find(rva_pair.second);
-        if (it1 != rva_to_id.end() && it2 != rva_to_id.end())
-            back_edge_id_counts[{it1->second, it2->second}] += cnt;
-    }
-
+    // ── Edges ───────────────────────────────────────────────────────────────────────────
     for (const auto &e : cfg.edges) {
         const auto node_pair = std::make_pair(e.source, e.dest);
         const bool is_trace  = trace_edge_set.count(node_pair) > 0;
-        const auto back_it   = back_edge_id_counts.find(node_pair);
-        const bool is_back   = (back_it != back_edge_id_counts.end());
+        const bool is_back   = structural_back_edges.count(node_pair) > 0;
 
         os << "    \"" << bb_node_id(e.source)
            << "\" -> \"" << bb_node_id(e.dest) << "\"";
@@ -352,11 +381,18 @@ std::string overlay_to_dot(const CfgSnapshot    &cfg,
         if (is_back) {
             color = "purple";
             style = "bold";
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "\xc3\x97%llu",
-                          static_cast<unsigned long long>(back_it->second));
-            if (!label.empty()) label += ' ';
-            label += buf;
+            // Source block's total hits ≈ traversal count for this back edge.
+            auto rva_it = id_to_rva.find(e.source);
+            if (rva_it != id_to_rva.end() && data.block_hits) {
+                auto hits_it = data.block_hits->find(rva_it->second);
+                if (hits_it != data.block_hits->end() && hits_it->second > 0) {
+                    char buf[32];
+                    std::snprintf(buf, sizeof(buf), "\xc3\x97%llu",
+                                  static_cast<unsigned long long>(hits_it->second));
+                    if (!label.empty()) label += ' ';
+                    label += buf;
+                }
+            }
             pw = is_trace ? 2.0 : 1.0;
         } else if (is_trace) {
             color = "blue";

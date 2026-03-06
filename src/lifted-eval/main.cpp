@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <fstream>
 
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/Support/Error.h>
@@ -22,6 +23,8 @@
 
 #include "verification/jit_executor.hpp"
 #include "verification/unicorn_executor.hpp"
+
+#include "visualization/pipeline_overlay.hpp"
 
 using namespace lifted;
 using namespace lifted::eval;
@@ -51,6 +54,8 @@ static llvm::Error lift_suite(llvm::LLVMContext &context,
 
         for (const auto &target : targets)
         {
+            std::ofstream report_file("/tmp/eval_" + target.func_name + "_cfg.txt");
+
             llvm::outs() << "  Lifting " << entry.so_path.filename().string()
                          << "::" << target.func_name
                          << " @ " << llvm::format_hex(target.addr, 18) << "\n";
@@ -69,11 +74,42 @@ static llvm::Error lift_suite(llvm::LLVMContext &context,
                 continue;
             }
 
+            if (result->lift_stats)
+                result->lift_stats->print(report_file);
+
             if (result->report)
-                result->report->print(std::cout);
+                result->report->print(report_file);
 
             if (result->deep_dive)
-                result->deep_dive->print(std::cout);
+                result->deep_dive->print(report_file);
+
+            visualization::OverlayData od =
+                {
+                    .block_hits = &result->report->src_block_hits};
+
+            const lifted::pipeline::RunOutcome *div_ptr = nullptr;
+            if (result->report)
+            {
+                for (const auto &stage : result->report->stages)
+                {
+                    for (const auto &d : stage.divergences)
+                    {
+                        div_ptr = &d;
+                        break;
+                    }
+                    if (div_ptr)
+                        break;
+                }
+            }
+            od.divergence = div_ptr;
+
+            auto dot_output = visualization::overlay_to_dot(*result->cfg, od);
+
+            std::ofstream dot_file("/tmp/eval_" + target.func_name + "_cfg.dot");
+            dot_file << dot_output;
+            dot_file.close();
+
+            system(("dot -Tsvg /tmp/eval_" + target.func_name + "_cfg.dot -o /tmp/eval_" + target.func_name + "_cfg.svg").c_str());
         }
     }
 
@@ -106,7 +142,7 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
         return lift_result.takeError();
     }
 
-    lift_result->stats.print(llvm::outs());
+    lift_result->stats.print(std::cout);
 
     // Collect fallthrough edges.
     std::set<std::pair<uint64_t, uint64_t>> fallthrough_edges;

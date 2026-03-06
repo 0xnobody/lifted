@@ -183,9 +183,9 @@ namespace lifted::lifter
         double stitch_time_ms = 0;  ///< Time in build_forward_cfg.
         double total_time_ms = 0;   ///< Wall clock for the entire lift() call.
 
-        void print(llvm::raw_fd_ostream &os) const
+        void print(std::ostream &os) const
         {
-            os << "[LIFT REPORT]"
+            os << "[LIFT STATS]"
                << "\n  lifted=" << bbs_lifted
                << "\n  cached=" << bbs_cached
                << "\n  total=" << bbs_total
@@ -207,7 +207,6 @@ namespace lifted::lifter
         std::map<bb_id_t, synthetic_block_info_t> synthetic_blocks;
         lift_stats_t stats;
     };
-
 
     // ── operator<< ───────────────────────────────────────────────────────────
 
