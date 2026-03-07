@@ -74,13 +74,20 @@ namespace lifted::verification
         /// targets from directing execution to the wrong block.
         bool has_indirect_branches_ = false;
 
-        UnicornExecutor(std::shared_ptr<LIEF::Binary> bin, std::unordered_set<uint64_t> ext_rvas, uint64_t entry, Flags flags)
+        /// Lifter FALLTHROUGH edges as {from_start_rva → to_start_rva}.
+        /// Used to normalise QEMU's TB-start prev_block to the actual logical
+        /// predecessor before counting directed back-edges.
+        std::unordered_map<uint64_t, uint64_t> fallthrough_edges_;
+
+        UnicornExecutor(std::shared_ptr<LIEF::Binary> bin, std::unordered_set<uint64_t> ext_rvas, uint64_t entry, Flags flags,
+                        std::unordered_map<uint64_t, uint64_t> fallthrough_edges)
             : binary(std::move(bin)),
               external_rvas(std::move(ext_rvas)),
               uc_eng(nullptr, uc_close),
               clean_ctx(nullptr, uc_context_free),
               entry_rva(entry),
-              flags(flags)
+              flags(flags),
+              fallthrough_edges_(std::move(fallthrough_edges))
         {
         }
 
@@ -91,7 +98,8 @@ namespace lifted::verification
     public:
         std::string_view name() const override { return "Unicorn"; }
         static llvm::Expected<std::unique_ptr<UnicornExecutor>>
-        create(std::shared_ptr<LIEF::Binary> bin, std::unordered_set<uint64_t> ext_rvas, uint64_t entry_rva, Flags flags = Flags::NONE);
+        create(std::shared_ptr<LIEF::Binary> bin, std::unordered_set<uint64_t> ext_rvas, uint64_t entry_rva, Flags flags = Flags::NONE,
+               std::unordered_map<uint64_t, uint64_t> fallthrough_edges = {});
 
         void hint_external_rvas(const std::unordered_set<uint64_t> &rvas) override;
 
@@ -105,6 +113,11 @@ namespace lifted::verification
         /// in a variable-length ISA. Backward scanning from the TB end can misidentify
         /// mid-instruction bytes as a valid shorter instruction.
         tb_branch_result_t tb_ends_in_branch(uc_engine *uc, uint64_t pc, uint32_t size);
+
+        /// Normalise a TB-start from_rva to the last block in the FALLTHROUGH
+        /// chain that lies within [from_rva, from_rva + from_tb_size).
+        /// Returns from_rva unchanged if no FALLTHROUGH edges apply.
+        uint64_t normalize_from(uint64_t from_rva, uint32_t from_tb_size) const noexcept;
 
         static void hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
         static void hook_edge(uc_engine *uc, uc_tb *cur_tb, uc_tb *prev_tb, void *user_data);

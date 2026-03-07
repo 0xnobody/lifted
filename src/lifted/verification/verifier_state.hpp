@@ -7,8 +7,8 @@
 
 #include <cstdint>
 #include <memory>
-#include <utility>
 #include <map>
+#include <utility>
 #include <vector>
 
 #include <llvm/Support/Format.h>
@@ -87,7 +87,6 @@ namespace lifted::verification
         std::vector<uint64_t> bbs_entered_rvas;
         std::unordered_map<uint64_t, uint64_t>                  bb_first_seen;       // addr -> step when first seen
         std::map<std::pair<uint64_t, uint64_t>, uint64_t>        back_edge_count;     // (from,to) -> times crossed
-        std::unordered_map<uint64_t, uint64_t>                  last_external_from_; // rva -> last non-self from_rva
         uint64_t bb_step = 0;
         uint64_t bb_loop_limit = -1;
         uint64_t bb_limit = -1;
@@ -258,41 +257,57 @@ namespace lifted::verification
                              << llvm::format_hex(rva, 18) << " (step: " << bb_step << ")\n";
             }
 
-            // Count traversals of each directed edge.  When any edge is traversed
-            // bb_loop_limit times, the function is looping on that edge.
+            // Only count directed edges where the destination was first encountered
+            // *before* the source in the current execution trace — these are the
+            // genuine dynamic back-edges that close cycles (loops).
             //
-            // Per-edge counting correctly handles dispatchers (A->B->A->C->A->D->...):
-            // each unique (from,to) pair has its own counter, so a block that fans
-            // out to different successors never accumulates toward the limit.  True
-            // loops (A->B->A->B->...) repeat the same edge and are detected quickly.
+            // Why this matters:
+            //   Dispatcher: A->B->C->D->E->A->B->C->F->G->A->B->C->H->I->...
+            //     Edge A->B is traversed 3 times, BUT first_seen[B] > first_seen[A],
+            //     so it is a forward edge every time and is NOT counted.
+            //     Back-edges E->A, G->A, I->A are all distinct; none accumulates.
+            //   True loop: A->B->C->A->B->C->A->B->C
+            //     Edge C->A: first_seen[A]=0 < first_seen[C]=2 → back-edge.
+            //     Counted on every iteration; fires after bb_loop_limit iterations.
             //
-            // Self-edge normalisation: when from_rva == rva, Unicorn's QEMU has merged
-            // the body and condition basic blocks into one translation block (they are
-            // physically adjacent with no branch between them).  From JIT's perspective,
-            // those are two separate LLVM IR blocks connected by a FALLTHROUGH edge that
-            // __lifted_bb_entered skips.  The loop back-edge JIT counts is therefore
-            // (condition_bb → body_bb), while Unicorn's QEMU produces (body_bb → body_bb)
-            // for every subsequent iteration.  To keep both executors on the same edge
-            // key, map any self-edge to the last non-self predecessor of that block.
+            // UnicornExecutor normalises from_rva via FALLTHROUGH edges
+            // (UnicornExecutor::normalize_from) so both executors report the same
+            // canonical predecessor address.  This is necessary because QEMU merges
+            // adjacent non-branching blocks into a single translation block; the TB
+            // start address is then reported as from_rva, which differs from the JIT's
+            // last_bb_rva (the actual last block before the branch).
+            //
+            // This dependency on lifter-produced FALLTHROUGH edges is structural
+            // (block boundary detection), not semantic (IR translation) — the thing
+            // we are actually verifying.  A bug in FALLTHROUGH identification would
+            // produce more divergences (false positives), not fewer, because the state
+            // comparison at checkpoints detects semantic errors independently.  The
+            // only lifter-free alternative — destination-only loop counting — fires
+            // spuriously for dispatcher-shaped CFGs where many distinct arm→header
+            // back-edges share one destination counter.
             if (from_rva != uint64_t(-1))
             {
-                uint64_t effective_from = from_rva;
-                if (from_rva == rva)
+                auto to_it   = bb_first_seen.find(rva);
+                auto from_it = bb_first_seen.find(from_rva);
+                // Two conditions constitute a genuine dynamic back-edge:
+                //   1. Self-edge (from == to): always a loop iteration — the block
+                //      immediately branches back to its own RVA. to_it->second ==
+                //      from_it->second (same slot) so the ordering test below would
+                //      produce false; the explicit check here handles it.
+                //   2. dest was first seen before src: dest is a loop header that
+                //      execution visited before reaching the current src block.
+                const bool is_back_edge =
+                    (from_rva == rva) ||
+                    (to_it   != bb_first_seen.end() &&
+                     from_it != bb_first_seen.end() &&
+                     to_it->second < from_it->second);
+                if (is_back_edge)
                 {
-                    // Self-edge: use the last external predecessor if we have one.
-                    if (auto it = last_external_from_.find(rva); it != last_external_from_.end())
-                        effective_from = it->second;
-                }
-                else
-                {
-                    // Non-self entry: record this as the last external predecessor.
-                    last_external_from_[rva] = from_rva;
-                }
-
-                if (++back_edge_count[{effective_from, rva}] >= bb_loop_limit)
-                {
-                    exit_reason = exit_type::LOOP_LIMIT;
-                    return false;
+                    if (++back_edge_count[{from_rva, rva}] >= bb_loop_limit)
+                    {
+                        exit_reason = exit_type::LOOP_LIMIT;
+                        return false;
+                    }
                 }
             }
 

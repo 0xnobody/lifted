@@ -101,6 +101,28 @@ namespace lifted::verification
         ctx->executor->genuine_edges.insert({prev_start, cur_start});
     }
 
+    uint64_t UnicornExecutor::normalize_from(uint64_t from_rva, uint32_t from_tb_size) const noexcept
+    {
+        // Walk the lifter's FALLTHROUGH chain starting at from_rva, staying within
+        // [from_rva, from_rva + from_tb_size).  QEMU only splits TBs at branch
+        // instructions, so every FALLTHROUGH edge (physically-adjacent blocks with
+        // no intervening branch) is guaranteed to live inside the same TB.  The
+        // last node in the chain before the TB's branch is the correct logical
+        // predecessor — matching JIT's last_bb_rva at the point bb_entered fires.
+        uint64_t eff = from_rva;
+        const uint64_t tb_end = from_rva + from_tb_size;
+        while (true)
+        {
+            auto it = fallthrough_edges_.find(eff);
+            if (it == fallthrough_edges_.end())
+                break;
+            if (it->second >= tb_end)
+                break; // successor is outside (or at) the TB boundary
+            eff = it->second;
+        }
+        return eff;
+    }
+
     void UnicornExecutor::hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
     {
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
@@ -117,6 +139,7 @@ namespace lifted::verification
             return;
         }
         const uint64_t prev = ctx->prev_block;
+        const uint32_t prev_tb_size = ctx->prev_size;
 
         const bool is_first = (prev == 0);
         const bool is_genuine_edge = ctx->executor->genuine_edges.contains({prev, address});
@@ -175,7 +198,9 @@ namespace lifted::verification
         }
         else
         {
-            const uint64_t from_rva_uc = (prev < LOAD_BASE) ? uint64_t(-1) : (prev - LOAD_BASE);
+            const uint64_t from_rva_uc = (prev < LOAD_BASE)
+                ? uint64_t(-1)
+                : ctx->executor->normalize_from(prev - LOAD_BASE, prev_tb_size);
             if (!ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, &state, from_rva_uc, address - LOAD_BASE))
             {
                 uc_emu_stop(uc);
@@ -428,11 +453,12 @@ namespace lifted::verification
     }
 
     llvm::Expected<std::unique_ptr<UnicornExecutor>>
-    UnicornExecutor::create(std::shared_ptr<LIEF::Binary> bin, std::unordered_set<uint64_t> ext_rvas, uint64_t entry_rva, Flags flags)
+    UnicornExecutor::create(std::shared_ptr<LIEF::Binary> bin, std::unordered_set<uint64_t> ext_rvas, uint64_t entry_rva, Flags flags,
+                            std::unordered_map<uint64_t, uint64_t> fallthrough_edges)
     {
         // Create executor (private constructor)
         auto executor = std::unique_ptr<UnicornExecutor>(
-            new UnicornExecutor(bin, std::move(ext_rvas), entry_rva, flags));
+            new UnicornExecutor(bin, std::move(ext_rvas), entry_rva, flags, std::move(fallthrough_edges)));
 
         // Run setup
         if (auto err = executor->setup_impl())

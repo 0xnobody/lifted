@@ -158,16 +158,6 @@ namespace lifted::lifter
     }
     // ── Callee stubs ────────────────────────────────────────────────────────────
 
-    llvm::FunctionType *Lifter::resolve_callee_type(const callee_t &callee) const
-    {
-        if (callee.orig_type)
-            return callee.orig_type;
-        const auto *cc = callbacks_->resolve_cc(callee);
-        if (cc)
-            return cc->getDefaultFunctionType(work_module_->getContext());
-        return nullptr;
-    }
-
     llvm::Expected<llvm::Function *> Lifter::get_or_create_callee_stub(llvm::Module *M,
                                                                        const callee_t &callee)
     {

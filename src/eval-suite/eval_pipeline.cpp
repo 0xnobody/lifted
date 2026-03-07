@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <set>
+#include <unordered_map>
 
 namespace lifted::eval
 {
@@ -116,6 +117,10 @@ namespace lifted::eval
         for (const auto &edge : lift_result->edges)
             if (edge.type == lifter::edge_t::Type::FALLTHROUGH)
                 fallthrough_edges.insert({edge.source, edge.dest});
+        std::unordered_map<uint64_t, uint64_t> fallthrough_map;
+        fallthrough_map.reserve(fallthrough_edges.size());
+        for (const auto &[from, to] : fallthrough_edges)
+            fallthrough_map[from] = to;
 
         // Capture CFG snapshot before the module is moved into the JIT.
         auto cfg_snapshot = visualization::make_cfg_snapshot(*lift_result, entry_rva, func_name);
@@ -128,7 +133,9 @@ namespace lifted::eval
             return jit_or.takeError();
         auto jit = std::shared_ptr<verification::Executor>(std::move(*jit_or));
 
-        auto uc_or = verification::UnicornExecutor::create(binary, {}, entry_rva);
+        auto uc_or = verification::UnicornExecutor::create(binary, {}, entry_rva,
+                                                           verification::UnicornExecutor::Flags::NONE,
+                                                           std::move(fallthrough_map));
         if (!uc_or)
             return uc_or.takeError();
         auto uc = std::shared_ptr<verification::Executor>(std::move(*uc_or));
