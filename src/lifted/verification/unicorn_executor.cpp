@@ -21,6 +21,7 @@ namespace lifted::verification
         verifier_state *state;
         uint64_t prev_block = 0;
         uint32_t prev_size = 0;
+        uint64_t resume_rip = 0; // set by hook_block to signal a restart address
     };
 
     // Helper to create Unicorn error messages
@@ -116,13 +117,14 @@ namespace lifted::verification
             auto it = fallthrough_edges_.find(eff);
             if (it == fallthrough_edges_.end())
                 break;
-            if (it->second >= tb_end)
-                break; // successor is outside (or at) the TB boundary
-            eff = it->second;
+        if (it->second >= tb_end)
+            break; // successor is outside (or at) the TB boundary
+        if (it->second <= eff) // guard: fallthrough must advance; stops any accidental cycle
+            break;
+        eff = it->second;
         }
         return eff;
     }
-
     void UnicornExecutor::hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
     {
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
@@ -172,7 +174,23 @@ namespace lifted::verification
 
         State state = unicorn_to_state(uc);
 
-        if (ctx->executor->external_rvas.contains(address))
+        // Compute the normalised predecessor RVA once.
+        // Used for both INDIRECT dispatch detection and the bb_entered call.
+        const uint64_t from_rva_uc = (prev < LOAD_BASE)
+            ? uint64_t(-1)
+            : ctx->executor->normalize_from(prev - LOAD_BASE, prev_tb_size);
+
+        // EXTERNAL call: block being entered is a known external callee (PLT stub, helper, …).
+        const bool is_ext = ctx->executor->ext_rvas_.contains(address - LOAD_BASE);
+
+        // INDIRECT call: the previous real BB was an indirect-call dispatcher.
+        // Because a dispatcher BB may ONLY dispatch indirect calls (it cannot mix
+        // EXTERNAL or INTERNAL targets), any block it lands on is an opaque callee.
+        const bool is_indr = !is_ext &&
+                             from_rva_uc != uint64_t(-1) &&
+                             ctx->executor->indr_dispatch_rvas_.contains(from_rva_uc);
+
+        if (is_ext || is_indr)
         {
             if (!ctx->state->context_ptr()->ext_call(ctx->state->context_ptr()->context, &state, address))
             {
@@ -180,27 +198,23 @@ namespace lifted::verification
                 return;
             }
 
-            // TODO: do we need to clear cache?
-            // TODO: what about callee cleanup functs (e.g. stdcall)?
-            // TODO: guard against jumping outside of module bounds?
-
-            // Skip by jumping to [rsp]
+            // Pop the return address that `call` pushed, restoring the stack as if
+            // the callee returned normally.  Signal the outer run_single_impl loop
+            // to restart emulation from retaddr — Unicorn must not execute the
+            // callee body (PLT stub / oracle-injected code) or it can spin forever
+            // inside a single tight-loop TB that uc_emu_stop cannot interrupt.
             uint64_t rsp;
             uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
-
             uint64_t retaddr = ctx->state->memory().read64(rsp);
-            uc_reg_write(uc, UC_X86_REG_RIP, &retaddr);
-            ctx->executor->genuine_edges.insert({address, retaddr});
-
-            // Adjust rsp to restore stack
             rsp += 8;
             uc_reg_write(uc, UC_X86_REG_RSP, &rsp);
+
+            ctx->resume_rip = retaddr;
+            uc_emu_stop(uc);
+            return;
         }
         else
         {
-            const uint64_t from_rva_uc = (prev < LOAD_BASE)
-                ? uint64_t(-1)
-                : ctx->executor->normalize_from(prev - LOAD_BASE, prev_tb_size);
             if (!ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, &state, from_rva_uc, address - LOAD_BASE))
             {
                 uc_emu_stop(uc);
@@ -437,28 +451,13 @@ namespace lifted::verification
         return tb_branch_cache[key] = {};
     }
 
-    void UnicornExecutor::hint_external_rvas(const std::unordered_set<uint64_t> &rvas)
-    {
-        // Replace rather than accumulate.  Cross-run accumulation violates the
-        // design invariant: two calls with the same run_params_t must produce
-        // identical execution.  If Unicorn's external_rvas grew from previous
-        // seeds, blocks that JIT visits as regular BBs could be classified as
-        // ext_call (different checkpoint hash) — a false CHECKPOINT_MISMATCH.
-        // Using only the current JIT run's ext_calls keeps Unicorn's classification
-        // aligned with JIT's view.  Any external function Unicorn encounters that
-        // JIT did not (different code path) will hit a PLT stub whose GOT slot
-        // contains an oracle-injected address — the LOAD_BASE guard in hook_block
-        // will stop emulation cleanly.
-        external_rvas = rvas;
-    }
-
     llvm::Expected<std::unique_ptr<UnicornExecutor>>
-    UnicornExecutor::create(std::shared_ptr<LIEF::Binary> bin, std::unordered_set<uint64_t> ext_rvas, uint64_t entry_rva, Flags flags,
+    UnicornExecutor::create(std::shared_ptr<LIEF::Binary> bin, ext_call_info_t ext_info, uint64_t entry_rva, Flags flags,
                             std::unordered_map<uint64_t, uint64_t> fallthrough_edges)
     {
         // Create executor (private constructor)
         auto executor = std::unique_ptr<UnicornExecutor>(
-            new UnicornExecutor(bin, std::move(ext_rvas), entry_rva, flags, std::move(fallthrough_edges)));
+            new UnicornExecutor(bin, std::move(ext_info), entry_rva, flags, std::move(fallthrough_edges)));
 
         // Run setup
         if (auto err = executor->setup_impl())
@@ -631,8 +630,24 @@ namespace lifted::verification
             }
         }
 
-        // Run emulation
-        err = uc_emu_start(uc_eng.get(), state.get_initial_state().gpr.rip.qword, verifier_state::FINISH_SENTINEL, 0, 0);
+        // Run emulation; restart after each ext_call that signals a resume address.
+        // hook_block sets ctx.resume_rip and calls uc_emu_stop so QEMU exits
+        // cleanly after the current TB (PLT stub) without launching the
+        // oracle-injected callee body (which may contain a tight `jmp -2` loop
+        // that uc_emu_stop cannot interrupt while inside a single TB).
+        uint64_t next_rip = state.get_initial_state().gpr.rip.qword;
+        do {
+            ctx.resume_rip = 0;
+            err = uc_emu_start(uc_eng.get(), next_rip, verifier_state::FINISH_SENTINEL, 0, 0);
+            if (err != UC_ERR_OK)
+                break;
+            if (ctx.resume_rip != 0)
+            {
+                next_rip       = ctx.resume_rip;
+                ctx.prev_block = 0; // next bb_entered is logically first
+                ctx.prev_size  = 0;
+            }
+        } while (ctx.resume_rip != 0);
 
         // Cleanup hooks
         uc_hook_del(uc_eng.get(), block_hook);

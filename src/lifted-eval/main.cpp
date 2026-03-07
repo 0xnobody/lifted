@@ -110,6 +110,11 @@ static llvm::Error lift_suite(llvm::LLVMContext &context,
             dot_file.close();
 
             system(("dot -Tsvg /tmp/eval_" + target.func_name + "_cfg.dot -o /tmp/eval_" + target.func_name + "_cfg.svg").c_str());
+
+            if (div_ptr)
+            {
+                llvm::outs() << "[DIVERGED]\n";
+            }
         }
     }
 

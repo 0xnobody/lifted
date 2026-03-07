@@ -33,10 +33,6 @@ namespace lifted::verification
 
         /// Name of this executor for display (e.g. "JIT", "Unicorn").
         virtual std::string_view name() const = 0;
-        /// Inform the executor of newly discovered external call targets from prior src runs.
-        /// Called by the pipeline before each run_single. Default no-op.
-        /// UnicornExecutor overrides to insert into its live external_rvas set.
-        virtual void hint_external_rvas(const std::unordered_set<uint64_t> &) {}
 
         /// Run a single test case.
         llvm::Expected<run_result_t> run_single(const run_params_t &run_params, const verification_params_t &verif_params, event_flags log_on_flags = event_flags::NONE)

@@ -121,7 +121,6 @@ namespace lifted::lifter
         /// restores non-volatile registers, and pops the return address.
         llvm::Expected<llvm::Function *> get_or_create_callee_stub(llvm::Module *M,
                                                                    const callee_t &callee);
-        llvm::FunctionType *resolve_callee_type(const callee_t &callee) const;
 
         // ── CFG construction (implemented in cfg.cpp) ──────────────────────
 

@@ -145,16 +145,13 @@ private:
     /// Handles the fixed directionality (src first, then tgt with src's record),
     /// NEEDS_RERUN resolution, and optional diff on FAIL_DIVERGED.
     ///
-    /// accumulated_ext_calls is updated in-place from src's ext_calls and
-    /// forwarded to tgt via hint_external_rvas before each tgt run.
     llvm::Expected<RunOutcome> execute_one(
         verification::Executor   &src,
         verification::Executor   &tgt,
         const RunConfig          &cfg,
         std::shared_ptr<LIEF::Binary> binary,
         uint64_t                  entry_rva,
-        uint64_t                  run_index,
-        std::unordered_set<uint64_t> &accumulated_ext_calls);
+        uint64_t                  run_index);
 };
 
 } // namespace lifted::pipeline

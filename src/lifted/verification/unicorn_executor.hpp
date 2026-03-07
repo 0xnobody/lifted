@@ -46,9 +46,28 @@ namespace lifted::verification
             LOG_INSTRUCTIONS = 1 << 0, // Log each instruction executed (for debugging)
         };
 
+        /// Describes the external-call topology for a lifted function.
+        /// Supplied once at construction so no per-run hints are needed.
+        ///
+        /// ext_function_rvas:        RVAs of callee entry-points reached via CALL to a
+        ///                           known external target (PLT stubs, helper functions, etc.).
+        ///                           Populated from SYNTHETIC_EXTERNAL synthetic_block entries.
+        ///
+        /// indr_dispatch_block_rvas: RVAs of the *dispatcher* basic blocks that perform
+        ///                           indirect calls (e.g. `call [rax]`). Destinations are
+        ///                           unknown ahead-of-time; hook_block detects them by
+        ///                           checking whether the previous real BB was one of these
+        ///                           dispatchers and treats the landed block as an ext call.
+        struct ext_call_info_t
+        {
+            std::unordered_set<uint64_t> ext_function_rvas;
+            std::unordered_set<uint64_t> indr_dispatch_block_rvas;
+        };
+
     private:
         std::shared_ptr<LIEF::Binary> binary;
-        std::unordered_set<uint64_t> external_rvas; // RVAs of external functions (e.g. imports) to skip
+        std::unordered_set<uint64_t> ext_rvas_;          // RVAs of known external callees
+        std::unordered_set<uint64_t> indr_dispatch_rvas_; // RVAs of indirect-call dispatcher BBs
         std::unique_ptr<uc_engine, decltype(&uc_close)> uc_eng;
         std::unique_ptr<uc_context, decltype(&uc_context_free)> clean_ctx;
         uint64_t entry_rva;
@@ -79,10 +98,11 @@ namespace lifted::verification
         /// predecessor before counting directed back-edges.
         std::unordered_map<uint64_t, uint64_t> fallthrough_edges_;
 
-        UnicornExecutor(std::shared_ptr<LIEF::Binary> bin, std::unordered_set<uint64_t> ext_rvas, uint64_t entry, Flags flags,
+        UnicornExecutor(std::shared_ptr<LIEF::Binary> bin, ext_call_info_t ext_info, uint64_t entry, Flags flags,
                         std::unordered_map<uint64_t, uint64_t> fallthrough_edges)
             : binary(std::move(bin)),
-              external_rvas(std::move(ext_rvas)),
+              ext_rvas_(std::move(ext_info.ext_function_rvas)),
+              indr_dispatch_rvas_(std::move(ext_info.indr_dispatch_block_rvas)),
               uc_eng(nullptr, uc_close),
               clean_ctx(nullptr, uc_context_free),
               entry_rva(entry),
@@ -98,10 +118,9 @@ namespace lifted::verification
     public:
         std::string_view name() const override { return "Unicorn"; }
         static llvm::Expected<std::unique_ptr<UnicornExecutor>>
-        create(std::shared_ptr<LIEF::Binary> bin, std::unordered_set<uint64_t> ext_rvas, uint64_t entry_rva, Flags flags = Flags::NONE,
+        create(std::shared_ptr<LIEF::Binary> bin, ext_call_info_t ext_info, uint64_t entry_rva,
+               Flags flags = Flags::NONE,
                std::unordered_map<uint64_t, uint64_t> fallthrough_edges = {});
-
-        void hint_external_rvas(const std::unordered_set<uint64_t> &rvas) override;
 
     private:
         /// Forward-scan the translation block [pc, pc+size) to determine whether its last

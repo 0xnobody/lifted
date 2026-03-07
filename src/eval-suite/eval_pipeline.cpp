@@ -133,7 +133,33 @@ namespace lifted::eval
             return jit_or.takeError();
         auto jit = std::shared_ptr<verification::Executor>(std::move(*jit_or));
 
-        auto uc_or = verification::UnicornExecutor::create(binary, {}, entry_rva,
+        // Build ext_call_info from the lifter result so UnicornExecutor knows ahead-of-time
+        // which blocks are external callee entry-points and which are indirect-call dispatchers.
+        verification::UnicornExecutor::ext_call_info_t ext_info;
+        {
+            // Map bb_id_t → rva for real blocks (needed to resolve SYNTHETIC_INDIRECT sources).
+            std::unordered_map<lifter::bb_id_t, uint64_t> bb_id_to_rva;
+            for (const auto &bb : lift_result->basic_blocks)
+                if (bb.rva_range.has_value())
+                    bb_id_to_rva[bb.id] = bb.rva_range->start();
+
+            // External callees: dest_addr is the callee RVA.
+            for (const auto &[id, synth] : lift_result->synthetic_blocks)
+                if (synth.type == lifter::synthetic_block_info_t::Type::EXTERNAL &&
+                    synth.dest_addr.has_value())
+                    ext_info.ext_function_rvas.insert(*synth.dest_addr);
+
+            // Indirect dispatchers: source block of every SYNTHETIC_INDIRECT edge.
+            for (const auto &edge : lift_result->edges)
+                if (edge.type == lifter::edge_t::Type::SYNTHETIC_INDIRECT)
+                {
+                    auto it = bb_id_to_rva.find(edge.source);
+                    if (it != bb_id_to_rva.end())
+                        ext_info.indr_dispatch_block_rvas.insert(it->second);
+                }
+        }
+
+        auto uc_or = verification::UnicornExecutor::create(binary, std::move(ext_info), entry_rva,
                                                            verification::UnicornExecutor::Flags::NONE,
                                                            std::move(fallthrough_map));
         if (!uc_or)

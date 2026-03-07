@@ -174,8 +174,7 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
     const RunConfig               &cfg,
     std::shared_ptr<LIEF::Binary>  binary,
     uint64_t                       entry_rva,
-    uint64_t                       run_index,
-    std::unordered_set<uint64_t>  &accumulated_ext_calls)
+    uint64_t                       run_index)
 {
     using Clock = std::chrono::steady_clock;
 
@@ -190,11 +189,6 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
     if (!src_result)
         return src_result.takeError();
 
-    // ── update accumulated ext calls and inform tgt ───────────────────────────
-    for (uint64_t addr : src_result->ext_calls)
-        accumulated_ext_calls.insert(addr);
-    tgt.hint_external_rvas(accumulated_ext_calls);
-
     // ── tgt run (prev_record = src's checkpoint record) ─────────────────────
     auto tgt_verif  = cfg.to_verif_params(&src_result->checkpoint_record);
     auto t_tgt0     = Clock::now();
@@ -202,10 +196,6 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
     std::chrono::nanoseconds tgt_wall_ns = Clock::now() - t_tgt0;
     if (!tgt_result)
         return tgt_result.takeError();
-
-    // Feed tgt's discovered ext calls back so future runs have them in external_rvas.
-    for (uint64_t addr : tgt_result->ext_calls)
-        accumulated_ext_calls.insert(addr);
 
     // ── compare ─────────────────────────────────────────────────────────────────────────
     auto cmp = verification::compare_runs(*src_result, *tgt_result, spec_.compare_cfg);
@@ -229,9 +219,6 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
             return src_result2.takeError();
 
         *src_result = std::move(*src_result2);
-        // Rerun may have taken a different path; persist any newly-seen ext calls.
-        for (uint64_t addr : src_result->ext_calls)
-            accumulated_ext_calls.insert(addr);
         cmp = verification::compare_runs(*src_result, *tgt_result, spec_.compare_cfg);
         was_rerun_resolved = (cmp.status == verification::comparison_status::PASS);
     }
@@ -271,7 +258,6 @@ llvm::Expected<PipelineReport> Pipeline::run(
     auto &tgt = *tgt_executor_;
 
     // ── Shared state across all stages ────────────────────────────────────────
-    std::unordered_set<uint64_t> accumulated_ext_calls;
     Corpus             current_corpus;
 
     PipelineReport report;
@@ -294,7 +280,7 @@ llvm::Expected<PipelineReport> Pipeline::run(
             const RunConfig &cfg = configs[run_idx];
 
             auto outcome_exp = execute_one(
-                src, tgt, cfg, binary, entry_rva, run_idx, accumulated_ext_calls);
+                src, tgt, cfg, binary, entry_rva, run_idx);
 
             if (!outcome_exp)
             {
