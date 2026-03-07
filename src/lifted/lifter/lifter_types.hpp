@@ -87,10 +87,13 @@ namespace lifted::lifter
     {
         enum class Type
         {
-            INTERNAL, ///< Part of the function – continue lifting.
-            EXTERNAL, ///< External function – emit an ext call stub.
+            INTERNAL,          ///< Part of the function – continue lifting.
+            EXTERNAL,          ///< External function – emit an ext call stub.
+            RETURN_TO_CALLER,  ///< Block exits by returning to its caller (e.g. a `ret`
+                               ///  instruction).  No dest address; signals that
+                               ///  RETURN_CONTINUATION edges should be the dispatch
+                               ///  targets, with a natural function return as the default.
         };
-
         Type type;
         uint64_t dest;                            ///< Address (RVA for INTERNAL, VA for EXTERNAL).
         std::optional<callee_t> callee_info = {}; ///< Valid for EXTERNAL only.
@@ -138,11 +141,14 @@ namespace lifted::lifter
 
         enum class Type
         {
-            CONTROL_FLOW,       ///< Normal jumps/branches from resolve_targets.
-            FALLTHROUGH,        ///< Sequential flow created during block splitting.
-            SYNTHETIC_EXTERNAL, ///< Real block → external call dispatcher.
-            SYNTHETIC_INDIRECT, ///< Real block → indirect call dispatcher.
-            SYNTHETIC_RETURN,   ///< Synthetic dispatcher → continuation (return addr block).
+            CONTROL_FLOW,        ///< Normal jumps/branches from resolve_targets.
+            FALLTHROUGH,         ///< Sequential flow created during block splitting.
+            SYNTHETIC_EXTERNAL,  ///< Real block → external call dispatcher.
+            SYNTHETIC_INDIRECT,  ///< Real block → indirect call dispatcher.
+            SYNTHETIC_RETURN,    ///< Synthetic dispatcher → continuation (return addr block).
+            RETURN_CONTINUATION, ///< ret-block → return site (dynamic via stack).  Added when
+                                 ///  both the RETURN_TO_CALLER block and the return continuation
+                                 ///  site are known.  Carries the full unwind path in the edge set.
         } type;
 
         edge_t(bb_id_t src, bb_id_t dst, Type t = Type::CONTROL_FLOW)

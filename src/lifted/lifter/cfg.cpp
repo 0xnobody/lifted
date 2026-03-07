@@ -123,12 +123,17 @@ namespace lifted::lifter
         for (bb_id_t id : blocks)
             entry_switch->addCase(B.getInt64(id), block_map.at(id));
 
-        // Dead-end block.
+        // Dead-end block: unreachable in backward-slice CFGs, natural return in
+        // forward CFGs.  return_bb is always a natural return — used as the
+        // switch default for RETURN_TO_CALLER blocks regardless of slice mode.
+        auto *return_bb = llvm::BasicBlock::Create(Ctx, "return_bb", wrapper);
         B.SetInsertPoint(dead_end);
         if (dead_end_unreachable)
             B.CreateUnreachable();
         else
             B.CreateRet(B.CreateLoad(mem_ptr_ty, mem_var));
+        B.SetInsertPoint(return_bb);
+        B.CreateRet(B.CreateLoad(mem_ptr_ty, mem_var));
 
         // Stitching loop: fill each BB's basic block.
         for (bb_id_t id : blocks)
@@ -233,17 +238,13 @@ namespace lifted::lifter
 
             if (successors.empty())
             {
-                // No statically-known successors — typical for `ret`-terminated
-                // blocks whose target is the dynamic return address in RIP.
-                // Instead of bailing out, dispatch over every block in the
-                // stitched set: if next_rva matches a known block (e.g. a
-                // return-continuation site reached by self-recursion unwind),
-                // land there; otherwise fall to dead_end which yields a
-                // NATURAL_EXIT.
-                auto *fallback_sw = B.CreateSwitch(next_rva, dead_end,
-                                                   static_cast<unsigned>(blocks.size()));
-                for (bb_id_t any_id : blocks)
-                    fallback_sw->addCase(B.getInt64(any_id), block_map.at(any_id));
+                // A RETURN_TO_CALLER block with no known continuation sites yet
+                // still exits normally.  All other empty-successor blocks go via
+                // dead_end (preserving unreachable semantics for backward slices).
+                if (ctx.return_to_caller_blocks.count(id))
+                    B.CreateRet(B.CreateLoad(mem_ptr_ty, mem_var));
+                else
+                    B.CreateBr(dead_end);
                 continue;
             }
 
@@ -260,9 +261,14 @@ namespace lifted::lifter
                 }
             }
 
+            // RETURN_TO_CALLER blocks use return_bb as the default so that
+            // a ret to an unmapped address produces a natural NATURAL_EXIT.
+            auto *natural_default = ctx.return_to_caller_blocks.count(id)
+                                        ? return_bb
+                                        : dead_end;
             auto *default_bb = indirect_default.has_value()
                                    ? block_map.at(*indirect_default)
-                                   : dead_end;
+                                   : natural_default;
             auto *sw = B.CreateSwitch(next_rva, default_bb, successors.size());
 
             for (bb_id_t succ : successors)
@@ -361,7 +367,15 @@ namespace lifted::lifter
 
         std::map<bb_id_t, std::vector<bb_id_t>> predecessors;
         for (const auto &e : ctx.edges)
+        {
+            // RETURN_CONTINUATION edges express forward dispatch reachability
+            // (ret-block → return site).  They must not pollute the backward
+            // slice: a return site's backward slice should only include real
+            // control-flow predecessors, not every block that can ret to it.
+            if (e.type == edge_t::Type::RETURN_CONTINUATION)
+                continue;
             predecessors[e.dest].push_back(e.source);
+        }
 
         for (size_t head = 0; head < worklist.size(); ++head)
         {
@@ -421,12 +435,8 @@ namespace lifted::lifter
             }
         }
 
-        // Return-continuation blocks (return sites of intra-function calls) are
-        // dynamically reachable via `ret` but have no static incoming edge.
-        // Add any that were actually lifted so the dispatcher can resolve them.
-        for (bb_id_t rcs : ctx.return_continuation_sites)
-            if (explored_.count(rcs))
-                reachable.insert(rcs);
+        // RETURN_CONTINUATION edges now carry return-site reachability — no
+        // manual injection needed; the BFS above already follows them.
 
         // Populate optional output sets.
         if (out_blocks)

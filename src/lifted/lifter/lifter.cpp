@@ -671,6 +671,18 @@ namespace lifted::lifter
                     ctx.worklist.push_back(disp_id);
                     break;
                 }
+                case resolved_target_t::Type::RETURN_TO_CALLER:
+                {
+                    // Record this block as a ret-terminated caller-returning block.
+                    ctx.return_to_caller_blocks.insert(curr_id);
+                    // Add RETURN_CONTINUATION edges to every continuation site
+                    // that has already been discovered (ordering-safe).
+                    for (bb_id_t rcs : ctx.return_continuation_sites)
+                        if (!ctx.has_edge_between(curr_id, rcs))
+                            ctx.edges.insert(
+                                edge_t{curr_id, rcs, edge_t::Type::RETURN_CONTINUATION});
+                    break;
+                }
                 }
             }
 
@@ -691,14 +703,21 @@ namespace lifted::lifter
             }
 
             // The callback signals the return site of a call-like block via
-            // return_continuation.  Enqueue it so intra-function returns
-            // (self-recursion, obfuscated call emulation) land on lifted code.
+            // return_continuation.  Register it and cross-reference with every
+            // already-known RETURN_TO_CALLER block (ordering-safe).
             if (targets_result.return_continuation.has_value())
             {
                 bb_id_t return_site = *targets_result.return_continuation;
-                ctx.return_continuation_sites.insert(return_site);
-                if (!explored_.count(return_site))
-                    ctx.worklist.push_back(return_site);
+                if (!ctx.return_continuation_sites.count(return_site))
+                {
+                    ctx.return_continuation_sites.insert(return_site);
+                    for (bb_id_t rtcb : ctx.return_to_caller_blocks)
+                        if (!ctx.has_edge_between(rtcb, return_site))
+                            ctx.edges.insert(
+                                edge_t{rtcb, return_site, edge_t::Type::RETURN_CONTINUATION});
+                    if (!explored_.count(return_site))
+                        ctx.worklist.push_back(return_site);
+                }
             }
         } // end main loop
 

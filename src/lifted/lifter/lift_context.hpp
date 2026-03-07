@@ -38,12 +38,16 @@ struct lift_context_t
     std::map<bb_id_t, bb_id_t> indirect_synthetic_index;
 
 
-    // ── Return-site tracking (for self-recursive / intra-function calls) ──────
+    // ── Return-edge cross-reference tables ──────────────────────────────────
+
+    /// Blocks that resolved to RETURN_TO_CALLER (e.g. `ret`-terminated).
+    /// When a new return_continuation_site is discovered, RETURN_CONTINUATION
+    /// edges are retroactively added from every block in this set.
+    std::set<bb_id_t> return_to_caller_blocks;
 
     /// Return sites of intra-function call instructions (e.g. self-recursion).
-    /// `resolve_targets` returns the callee as INTERNAL but never records the
-    /// instruction immediately after the `call` — these are dynamically reached
-    /// via `ret` and would otherwise be invisible to `build_forward_cfg`.
+    /// When a RETURN_TO_CALLER block is first processed, RETURN_CONTINUATION
+    /// edges are added from it to every site already in this set.
     std::set<bb_id_t> return_continuation_sites;
     // ── Entry point (for resolve_context_t) ──────────────────────────────
 
@@ -75,7 +79,11 @@ struct lift_context_t
                 continue;
             reprove.insert(curr);
             for (const auto &e : edges)
-                if (e.source == curr && !visited.count(e.dest))
+                // RETURN_CONTINUATION edges connect ret-blocks to return sites;
+                // the return sites' backward slices are unaffected by who can
+                // ret to them, so skip them here to avoid pointless reproving.
+                if (e.source == curr && !visited.count(e.dest) &&
+                    e.type != edge_t::Type::RETURN_CONTINUATION)
                     stack.push_back(e.dest);
         }
     }

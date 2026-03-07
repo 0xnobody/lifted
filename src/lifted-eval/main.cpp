@@ -54,7 +54,7 @@ static llvm::Error lift_suite(llvm::LLVMContext &context,
 
         for (const auto &target : targets)
         {
-            std::ofstream report_file("/tmp/eval_" + target.func_name + "_cfg.txt");
+            std::ofstream report_file("/tmp/eval_" + target.func_name + "_report.txt");
 
             llvm::outs() << "  Lifting " << entry.so_path.filename().string()
                          << "::" << target.func_name

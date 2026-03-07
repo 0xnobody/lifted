@@ -144,6 +144,18 @@ namespace lifted::lifter
                 static_cast<bb_id_t>(ctx.bb.rva_range->end());
         }
 
+        // For `ret`-terminated blocks, signal that this block exits by
+        // returning to its caller.  The lifter will add RETURN_CONTINUATION
+        // edges from this block to every known return site, and use a normal
+        // function return (not dead_end) as the switch default in stitch_cfg.
+        if (ctx.bb.terminating_category.has_value() &&
+            *ctx.bb.terminating_category ==
+                remill::Instruction::kCategoryFunctionReturn)
+        {
+            result.targets.push_back(
+                {resolved_target_t::Type::RETURN_TO_CALLER, /*dest=*/0});
+        }
+
         return result;
     }
 
