@@ -257,50 +257,48 @@ namespace lifted::verification
                              << llvm::format_hex(rva, 18) << " (step: " << bb_step << ")\n";
             }
 
-            // Only count directed edges where the destination was first encountered
-            // *before* the source in the current execution trace — these are the
-            // genuine dynamic back-edges that close cycles (loops).
+            // An edge (from, to) is a back-edge (loop iteration) when the destination
+            // was already visited before this traversal — the "revisit" criterion.
             //
-            // Why this matters:
-            //   Dispatcher: A->B->C->D->E->A->B->C->F->G->A->B->C->H->I->...
-            //     Edge A->B is traversed 3 times, BUT first_seen[B] > first_seen[A],
-            //     so it is a forward edge every time and is NOT counted.
-            //     Back-edges E->A, G->A, I->A are all distinct; none accumulates.
-            //   True loop: A->B->C->A->B->C->A->B->C
-            //     Edge C->A: first_seen[A]=0 < first_seen[C]=2 → back-edge.
-            //     Counted on every iteration; fires after bb_loop_limit iterations.
+            // Why first_seen ordering was wrong for while-loops:
+            //   A while-loop compiled with jump-to-condition layout looks like:
+            //     setup → cond (initial jmp)     first_seen[cond] = T
+            //     cond  → body (first entry)     first_seen[body] = T+1
+            //     body  → cond (fallthrough, skipped by JIT)
+            //     cond  → body (loop back-edge!) first_seen[body]=T+1 > first_seen[cond]=T
+            //   The ordering test (first_seen[to] < first_seen[from]) is FALSE for
+            //   cond→body even though it is the genuine loop back-edge.  Neither JIT
+            //   nor Unicorn fires LOOP_LIMIT: the function runs forever.
+            //
+            // Revisit criterion:
+            //   - First traversal of any edge: destination not yet in bb_first_seen
+            //     → not counted (first entry to that block, not a loop iteration).
+            //   - Second+ traversal: destination already seen → counted as back-edge.
+            //
+            // Handles correctly:
+            //   While-loops (jump-to-condition): cond→body counted from its second
+            //     traversal onward, regardless of which block was seen first.     ✓
+            //   Do-while / post-tested loops: body→cond counted from 2nd traversal. ✓
+            //   Self-loops (X→X): X in bb_first_seen after first entry → counted.  ✓
+            //   Multi-block loops A→B→C→A: all edges accumulate together per
+            //     iteration (first-pass setup traversal excluded).               ✓
+            //
+            // Forward edges in dispatchers or shared prefixes are also counted on
+            // their second+ traversal.  Both JIT and Unicorn count them equally
+            // (no divergence), and the loop limit still bounds execution.
+            // The old ordering filter avoided this case but silently missed
+            // while-loop back-edges, causing unbounded execution.
             //
             // UnicornExecutor normalises from_rva via FALLTHROUGH edges
             // (UnicornExecutor::normalize_from) so both executors report the same
-            // canonical predecessor address.  This is necessary because QEMU merges
-            // adjacent non-branching blocks into a single translation block; the TB
-            // start address is then reported as from_rva, which differs from the JIT's
-            // last_bb_rva (the actual last block before the branch).
-            //
-            // This dependency on lifter-produced FALLTHROUGH edges is structural
-            // (block boundary detection), not semantic (IR translation) — the thing
-            // we are actually verifying.  A bug in FALLTHROUGH identification would
-            // produce more divergences (false positives), not fewer, because the state
-            // comparison at checkpoints detects semantic errors independently.  The
-            // only lifter-free alternative — destination-only loop counting — fires
-            // spuriously for dispatcher-shaped CFGs where many distinct arm→header
-            // back-edges share one destination counter.
+            // canonical predecessor.  QEMU merges adjacent non-branching blocks into
+            // a single translation block; the TB start is then the raw from_rva,
+            // which diverges from the JIT's last_bb_rva without this normalisation.
+            // This is a structural (block-boundary) dependency on lifted metadata,
+            // not a semantic one — verifying IR correctness remains independent.
             if (from_rva != uint64_t(-1))
             {
-                auto to_it   = bb_first_seen.find(rva);
-                auto from_it = bb_first_seen.find(from_rva);
-                // Two conditions constitute a genuine dynamic back-edge:
-                //   1. Self-edge (from == to): always a loop iteration — the block
-                //      immediately branches back to its own RVA. to_it->second ==
-                //      from_it->second (same slot) so the ordering test below would
-                //      produce false; the explicit check here handles it.
-                //   2. dest was first seen before src: dest is a loop header that
-                //      execution visited before reaching the current src block.
-                const bool is_back_edge =
-                    (from_rva == rva) ||
-                    (to_it   != bb_first_seen.end() &&
-                     from_it != bb_first_seen.end() &&
-                     to_it->second < from_it->second);
+                const bool is_back_edge = (bb_first_seen.count(rva) > 0);
                 if (is_back_edge)
                 {
                     if (++back_edge_count[{from_rva, rva}] >= bb_loop_limit)

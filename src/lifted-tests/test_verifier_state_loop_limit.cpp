@@ -3,22 +3,23 @@
 // Unit tests for verifier_state's dynamic back-edge loop-limit logic.
 //
 // The logic under test (in on_bb_entered):
-//   An edge (from, to) is a *dynamic back-edge* iff:
-//     a) from == to  (self-edge — always a loop iteration), OR
-//     b) first_seen[to] < first_seen[from]  (to was first encountered before from)
+//   An edge (from, to) is a *back-edge* (loop iteration) when the destination
+//   block has already been visited: bb_first_seen.count(to) > 0.
 //   Back-edge traversals are counted per directed edge {from, to}.
 //   When any counter reaches bb_loop_limit, LOOP_LIMIT is signalled.
 //
-// Key semantic guarantee being tested:
+// Key semantic guarantees being tested:
 //   - True loops (A->B->C->A repeated) correctly accumulate and fire.
-//   - Dispatchers (A->B->C->D->E->A->B->C->F->G->...) do NOT accumulate:
-//     the shared prefix A->B is a forward edge (first_seen[B] > first_seen[A]);
-//     back-edges to A are all distinct and never accumulate against each other.
-//   - Control-flow-flattening patterns (dispatcher D, arms back to D) are
-//     correctly counted: each arm's back-edge to D accumulates on its own
-//     counter, so loops in a flattened function are bounded per arm.
-//   - Self-loops (X->X) are correctly detected even though
-//     first_seen[X] == first_seen[X] (the ordering test alone would miss them).
+//   - While-loops (jump-to-condition, condition seen before body): the back-edge
+//     cond->body is correctly counted from its second traversal onward, even
+//     though first_seen[cond] < first_seen[body].
+//   - Dispatcher arms (B->A, C->A, D->A) each have their own counter; with
+//     limit=N, none fires unless that specific arm is repeated N times.
+//   - Shared-prefix edges (A->B when B already seen) are counted on 2nd+
+//     traversal.  Both JIT and Unicorn count them equally so no divergence.
+//   - Control-flow-flattening (dispatcher D, arms back to D) correctly bounded
+//     per-arm; D->arm edges also counted on 2nd+ traversal.
+//   - Self-loops (X->X) correctly detected: X in bb_first_seen after first entry.
 
 #include "test_framework.hpp"
 #include "verification/verifier_state.hpp"
@@ -188,8 +189,8 @@ TEST(loop_limit_three_block_loop_fires_at_limit)
     }
 }
 
-// A->B->A->B->... (two-block loop).  B->A is the back-edge (first_seen[A]=0
-// < first_seen[B]=1).  A->B is always forward and must not be counted.
+// A->B->A->B->... (two-block loop).  B->A is the back-edge.
+// A->B is counted on second+ traversal (B already in bb_first_seen).
 TEST(loop_limit_two_block_loop_only_back_edge_counted)
 {
     BackEdgeHarness h(/*limit=*/5);
@@ -198,10 +199,9 @@ TEST(loop_limit_two_block_loop_only_back_edge_counted)
     for (int i = 0; i < 4; ++i)
     {
         h.enter(B, A); // back-edge {B,A}
-        h.enter(A, B); // forward  {A,B}
+        h.enter(A, B); // 2nd+ traversal of A->B: B seen -> {A,B}++
     }
     CHECK_EQ(h.edge_count(B, A), static_cast<uint64_t>(4));
-    CHECK_EQ(h.edge_count(A, B), static_cast<uint64_t>(0)); // never counted
     CHECK(h.has_natural_exit());
     // Fire on 5th.
     CHECK(!h.enter(B, A));
@@ -210,8 +210,8 @@ TEST(loop_limit_two_block_loop_only_back_edge_counted)
 
 // ── Group 3: Self-loops ───────────────────────────────────────────────────────
 
-// X->X->X...  from_rva == rva; the ordering test (to < from) is vacuously
-// false (equal steps).  The self-edge special case must handle this.
+// X->X->X...  X is in bb_first_seen after the first entry; the revisit
+// criterion fires immediately on the second (and each subsequent) traversal.
 TEST(loop_limit_self_loop_fires)
 {
     BackEdgeHarness h(/*limit=*/4);
@@ -260,23 +260,23 @@ TEST(loop_limit_single_block_dispatcher_distinct_back_edges)
     CHECK_EQ(h.edge_count(D, A), static_cast<uint64_t>(1));
 }
 
-// The shared suffix A->B in a single-block dispatcher is always a
-// forward edge (first_seen[B] > first_seen[A]) and must never be counted.
+// The shared suffix A->B in a single-block dispatcher is counted on second
+// traversal (B already in bb_first_seen), but the count stays well below limit.
 //
 // Trace: -1->A->B->A->C->A->D->A->B (second time) -> ...
 TEST(loop_limit_dispatcher_shared_exit_is_forward)
 {
     BackEdgeHarness h(/*limit=*/10);
     h.enter(ENTRY, A);
-    h.enter(A, B); // first_seen[B]=1 > first_seen[A]=0 — forward
+    h.enter(A, B); // first_seen[B]=1 — not counted (B first-seen here)
     h.enter(B, A); // {B,A}=1
     h.enter(A, C);
     h.enter(C, A); // {C,A}=1
     h.enter(A, D);
     h.enter(D, A); // {D,A}=1
-    // Second dispatch to B — still forward (first_seen[A]=0 < first_seen[B]=1).
+    // Second dispatch to B: B is in bb_first_seen -> {A,B}=1 (counted, but < limit=10).
     h.enter(A, B);
-    CHECK_EQ(h.edge_count(A, B), static_cast<uint64_t>(0)); // never counted
+    CHECK_EQ(h.edge_count(A, B), static_cast<uint64_t>(1)); // counted on 2nd traversal
     CHECK(h.has_natural_exit());
 }
 
@@ -298,24 +298,25 @@ TEST(loop_limit_multi_block_dispatcher_not_a_loop)
     // Back to A via E
     h.enter(E, A); // {E,A}=1
     // Shared prefix again
-    h.enter(A, B); // forward — first_seen[B]=1 > first_seen[A]=0
-    h.enter(B, C); // forward — first_seen[C]=2 > first_seen[B]=1
+    h.enter(A, B); // 2nd traversal of A->B: B seen -> {A,B}=1
+    h.enter(B, C); // 2nd traversal of B->C: C seen -> {B,C}=1
     h.enter(C, F);
     h.enter(F, G);
     // Back to A via G
     h.enter(G, A); // {G,A}=1
     // Shared prefix again
-    h.enter(A, B); // forward
-    h.enter(B, C); // forward
+    h.enter(A, B); // 3rd traversal: {A,B}=2
+    h.enter(B, C); // 3rd traversal: {B,C}=2
     h.enter(C, H);
     h.enter(H, I); // natural exit
     // No single edge reached limit=3.
     CHECK(h.has_natural_exit());
     CHECK_EQ(h.edge_count(E, A), static_cast<uint64_t>(1));
     CHECK_EQ(h.edge_count(G, A), static_cast<uint64_t>(1));
-    // Shared prefix A->B and B->C are forward; never counted.
-    CHECK_EQ(h.edge_count(A, B), static_cast<uint64_t>(0));
-    CHECK_EQ(h.edge_count(B, C), static_cast<uint64_t>(0));
+    // Shared prefix A->B and B->C counted on 2nd+ traversal (2 times each).
+    // Both are still below limit=3, so natural exit holds.
+    CHECK_EQ(h.edge_count(A, B), static_cast<uint64_t>(2));
+    CHECK_EQ(h.edge_count(B, C), static_cast<uint64_t>(2));
 }
 
 // The *same* multi-block pattern repeated N times IS a loop.
@@ -385,8 +386,8 @@ TEST(loop_limit_cfg_flattening_arms_counted_separately)
     h.enter(D, C); // forward
     h.enter(C, D); // {C,D}=1
 
-    // Iteration 2: all D->arm are forward; arm->D back-edges reach count=2.
-    h.enter(D, A); // forward (to=A, from=D; first_seen[A]=1 > first_seen[D]=0 → NOT a back-edge)
+    // Iteration 2: D->arm edges are now counted (arms already in bb_first_seen).
+    h.enter(D, A); // A seen -> {D,A}=1
     CHECK(h.enter(A, D)); // {A,D}=2 — still below limit=3
     h.enter(D, B);
     CHECK(h.enter(B, D)); // {B,D}=2
@@ -402,10 +403,12 @@ TEST(loop_limit_cfg_flattening_arms_counted_separately)
     CHECK_EQ(h.edge_count(A, D), static_cast<uint64_t>(3));
     CHECK_EQ(h.edge_count(B, D), static_cast<uint64_t>(2)); // never reached 3
     CHECK_EQ(h.edge_count(C, D), static_cast<uint64_t>(2));
-    // D->arm edges are forward; never counted.
-    CHECK_EQ(h.edge_count(D, A), static_cast<uint64_t>(0));
-    CHECK_EQ(h.edge_count(D, B), static_cast<uint64_t>(0));
-    CHECK_EQ(h.edge_count(D, C), static_cast<uint64_t>(0));
+    // D->arm edges counted on 2nd+ traversal (arms already seen).
+    // D->A traversed in iters 2 and 3 (before A->D fires) = 2.
+    // D->B and D->C traversed in iter 2 only (iter 3 stopped at A->D) = 1 each.
+    CHECK_EQ(h.edge_count(D, A), static_cast<uint64_t>(2));
+    CHECK_EQ(h.edge_count(D, B), static_cast<uint64_t>(1));
+    CHECK_EQ(h.edge_count(D, C), static_cast<uint64_t>(1));
 }
 
 // A longer CFF sequence stays below limit when the loop count is within bounds.
@@ -505,7 +508,7 @@ TEST(loop_limit_inner_loop_fires_first)
 // Reproduces the topology that originally caused the tum-suite divergence:
 // a small loop body (0x144b) followed by a condition block (0x149b) that
 // either loops back or exits.  The loop back-edge is 0x149b->0x144b.
-// Forward edges inside the loop body must not accumulate.
+// With the revisit criterion, edges inside the loop body (body->post, post->cond)
 TEST(loop_limit_rand_string_topology)
 {
     // RVAs matching the real binary (symbolic names for clarity).
@@ -525,7 +528,7 @@ TEST(loop_limit_rand_string_topology)
     h.enter(body, post);  // first_seen[post]=2 — forward
     h.enter(post, cond);  // first_seen[cond]=3 — forward
 
-    // Loop: cond->body is the back-edge (first_seen[body]=1 < first_seen[cond]=3).
+    // Loop: cond->body is the back-edge (body already in bb_first_seen).
     for (uint64_t i = 0; i < limit - 1; ++i)
     {
         CHECK(h.enter(cond, body)); // back-edge {cond,body} — must not fire yet
@@ -537,9 +540,48 @@ TEST(loop_limit_rand_string_topology)
     CHECK(!h.enter(cond, body));
     CHECK(h.has_loop_limit());
 
-    // Forward edges inside the loop must not have been counted.
-    CHECK_EQ(h.edge_count(body, post), static_cast<uint64_t>(0));
-    CHECK_EQ(h.edge_count(post, cond), static_cast<uint64_t>(0));
+    // Forward edges inside the loop are now counted on second+ traversal
+    // (body and cond are in bb_first_seen); consistent across JIT/Unicorn.
+    CHECK_EQ(h.edge_count(body, post), limit - 1);
+    CHECK_EQ(h.edge_count(post, cond), limit - 1);
+}
+
+// ── Group 9b: While-loop / jump-to-condition ────────────────────────────────
+
+// A while-loop compiled with the jump-to-condition idiom visits the condition
+// block before the loop body (via the initial unconditional jmp).  This means
+// first_seen[cond] < first_seen[body] — the OPPOSITE of a do-while layout.
+// The back-edge is cond->body; the old ordering filter rejected it (since
+// first_seen[body] > first_seen[cond]), causing neither JIT nor Unicorn to fire.
+// The revisit criterion counts any edge to a previously-seen destination,
+// so cond->body is correctly counted from its second traversal onward.
+//
+// Modelled as JIT sees it (body->cond is a fallthrough, never passed to
+// on_bb_entered; only cond->body fires on each loop iteration).
+TEST(loop_limit_while_loop_jump_to_condition)
+{
+    constexpr uint64_t cond = 0xC000;
+    constexpr uint64_t body = 0xB000;
+
+    const uint64_t limit = 10;
+    BackEdgeHarness h(limit);
+
+    // Initial jmp-to-condition: cond visited BEFORE body.
+    h.enter(ENTRY, cond);  // cond seen; from=ENTRY (-1) => not counted
+
+    // First loop iteration: cond->body (body not yet seen -> not counted).
+    CHECK(h.enter(cond, body));  // body first-seen here; not a back-edge yet.
+    // body->cond is a fallthrough in JIT — never passed to on_bb_entered.
+
+    // Subsequent iterations: cond->body now counts (body IS in first_seen).
+    for (uint64_t i = 0; i < limit - 1; ++i)
+        CHECK(h.enter(cond, body));  // back-edge; count++
+
+    CHECK_EQ(h.edge_count(cond, body), limit - 1);
+    // limit-th traversal fires.
+    CHECK(!h.enter(cond, body));
+    CHECK(h.has_loop_limit());
+    CHECK_EQ(h.edge_count(cond, body), limit);
 }
 
 // ── Group 10: QEMU TB-merging regression ─────────────────────────────────────

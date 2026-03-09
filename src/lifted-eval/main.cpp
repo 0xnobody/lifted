@@ -54,7 +54,9 @@ static llvm::Error lift_suite(llvm::LLVMContext &context,
 
         for (const auto &target : targets)
         {
-            std::ofstream report_file("/tmp/eval_" + target.func_name + "_report.txt");
+            std::string eval_name = entry.so_path.filename().string() + "." + target.func_name;
+
+            std::ofstream report_file("/tmp/eval_" + eval_name + "_report.txt");
 
             llvm::outs() << "  Lifting " << entry.so_path.filename().string()
                          << "::" << target.func_name
@@ -105,11 +107,11 @@ static llvm::Error lift_suite(llvm::LLVMContext &context,
 
             auto dot_output = visualization::overlay_to_dot(*result->cfg, od);
 
-            std::ofstream dot_file("/tmp/eval_" + target.func_name + "_cfg.dot");
+            std::ofstream dot_file("/tmp/eval_" + eval_name + "_cfg.dot");
             dot_file << dot_output;
             dot_file.close();
 
-            system(("dot -Tsvg /tmp/eval_" + target.func_name + "_cfg.dot -o /tmp/eval_" + target.func_name + "_cfg.svg").c_str());
+            system(("dot -Tsvg /tmp/eval_" + eval_name + "_cfg.dot -o /tmp/eval_" + eval_name + "_cfg.svg").c_str());
 
             if (div_ptr)
             {
