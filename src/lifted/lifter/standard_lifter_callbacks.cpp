@@ -2,6 +2,7 @@
 #include "lifter_utils.hpp"
 
 #include "../abi/calling_convention.hpp"
+#include "../binary_context.hpp"
 #include "../opt.hpp"
 #include "../utils.hpp"
 #include "../abi/systemv_x64.hpp"
@@ -21,18 +22,14 @@ namespace lifted::lifter
     {
         standard_lifter_config_t config;
 
-        config.binary = &binary;
-
-        std::set<llvm::AddressRange> got_table_rva_ranges;
         if (auto got_range = utils::get_section_bounds(binary, ".got"))
             config.got_table_rva_ranges.insert(*got_range);
 
-        std::set<llvm::AddressRange> ext_func_rva_ranges;
         if (auto plt_range = utils::get_section_bounds(binary, ".plt.sec"))
             config.ext_func_rva_ranges.insert(*plt_range);
 
         config.default_cc = &abi::SystemVx64CC::get();
-        config.artifact_dir = artifact_dir;
+        config.artifact_dir = std::move(artifact_dir);
 
         return config;
     }
@@ -45,10 +42,10 @@ namespace lifted::lifter
     }
 
     const abi::CallingConvention *
-    StandardLifterCallbacks::resolve_cc(std::optional<callee_t> callee) const
+    StandardLifterCallbacks::resolve_cc(const lifted::fnc_annotation_t *ann) const
     {
-        if (callee && callee->cc)
-            return callee->cc;
+        if (ann && ann->cc)
+            return ann->cc;
         return config_.default_cc;
     }
 
@@ -80,9 +77,7 @@ namespace lifted::lifter
         maybe_write_artifact(config_.artifact_dir, "slice_pre_opt", *M);
 
         // Step 2 – pipeline.
-        if (!config_.binary)
-            return {};
-        run_default_resolve_pipeline(*F, *config_.binary, config_.const_rva_ranges);
+        run_default_resolve_pipeline(*F, ctx.bin_ctx.binary(), config_.const_rva_ranges);
 
         maybe_write_artifact(config_.artifact_dir, "slice_post_opt", *M);
 
@@ -128,6 +123,31 @@ namespace lifted::lifter
         if (!result)
             DLOG(WARNING) << "resolve_targets: failed to resolve targets for BB 0x"
                           << std::hex << ctx.bb.id;
+
+        // Step 7 – name resolution for EXTERNAL targets.
+        // For each external target, look up the symbol name in BinaryContext and
+        // create/reuse an fnc_annotation_t so the lifter can generate named stubs.
+        for (auto &target : result.targets)
+        {
+            if (target.type == resolved_target_t::Type::EXTERNAL)
+            {
+                auto name_opt = ctx.bin_ctx.symbol_name_at_rva(target.dest);
+                if (name_opt)
+                {
+                    const fnc_annotation_t *ann = ctx.bin_ctx.get_by_name(*name_opt);
+                    if (!ann)
+                    {
+                        auto new_ann  = std::make_unique<fnc_annotation_t>();
+                        new_ann->name = *name_opt;
+                        // cc left nullptr — resolve_cc falls back to config_.default_cc
+                        annotation_id_t id = ctx.bin_ctx.create_ext_call(target.dest, std::move(new_ann));
+                        ann                = ctx.bin_ctx.get_by_id(id);
+                    }
+                    target.annotation = ann;
+                }
+                // annotation remains nullptr if no symbol found — unnamed ext call
+            }
+        }
 
         // For standard call instructions, signal the lifter to also lift the
         // return site (the instruction immediately after the call).  Custom

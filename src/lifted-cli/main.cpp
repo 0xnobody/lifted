@@ -806,9 +806,10 @@ static int run_graph_cmd(LLVMContext &ctx)
             errs() << "graph error: failed to parse binary '" << binary_path.string() << "'\n";
             return 2;
         }
-        auto cb_cfg = lifted::lifter::standard_lifter_config_t::from_standard_linux_binary(*binary);
+        lifted::BinaryContext bin_ctx(std::move(binary));
+        auto cb_cfg = lifted::lifter::standard_lifter_config_t::from_standard_linux_binary(bin_ctx.binary());
         lifted::lifter::StandardLifterCallbacks callbacks(std::move(cb_cfg));
-        auto lifter_or = lifted::lifter::Lifter::create(arch.get(), binary.get(), &callbacks);
+        auto lifter_or = lifted::lifter::Lifter::create(arch.get(), bin_ctx, &callbacks);
         if (!lifter_or) {
             errs() << "graph error: " << toString(lifter_or.takeError()) << "\n";
             return 2;

@@ -156,7 +156,7 @@ namespace lifted::lifter
             targets.push_back(resolved_target_t{
                 .type = classify_address(rva, ext_func_ranges),
                 .dest = rva,
-                .callee_info = callee_t{}});
+                .annotation = nullptr});
 
         return resolved_targets_result_t{std::move(targets), std::nullopt};
     }
@@ -183,7 +183,7 @@ namespace lifted::lifter
                                        << std::hex << const_off->getZExtValue();
                             return resolved_targets_result_t{
                                 .targets = {},
-                                .indirect_target = callee_t{}};
+                                .indirect_annotation = std::optional<const lifted::fnc_annotation_t *>(nullptr)};
                         }
                     }
                 }

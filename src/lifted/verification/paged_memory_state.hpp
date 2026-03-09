@@ -2,6 +2,7 @@
 
 #include "sentinel_oracle.hpp"
 #include "value_generator.hpp"
+#include "../binary_context.hpp"
 
 #include <cstdint>
 #include <array>
@@ -18,20 +19,6 @@
 #include <memory>
 
 #include <llvm/ADT/AddressRanges.h>
-
-// Forward declarations for LIEF types
-namespace LIEF
-{
-    class Binary;
-    namespace ELF
-    {
-        class Binary;
-    }
-    namespace PE
-    {
-        class Binary;
-    }
-}
 
 namespace lifted::verification
 {
@@ -164,8 +151,8 @@ namespace lifted::verification
         std::unordered_map<uint64_t, page_t> pages;
         uint64_t master_seed;
 
-        // Lazy image loading: store reference to binary and base address
-        std::shared_ptr<LIEF::Binary> binary_;
+        // Lazy image loading: non-owning pointer to BinaryContext.
+        const lifted::BinaryContext *bin_ctx_ = nullptr;
         uint64_t image_base_ = 0;
 
         // Non-owning pointers — valid only during execution; both outlive this object.
@@ -262,16 +249,14 @@ namespace lifted::verification
         // Constructor for dynamic-only memory state (no binary image)
         paged_memory_state(uint64_t seed, const sentinel_oracle *oracle = nullptr, const value_generator_factory *gen_factory = nullptr);
 
-        // Constructor with binary reference for lazy image loading
-        paged_memory_state(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t base_addr, const sentinel_oracle *oracle = nullptr, const value_generator_factory *gen_factory = nullptr);
-
+        // Constructor with BinaryContext for lazy image loading
+        paged_memory_state(uint64_t seed, const lifted::BinaryContext *bin_ctx, uint64_t base_addr, const sentinel_oracle *oracle = nullptr, const value_generator_factory *gen_factory = nullptr);
         // Consume this transient execution object and extract the pages into a
         // lightweight snapshot suitable for storage in run_result_t.
         static memory_snapshot_t finalize(paged_memory_state &&mem);
 
         uint64_t get_master_seed() const { return master_seed; }
         uint64_t get_image_base() const { return image_base_; }
-        const std::shared_ptr<LIEF::Binary> &get_binary() const { return binary_; }
 
         std::span<uint8_t, 4096> map(uint64_t addr)
         {

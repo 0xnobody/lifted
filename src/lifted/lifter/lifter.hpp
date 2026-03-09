@@ -24,10 +24,6 @@ namespace remill
     class IntrinsicTable;
 } // namespace remill
 
-namespace LIEF
-{
-    class Binary;
-} // namespace LIEF
 
 namespace lifted::lifter
 {
@@ -53,8 +49,8 @@ namespace lifted::lifter
         /// Factory: loads Remill semantics, links helpers, returns a ready Lifter.
         /// `callbacks` must outlive the Lifter.
         static llvm::Expected<Lifter> create(const remill::Arch *arch,
-                                             const LIEF::Binary *binary,
-                                             LifterCallbacks *callbacks);
+                                             BinaryContext      &bin_ctx,
+                                             LifterCallbacks    *callbacks);
 
         // Move-only.
         Lifter(Lifter &&) = default;
@@ -78,14 +74,14 @@ namespace lifted::lifter
     private:
         // Private constructor — called only by create().
         Lifter(const remill::Arch *arch,
-               const LIEF::Binary *binary,
-               LifterCallbacks *callbacks,
+               BinaryContext      *bin_ctx,
+               LifterCallbacks    *callbacks,
                std::unique_ptr<llvm::Module> work_module);
 
         // ── Immutable references ───────────────────────────────────────────
         const remill::Arch *arch_;
         const remill::IntrinsicTable *intrinsics_;
-        const LIEF::Binary *binary_;
+        BinaryContext *bin_ctx_; ///< Non-owning; must outlive this Lifter.
         LifterCallbacks *callbacks_; // non-owning
 
         // ── Owned modules ──────────────────────────────────────────────────
@@ -108,7 +104,7 @@ namespace lifted::lifter
         lifted_bb_t lift_bb(uintptr_t addr,
                             std::optional<uintptr_t> stop_at = std::nullopt);
         lifted_bb_t create_synthetic_bb(bb_id_t id,
-                                        std::optional<callee_t> callee_info,
+                                        const lifted::fnc_annotation_t *annotation,
                                         lift_context_t &ctx);
 
         /// Find the nearest already-explored REAL block whose id is strictly
@@ -120,7 +116,7 @@ namespace lifted::lifter
         /// non-volatile registers, calls opaque __lifted_ext_call_<name>,
         /// restores non-volatile registers, and pops the return address.
         llvm::Expected<llvm::Function *> get_or_create_callee_stub(llvm::Module *M,
-                                                                   const callee_t &callee);
+                                                                   const lifted::fnc_annotation_t *annotation);
 
         // ── CFG construction (implemented in cfg.cpp) ──────────────────────
 

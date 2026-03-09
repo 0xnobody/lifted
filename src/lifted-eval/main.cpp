@@ -129,16 +129,19 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
 {
     auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
 
-    std::shared_ptr<LIEF::Binary> binary = LIEF::Parser::parse(path);
+    auto binary = LIEF::Parser::parse(path);
     if (!binary)
         return llvm::make_error<llvm::StringError>(
             "Failed to parse binary: " + path.string(),
             llvm::inconvertibleErrorCode());
 
-    lifter::standard_lifter_config_t cb_config = lifter::standard_lifter_config_t::from_standard_linux_binary(*binary);
+    lifted::BinaryContext bin_ctx(std::move(binary));
+
+    lifter::standard_lifter_config_t cb_config =
+        lifter::standard_lifter_config_t::from_standard_linux_binary(bin_ctx.binary());
 
     lifter::StandardLifterCallbacks callbacks(std::move(cb_config));
-    auto the_lifter_or = lifter::Lifter::create(arch.get(), binary.get(), &callbacks);
+    auto the_lifter_or = lifter::Lifter::create(arch.get(), bin_ctx, &callbacks);
     if (!the_lifter_or)
         return the_lifter_or.takeError();
     auto &the_lifter = *the_lifter_or;
@@ -167,7 +170,7 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
         return jit_or.takeError();
     auto jit = std::shared_ptr<verification::Executor>(std::move(*jit_or));
 
-    auto uc_or = verification::UnicornExecutor::create(binary, {}, entry_rva);
+    auto uc_or = verification::UnicornExecutor::create(bin_ctx, {}, entry_rva);
     if (!uc_or)
         return uc_or.takeError();
     auto uc = std::shared_ptr<verification::Executor>(std::move(*uc_or));
@@ -175,7 +178,7 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
     // Pipeline 1: raw JIT vs Unicorn.
     pipeline::Pipeline p1(eval::make_default_pipeline("raw_lifted", jit, uc));
 
-    auto r1 = p1.run(binary, entry_rva);
+    auto r1 = p1.run(bin_ctx, entry_rva);
     if (!r1)
         return r1.takeError();
 
@@ -196,7 +199,7 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
     // Pipeline 2: reuse raw JIT as baseline, compare against optimized JIT.
     pipeline::Pipeline p2(eval::make_default_pipeline("opt_vs_raw_lifted", jit, opt_jit));
 
-    auto r2 = p2.run(binary, entry_rva);
+    auto r2 = p2.run(bin_ctx, entry_rva);
     if (!r2)
         return r2.takeError();
 

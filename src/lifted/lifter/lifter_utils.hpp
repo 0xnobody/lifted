@@ -48,7 +48,7 @@ namespace lifted::lifter
     /// Detect indirect jump via GOT pattern in an optimized function.
     /// Matches:  %r = load i64, ptr GEP(@RAM, 0, {const_offset_in_got})
     ///           ret i64 %r
-    /// Returns an IndirectTarget with empty callee_t when found, empty result
+    /// Returns resolved_targets_result_t with indirect_annotation set when found, empty result
     /// otherwise.
     resolved_targets_result_t extract_indirect_targets(
         llvm::Function &F,

@@ -47,7 +47,7 @@ namespace
         {
             return {
                 .seed            = 0,
-                .binary          = nullptr,
+                .bin_ctx         = nullptr,
                 .entry_rva       = 0x100,
                 .oracle          = nullptr,
                 .value_gen_factory = &s_factory,

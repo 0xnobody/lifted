@@ -5,6 +5,7 @@
 #include "lifter/lifter.hpp"
 #include "lifter/standard_lifter_callbacks.hpp"
 #include "abi/systemv_x64.hpp"
+#include "binary_context.hpp"
 
 #include <remill/Arch/Arch.h>
 #include <remill/Arch/Name.h>
@@ -51,7 +52,7 @@ TEST(lifter_multi_function_lift)
     if (!binary)
         return;
 
-    // Resolve both entry points.
+    // Resolve both entry points — use LIEF directly before moving into BinaryContext.
     auto va_a = find_export_va(*binary, "func_a");
     auto va_b = find_export_va(*binary, "func_b");
     CHECK(va_a.has_value());
@@ -71,13 +72,13 @@ TEST(lifter_multi_function_lift)
         return;
 
     lifted::abi::SystemVx64CC CC;
+    lifted::BinaryContext bin_ctx(std::move(binary));
     lifted::lifter::standard_lifter_config_t cb_config{
-        .binary     = binary.get(),
         .default_cc = &CC,
     };
     lifted::lifter::StandardLifterCallbacks callbacks(std::move(cb_config));
 
-    auto lifter_or = lifted::lifter::Lifter::create(arch.get(), binary.get(), &callbacks);
+    auto lifter_or = lifted::lifter::Lifter::create(arch.get(), bin_ctx, &callbacks);
     CHECK(static_cast<bool>(lifter_or));
     if (!lifter_or)
     {

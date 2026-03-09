@@ -7,8 +7,7 @@
 
 #include "../verification/comparator.hpp"
 #include "../verification/executor.hpp"
-
-#include "compat/lief_compat.hpp"
+#include "../binary_context.hpp"
 
 #include <llvm/Support/Error.h>
 
@@ -124,18 +123,16 @@ public:
     explicit Pipeline(PipelineSpec spec);
 
     llvm::Expected<PipelineReport> run(
-        std::shared_ptr<LIEF::Binary> binary,
+        const BinaryContext &bin_ctx,
         uint64_t entry_rva);
-
     /// Re-run a diverging outcome with full event-detail recording to produce a
     /// side-by-side chronological trace display.  Requires run() to have been
     /// called first (executors are reused).
     llvm::Expected<DeepDiveResult> deep_dive(
         const RunOutcome              &outcome,
-        std::shared_ptr<LIEF::Binary>  binary,
+        const BinaryContext           &bin_ctx,
         uint64_t                       entry_rva,
         const DeepDiveConfig          &cfg = {});
-
 private:
     PipelineSpec spec_;
     std::shared_ptr<verification::Executor> src_executor_;
@@ -149,7 +146,7 @@ private:
         verification::Executor   &src,
         verification::Executor   &tgt,
         const RunConfig          &cfg,
-        std::shared_ptr<LIEF::Binary> binary,
+        const BinaryContext      &bin_ctx,
         uint64_t                  entry_rva,
         uint64_t                  run_index);
 };

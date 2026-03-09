@@ -72,8 +72,8 @@ std::string cfg_to_dot(const CfgSnapshot &cfg, const CfgDotOptions &opts)
                 auto si_it = cfg.synthetic_blocks.find(e.dest);
                 if (si_it != cfg.synthetic_blocks.end()) {
                     const auto &si = si_it->second;
-                    if (si.callee_info && !si.callee_info->func_name.empty())
-                        ann = "\xe2\x86\x92 " + si.callee_info->func_name + "()";
+                    if (si.annotation && !si.annotation->name.empty())
+                        ann = "\xe2\x86\x92 " + si.annotation->name + "()";
                     else if (si.type == lifter::synthetic_block_info_t::Type::INDIRECT)
                         ann = "\xe2\x86\x92 indirect()";
                     else
@@ -94,9 +94,9 @@ std::string cfg_to_dot(const CfgSnapshot &cfg, const CfgDotOptions &opts)
                 std::string label;
                 auto si_it = cfg.synthetic_blocks.find(e.source);
                 if (si_it != cfg.synthetic_blocks.end() &&
-                    si_it->second.callee_info &&
-                    !si_it->second.callee_info->func_name.empty())
-                    label = si_it->second.callee_info->func_name;
+                    si_it->second.annotation &&
+                    !si_it->second.annotation->name.empty())
+                    label = si_it->second.annotation->name;
                 else
                     label = "call/ret";
                 merged_edges.emplace_back(caller, e.dest, label);
@@ -155,8 +155,8 @@ std::string cfg_to_dot(const CfgSnapshot &cfg, const CfgDotOptions &opts)
                 const auto &si = it->second;
                 switch (si.type) {
                 case lifter::synthetic_block_info_t::Type::EXTERNAL:
-                    if (si.callee_info && !si.callee_info->func_name.empty())
-                        os << safe_dot(si.callee_info->func_name);
+                    if (si.annotation && !si.annotation->name.empty())
+                        os << safe_dot(si.annotation->name);
                     else
                         os << "ext_call";
                     break;

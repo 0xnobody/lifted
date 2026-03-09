@@ -172,14 +172,14 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
     verification::Executor        &src,
     verification::Executor        &tgt,
     const RunConfig               &cfg,
-    std::shared_ptr<LIEF::Binary>  binary,
+    const lifted::BinaryContext   &bin_ctx,
     uint64_t                       entry_rva,
     uint64_t                       run_index)
 {
     using Clock = std::chrono::steady_clock;
 
     // Build run_params once.  It holds &cfg.oracle — cfg must outlive this call.
-    auto run_params = cfg.to_run_params(binary, entry_rva);
+    auto run_params = cfg.to_run_params(bin_ctx, entry_rva);
 
     // ── src run (no prev_record) ──────────────────────────────────────────
     auto src_verif  = cfg.to_verif_params(nullptr);
@@ -244,7 +244,7 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
 }
 
 llvm::Expected<PipelineReport> Pipeline::run(
-    std::shared_ptr<LIEF::Binary> binary,
+    const lifted::BinaryContext   &bin_ctx,
     uint64_t                       entry_rva)
 {
     // ── Assign executors (shared, created eagerly by caller) ────────────────
@@ -280,7 +280,7 @@ llvm::Expected<PipelineReport> Pipeline::run(
             const RunConfig &cfg = configs[run_idx];
 
             auto outcome_exp = execute_one(
-                src, tgt, cfg, binary, entry_rva, run_idx);
+                src, tgt, cfg, bin_ctx, entry_rva, run_idx);
 
             if (!outcome_exp)
             {

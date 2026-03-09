@@ -5,6 +5,7 @@
 #include "../verification/value_generator.hpp"
 #include "../verification/checkpoint.hpp"
 #include "../verification/event_flags.hpp"
+#include "../binary_context.hpp"
 
 #include "compat/lief_compat.hpp"
 
@@ -50,19 +51,19 @@ struct RunConfig
     // ── Conversion helpers ────────────────────────────────────────────────────
 
     /// Produce the transient executor params for one run invocation.
-    /// binary and entry_rva are target-level — not stored per-run.
+    /// bin_ctx and entry_rva are target-level — not stored per-run.
     ///
     /// LIFETIME: The returned run_params_t holds &this->oracle and
     /// gen_factory.get().  It MUST NOT outlive this RunConfig instance.
     verification::run_params_t to_run_params(
-        std::shared_ptr<LIEF::Binary> binary,
+        const lifted::BinaryContext &bin_ctx,
         uint64_t entry_rva) const
     {
         return {
-            .seed             = seed,
-            .binary           = std::move(binary),
-            .entry_rva        = entry_rva,
-            .oracle           = &oracle,
+            .seed              = seed,
+            .bin_ctx           = &bin_ctx,
+            .entry_rva         = entry_rva,
+            .oracle            = &oracle,
             .value_gen_factory = gen_factory.get(),
         };
     }

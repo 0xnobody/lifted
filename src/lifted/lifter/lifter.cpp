@@ -40,12 +40,12 @@ namespace lifted::lifter
     // ── Constructor ────────────────────────────────────────────────────────────
 
     Lifter::Lifter(const remill::Arch *arch,
-                   const LIEF::Binary *binary,
-                   LifterCallbacks *callbacks,
+                   BinaryContext      *bin_ctx,
+                   LifterCallbacks    *callbacks,
                    std::unique_ptr<llvm::Module> work_module)
         : arch_(arch),
           intrinsics_(arch->GetInstrinsicTable()),
-          binary_(binary),
+          bin_ctx_(bin_ctx),
           callbacks_(callbacks),
           work_module_(std::move(work_module)),
           bb_cache_module_(std::make_unique<llvm::Module>(
@@ -55,27 +55,27 @@ namespace lifted::lifter
 
     /*static*/ llvm::Expected<Lifter>
     Lifter::create(const remill::Arch *arch,
-                   const LIEF::Binary *binary,
-                   LifterCallbacks *callbacks)
+                   BinaryContext      &bin_ctx,
+                   LifterCallbacks    *callbacks)
     {
         auto work_module = remill::LoadArchSemantics(arch);
         if (auto err = helpers::link_state_utils(work_module.get()))
             return std::move(err);
         if (auto err = helpers::link_lifting_helpers(work_module.get()))
             return std::move(err);
-        return Lifter(arch, binary, callbacks, std::move(work_module));
+        return Lifter(arch, &bin_ctx, callbacks, std::move(work_module));
     }
 
     // ── Binary helpers ──────────────────────────────────────────────────────────
 
     bool Lifter::is_executable(uint64_t addr) const
     {
-        auto fmt = binary_->format();
+        auto fmt = bin_ctx_->binary().format();
         switch (fmt)
         {
         case LIEF::EXE_FORMATS::FORMAT_ELF:
         {
-            const auto *elf = dynamic_cast<const LIEF::ELF::Binary *>(binary_);
+            const auto *elf = dynamic_cast<const LIEF::ELF::Binary *>(&bin_ctx_->binary());
             const auto *section = elf->section_from_virtual_address(addr);
             if (!section)
                 return false;
@@ -83,8 +83,8 @@ namespace lifted::lifter
         }
         case LIEF::EXE_FORMATS::FORMAT_PE:
         {
-            uint64_t rva = addr - binary_->imagebase();
-            const auto *pe = dynamic_cast<const LIEF::PE::Binary *>(binary_);
+            uint64_t rva = addr - bin_ctx_->binary().imagebase();
+            const auto *pe = dynamic_cast<const LIEF::PE::Binary *>(&bin_ctx_->binary());
             const auto *section = pe->section_from_rva(rva);
             if (!section)
                 return false;
@@ -93,7 +93,7 @@ namespace lifted::lifter
         }
         case LIEF::EXE_FORMATS::FORMAT_MACHO:
         {
-            const auto *macho = dynamic_cast<const LIEF::MachO::Binary *>(binary_);
+            const auto *macho = dynamic_cast<const LIEF::MachO::Binary *>(&bin_ctx_->binary());
             const auto *section = macho->section_from_virtual_address(addr);
             if (!section)
                 return false;
@@ -112,7 +112,7 @@ namespace lifted::lifter
     {
         if (!is_executable(addr))
             return false;
-        auto content = binary_->get_content_from_virtual_address(addr, 1);
+        auto content = bin_ctx_->binary().get_content_from_virtual_address(addr, 1);
         if (content.empty())
         {
             std::cerr << "Warning: reached end of section at 0x" << std::hex << addr
@@ -159,11 +159,11 @@ namespace lifted::lifter
     // ── Callee stubs ────────────────────────────────────────────────────────────
 
     llvm::Expected<llvm::Function *> Lifter::get_or_create_callee_stub(llvm::Module *M,
-                                                                       const callee_t &callee)
+                                                                       const lifted::fnc_annotation_t *annotation)
     {
-        std::string key = callee.func_name.empty()
-                              ? ("indirect_" + std::to_string(next_indirect_stub_id_++))
-                              : callee.func_name;
+        std::string key = (annotation && !annotation->name.empty())
+                              ? annotation->name
+                              : ("__lifted_indirect_" + std::to_string(next_indirect_stub_id_++));
 
         // Return existing stub if still present in M.
         auto it = callee_stubs_.find(key);
@@ -173,7 +173,7 @@ namespace lifted::lifter
                 return existing;
         }
 
-        const auto *cc = callbacks_->resolve_cc(callee);
+        const auto *cc = callbacks_->resolve_cc(annotation);
         if (!cc)
             return llvm::make_error<llvm::StringError>(
                 "get_or_create_callee_stub: no calling convention for callee '" + key + "'",
@@ -211,14 +211,14 @@ namespace lifted::lifter
                         ci->setCalledFunction(ext_call_decl);
 
         callee_stubs_[key] = callee_stub_entry_t{
-            stub->getName().str(), ext_call_decl->getName().str(), callee};
+            stub->getName().str(), ext_call_decl->getName().str(), annotation};
         return stub;
     }
 
     // ── Synthetic BB ────────────────────────────────────────────────────────────
 
     lifted_bb_t Lifter::create_synthetic_bb(bb_id_t id,
-                                            std::optional<callee_t> callee_info,
+                                            const lifted::fnc_annotation_t *annotation,
                                             lift_context_t &ctx)
     {
         (void)ctx; // Currently unused; kept for future callbacks.
@@ -234,10 +234,10 @@ namespace lifted::lifter
 
         llvm::IRBuilder<> ir(&F->getEntryBlock());
 
-        const abi::CallingConvention *cc = callbacks_->resolve_cc(callee_info);
-        if (cc && callee_info)
+        const abi::CallingConvention *cc = callbacks_->resolve_cc(annotation);
+        if (cc)
         {
-            auto stub_or = get_or_create_callee_stub(work_module_.get(), *callee_info);
+            auto stub_or = get_or_create_callee_stub(work_module_.get(), annotation);
             if (stub_or)
             {
                 ir.CreateRet(ir.CreateCall(*stub_or, {state_ptr, pc, mem}));
@@ -537,7 +537,7 @@ namespace lifted::lifter
                 if (is_synthetic(curr_id))
                 {
                     const auto &synth_info = ctx.synthetic_blocks.at(curr_id);
-                    bb = create_synthetic_bb(curr_id, synth_info.callee_info, ctx);
+                    bb = create_synthetic_bb(curr_id, synth_info.annotation, ctx);
                 }
                 else
                 {
@@ -610,7 +610,7 @@ namespace lifted::lifter
                 .slice_module = std::move(clone),
                 .slice_cfg = slice_cfg,
                 .concretized_slice = concretized_slice,
-                .binary = *binary_};
+                .bin_ctx = *bin_ctx_};
 
             resolved_targets_result_t targets_result =
                 callbacks_->resolve_targets(rctx);
@@ -654,7 +654,7 @@ namespace lifted::lifter
                     ctx.synthetic_blocks[disp_id] = synthetic_block_info_t{
                         .type = synthetic_block_info_t::Type::EXTERNAL,
                         .dest_addr = target.dest,
-                        .callee_info = target.callee_info};
+                        .annotation = target.annotation};
                     ctx.external_synthetic_index[ext_key] = disp_id;
                     ctx.edges.insert(edge_t{curr_id, disp_id,
                                             edge_t::Type::SYNTHETIC_EXTERNAL});
@@ -676,7 +676,7 @@ namespace lifted::lifter
                 }
             }
 
-            if (targets_result.indirect_target)
+            if (targets_result.indirect_annotation.has_value())
             {
                 if (!ctx.indirect_synthetic_index.count(curr_id))
                 {
@@ -684,7 +684,7 @@ namespace lifted::lifter
                     ctx.synthetic_blocks[disp_id] = synthetic_block_info_t{
                         .type = synthetic_block_info_t::Type::INDIRECT,
                         .dest_addr = std::nullopt,
-                        .callee_info = targets_result.indirect_target};
+                        .annotation = *targets_result.indirect_annotation};
                     ctx.indirect_synthetic_index[curr_id] = disp_id;
                     ctx.edges.insert(edge_t{curr_id, disp_id,
                                             edge_t::Type::SYNTHETIC_INDIRECT});

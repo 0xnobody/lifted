@@ -65,7 +65,7 @@ namespace lifted::verification
         };
 
     private:
-        std::shared_ptr<LIEF::Binary> binary;
+        const lifted::BinaryContext *bin_ctx_; ///< Non-owning; must outlive this executor.
         std::unordered_set<uint64_t> ext_rvas_;          // RVAs of known external callees
         std::unordered_set<uint64_t> indr_dispatch_rvas_; // RVAs of indirect-call dispatcher BBs
         std::unique_ptr<uc_engine, decltype(&uc_close)> uc_eng;
@@ -98,9 +98,9 @@ namespace lifted::verification
         /// predecessor before counting directed back-edges.
         std::unordered_map<uint64_t, uint64_t> fallthrough_edges_;
 
-        UnicornExecutor(std::shared_ptr<LIEF::Binary> bin, ext_call_info_t ext_info, uint64_t entry, Flags flags,
+        UnicornExecutor(const lifted::BinaryContext *bin_ctx, ext_call_info_t ext_info, uint64_t entry, Flags flags,
                         std::unordered_map<uint64_t, uint64_t> fallthrough_edges)
-            : binary(std::move(bin)),
+            : bin_ctx_(bin_ctx),
               ext_rvas_(std::move(ext_info.ext_function_rvas)),
               indr_dispatch_rvas_(std::move(ext_info.indr_dispatch_block_rvas)),
               uc_eng(nullptr, uc_close),
@@ -118,10 +118,9 @@ namespace lifted::verification
     public:
         std::string_view name() const override { return "Unicorn"; }
         static llvm::Expected<std::unique_ptr<UnicornExecutor>>
-        create(std::shared_ptr<LIEF::Binary> bin, ext_call_info_t ext_info, uint64_t entry_rva,
+        create(const lifted::BinaryContext &bin_ctx, ext_call_info_t ext_info, uint64_t entry_rva,
                Flags flags = Flags::NONE,
                std::unordered_map<uint64_t, uint64_t> fallthrough_edges = {});
-
     private:
         /// Forward-scan the translation block [pc, pc+size) to determine whether its last
         /// instruction is a branch/call/ret/interrupt, and whether it is an indirect branch.

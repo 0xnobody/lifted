@@ -16,25 +16,13 @@ namespace llvm
     class Module;
 } // namespace llvm
 
-namespace LIEF
-{
-    class Binary;
-} // namespace LIEF
-
-namespace lifted::abi
-{
-    class CallingConvention;
-} // namespace lifted::abi
-
 namespace lifted::lifter
 {
 
-    // ── standard_lifter_config_t ──────────────────────────────────────────────
+    // ── standard_lifter_config_t ──────────────────────────────────────────────────
 
     struct standard_lifter_config_t
     {
-        const LIEF::Binary *binary = nullptr;
-
         std::set<llvm::AddressRange> const_rva_ranges;
         std::set<llvm::AddressRange> got_table_rva_ranges;
         std::set<llvm::AddressRange> ext_func_rva_ranges;
@@ -51,7 +39,7 @@ namespace lifted::lifter
             std::string artifact_dir = "");
     };
 
-    // ── StandardLifterCallbacks ───────────────────────────────────────────────
+    // ── StandardLifterCallbacks ───────────────────────────────────────────────────
 
     class StandardLifterCallbacks : public LifterCallbacks
     {
@@ -60,7 +48,7 @@ namespace lifted::lifter
 
         resolved_targets_result_t resolve_targets(resolve_context_t &ctx) override;
         const abi::CallingConvention *resolve_cc(
-            std::optional<callee_t> callee) const override;
+            const lifted::fnc_annotation_t *annotation) const override;
 
         const standard_lifter_config_t &config() const { return config_; }
 

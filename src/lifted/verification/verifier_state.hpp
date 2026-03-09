@@ -16,7 +16,11 @@
 
 #include "checkpoint.hpp"
 
+// Forward declaration — full type in binary_context.hpp.
+namespace lifted { class BinaryContext; }
+
 #define STACK_MAGIC 0x7fff00000000ULL
+
 
 namespace lifted::verification
 {
@@ -40,7 +44,7 @@ namespace lifted::verification
     struct run_params_t
     {
         uint64_t seed;
-        std::shared_ptr<LIEF::Binary> binary;
+        const lifted::BinaryContext *bin_ctx = nullptr;
         uint64_t entry_rva;
         const sentinel_oracle *oracle = nullptr;
         const value_generator_factory *value_gen_factory = nullptr;
@@ -458,7 +462,7 @@ namespace lifted::verification
 
     public:
         verifier_state(const run_params_t &params, const verification_params_t &verif_params, event_flags log_on_flags = event_flags::NONE)
-            : mem_state(params.seed ^ 0xFEEDFEEDFEEDFEED, params.binary, LOAD_BASE, params.oracle, params.value_gen_factory),
+            : mem_state(params.seed ^ 0xFEEDFEEDFEEDFEED, params.bin_ctx, LOAD_BASE, params.oracle, params.value_gen_factory),
               bbs_entered_rvas(),
               ext_calls(),
               verifier_context(),

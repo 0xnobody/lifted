@@ -23,7 +23,7 @@ void LifterCallbacks::on_function_built(llvm::Function * /*func*/,
 }
 
 const abi::CallingConvention *
-LifterCallbacks::resolve_cc(std::optional<callee_t> /*callee*/) const
+LifterCallbacks::resolve_cc(const lifted::fnc_annotation_t * /*annotation*/) const
 {
     return nullptr;
 }

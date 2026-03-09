@@ -15,6 +15,7 @@
 #include "pipeline/stages/seed_sweep_stage.hpp"
 #include "pipeline/stages/corpus_replay_stage.hpp"
 #include "utils.hpp"
+#include "binary_context.hpp"
 
 #include <llvm/IR/Module.h>
 #include <llvm/Support/Error.h>
@@ -89,16 +90,19 @@ namespace lifted::eval
     {
         auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
 
-        std::shared_ptr<LIEF::Binary> binary = LIEF::Parser::parse(path);
+        std::unique_ptr<LIEF::Binary> binary = LIEF::Parser::parse(path);
         if (!binary)
             return llvm::make_error<llvm::StringError>(
                 "Failed to parse binary: " + path.string(),
                 llvm::inconvertibleErrorCode());
 
-        lifter::standard_lifter_config_t cb_config = lifter::standard_lifter_config_t::from_standard_linux_binary(*binary);
+        // BinaryContext takes ownership of the parsed binary.
+        BinaryContext bin_ctx(std::move(binary));
 
+        lifter::standard_lifter_config_t cb_config =
+            lifter::standard_lifter_config_t::from_standard_linux_binary(bin_ctx.binary());
         lifter::StandardLifterCallbacks callbacks(std::move(cb_config));
-        auto the_lifter_or = lifter::Lifter::create(arch.get(), binary.get(), &callbacks);
+        auto the_lifter_or = lifter::Lifter::create(arch.get(), bin_ctx, &callbacks);
         if (!the_lifter_or)
             return the_lifter_or.takeError();
         auto &the_lifter = *the_lifter_or;
@@ -159,7 +163,7 @@ namespace lifted::eval
                 }
         }
 
-        auto uc_or = verification::UnicornExecutor::create(binary, std::move(ext_info), entry_rva,
+        auto uc_or = verification::UnicornExecutor::create(bin_ctx, std::move(ext_info), entry_rva,
                                                            verification::UnicornExecutor::Flags::NONE,
                                                            std::move(fallthrough_map));
         if (!uc_or)
@@ -168,7 +172,7 @@ namespace lifted::eval
 
         pipeline::Pipeline pl(make_default_pipeline(func_name, jit, uc));
 
-        auto report = pl.run(binary, entry_rva);
+        auto report = pl.run(bin_ctx, entry_rva);
         if (!report)
             return report.takeError();
 
@@ -182,7 +186,7 @@ namespace lifted::eval
             {
                 if (!stage.divergences.empty())
                 {
-                    auto dd = pl.deep_dive(stage.divergences[0], binary, entry_rva);
+                    auto dd = pl.deep_dive(stage.divergences[0], bin_ctx, entry_rva);
                     if (dd)
                         result.deep_dive = std::move(*dd);
                     // A failing deep_dive is non-fatal; the report still has the divergence info.

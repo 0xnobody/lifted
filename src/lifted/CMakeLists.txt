@@ -9,6 +9,8 @@ add_library(lifted STATIC
     "utils.cpp"
     "opt.hpp"
     "opt.cpp"
+    "binary_context.hpp"
+    "binary_context.cpp"
 
     "compat/lief_compat.hpp"
 

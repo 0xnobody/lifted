@@ -2,6 +2,7 @@
 #include "pipeline.hpp"
 
 #include "../verification/comparator.hpp"
+#include "../binary_context.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -180,7 +181,7 @@ namespace lifted::pipeline
 
     llvm::Expected<DeepDiveResult> Pipeline::deep_dive(
         const RunOutcome &outcome,
-        std::shared_ptr<LIEF::Binary> binary,
+        const lifted::BinaryContext &binary,
         uint64_t entry_rva,
         const DeepDiveConfig &cfg)
     {

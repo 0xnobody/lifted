@@ -2,16 +2,7 @@
 
 #include "lifter_types.hpp"
 #include "lift_context.hpp"
-namespace llvm
-{
-class Function;
-class Module;
-} // namespace llvm
-
-namespace LIEF
-{
-class Binary;
-} // namespace LIEF
+#include "../binary_context.hpp"
 
 namespace lifted::abi
 {
@@ -36,7 +27,7 @@ struct resolve_context_t
     std::unique_ptr<llvm::Module> slice_module;    ///< Clone of bb_cache_module_ with helpers linked.
     llvm::Function               *slice_cfg;       ///< Backward-slice CFG, 4-param (state,rva,mem,base).
     llvm::Function               *concretized_slice; ///< Base-concretized, 3-param (state,rva,mem).
-    const LIEF::Binary           &binary;          ///< For ConstantMemoryFoldingPass.
+    BinaryContext             &bin_ctx;          ///< For ConstantMemoryFoldingPass and name resolution.
 };
 
 // ── LifterCallbacks ───────────────────────────────────────────────────────
@@ -75,7 +66,7 @@ struct LifterCallbacks
 
     /// Resolve the calling convention for a callee.  Default: nullptr.
     virtual const abi::CallingConvention *resolve_cc(
-        std::optional<callee_t> callee) const;
+        const lifted::fnc_annotation_t *annotation) const;
 
     // ── Observation hooks (all no-op by default) ──────────────────────
 

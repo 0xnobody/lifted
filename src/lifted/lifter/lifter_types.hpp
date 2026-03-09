@@ -25,6 +25,12 @@ namespace lifted::abi
     class CallingConvention;
 } // namespace lifted::abi
 
+namespace lifted
+{
+    // Forward declaration — consumers that need the full type include binary_context.hpp.
+    struct fnc_annotation_t;
+} // namespace lifted
+
 namespace lifted::lifter
 {
 
@@ -61,26 +67,6 @@ namespace lifted::lifter
         bool operator==(const lifted_bb_t &o) const { return id == o.id; }
     };
 
-    // ── callee_t ──────────────────────────────────────────────────────────────
-
-    /// Metadata about a called function.  Carries enough information to emit
-    /// typed ABI-conformant call stubs.
-    struct callee_t
-    {
-        /// Function name (e.g. "printf").  Empty for unknown indirect calls.
-        std::string func_name;
-
-        /// The LLVM function type for this call site.  nullptr → use the CC's
-        /// default type.  Variadic functions may have distinct types per site.
-        llvm::FunctionType *orig_type = nullptr;
-
-        /// Per-callee calling convention override.  nullptr → use the Lifter's
-        /// default CC.
-        const abi::CallingConvention *cc = nullptr;
-
-        bool is_typed() const { return orig_type != nullptr || !func_name.empty(); }
-    };
-
     // ── resolved_target_t ─────────────────────────────────────────────────────
 
     struct resolved_target_t
@@ -95,8 +81,8 @@ namespace lifted::lifter
                                ///  targets, with a natural function return as the default.
         };
         Type type;
-        uint64_t dest;                            ///< Address (RVA for INTERNAL, VA for EXTERNAL).
-        std::optional<callee_t> callee_info = {}; ///< Valid for EXTERNAL only.
+        uint64_t dest;                                  ///< Address (RVA for INTERNAL, VA for EXTERNAL).
+        const lifted::fnc_annotation_t *annotation = nullptr; ///< Valid for EXTERNAL only; null = no annotation.
     };
 
     // ── resolved_targets_result_t ─────────────────────────────────────────────
@@ -104,7 +90,11 @@ namespace lifted::lifter
     struct resolved_targets_result_t
     {
         std::vector<resolved_target_t> targets;
-        std::optional<callee_t> indirect_target;
+
+        /// Non-nullopt when an indirect call was detected.  The pointer itself may
+        /// be null (unknown annotation) or non-null (known annotation).
+        std::optional<const lifted::fnc_annotation_t *> indirect_annotation;
+
         /// If the block acts as a call (e.g. a `call` instruction or a push+jmp
         /// emulation), the callback sets this to the address of the instruction
         /// immediately after the call — the return site that must also be lifted.
@@ -113,7 +103,7 @@ namespace lifted::lifter
 
         explicit operator bool() const
         {
-            return !targets.empty() || indirect_target.has_value();
+            return !targets.empty() || indirect_annotation.has_value();
         }
     };
 
@@ -128,8 +118,8 @@ namespace lifted::lifter
         };
 
         Type type;
-        std::optional<uint64_t> dest_addr; ///< Valid for EXTERNAL – address of the callee.
-        std::optional<callee_t> callee_info;
+        std::optional<uint64_t> dest_addr;                       ///< Valid for EXTERNAL – address of the callee.
+        const lifted::fnc_annotation_t *annotation = nullptr;    ///< Annotation for the callee; null = unknown.
     };
 
     // ── edge_t ────────────────────────────────────────────────────────────────
@@ -172,7 +162,7 @@ namespace lifted::lifter
     {
         std::string stub_func_name;
         std::string ext_call_decl_name;
-        callee_t info;
+        const lifted::fnc_annotation_t *annotation; ///< Non-owning; valid for BinaryContext lifetime.
     };
 
     // ── lift_config_t ─────────────────────────────────────────────────────────

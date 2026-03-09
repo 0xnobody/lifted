@@ -3,7 +3,7 @@
 
 #include "../hash_mix.hpp"
 
-#include "compat/lief_compat.hpp"
+#include "../compat/lief_compat.hpp"
 
 namespace lifted::verification
 {
@@ -46,14 +46,14 @@ namespace lifted::verification
 
     bool paged_memory_state::try_load_image_page(uint64_t page_addr, std::array<uint8_t, 4096> &out_data)
     {
-        if (!binary_)
+        if (!bin_ctx_)
             return false;
 
-        if (binary_->format() == LIEF::EXE_FORMATS::FORMAT_ELF)
+        if (bin_ctx_->binary().format() == LIEF::EXE_FORMATS::FORMAT_ELF)
         {
             return try_load_elf_page(page_addr, out_data);
         }
-        else if (binary_->format() == LIEF::EXE_FORMATS::FORMAT_PE)
+        else if (bin_ctx_->binary().format() == LIEF::EXE_FORMATS::FORMAT_PE)
         {
             return try_load_pe_page(page_addr, out_data);
         }
@@ -63,7 +63,7 @@ namespace lifted::verification
 
     bool paged_memory_state::try_load_elf_page(uint64_t page_addr, std::array<uint8_t, 4096> &out_data)
     {
-        auto &elf = dynamic_cast<LIEF::ELF::Binary &>(*binary_);
+        auto &elf = dynamic_cast<LIEF::ELF::Binary &>(const_cast<LIEF::Binary &>(bin_ctx_->binary()));
         bool found = false;
         out_data.fill(0);
 
@@ -106,7 +106,7 @@ namespace lifted::verification
 
     bool paged_memory_state::try_load_pe_page(uint64_t page_addr, std::array<uint8_t, 4096> &out_data)
     {
-        auto &pe = dynamic_cast<LIEF::PE::Binary &>(*binary_);
+        auto &pe = dynamic_cast<LIEF::PE::Binary &>(const_cast<LIEF::Binary &>(bin_ctx_->binary()));
         uint64_t pe_base = pe.imagebase();
         bool found = false;
         out_data.fill(0);
@@ -176,12 +176,12 @@ namespace lifted::verification
     // paged_memory_state public methods
 
     paged_memory_state::paged_memory_state(uint64_t seed, const sentinel_oracle *oracle, const value_generator_factory *gen_factory)
-        : master_seed(seed), binary_(nullptr), image_base_(0), oracle_(oracle), value_gen_factory_(gen_factory)
+        : master_seed(seed), bin_ctx_(nullptr), image_base_(0), oracle_(oracle), value_gen_factory_(gen_factory)
     {
     }
 
-    paged_memory_state::paged_memory_state(uint64_t seed, std::shared_ptr<LIEF::Binary> binary, uint64_t base_addr, const sentinel_oracle *oracle, const value_generator_factory *gen_factory)
-        : master_seed(seed), binary_(std::move(binary)), image_base_(base_addr), oracle_(oracle), value_gen_factory_(gen_factory)
+    paged_memory_state::paged_memory_state(uint64_t seed, const lifted::BinaryContext *bin_ctx, uint64_t base_addr, const sentinel_oracle *oracle, const value_generator_factory *gen_factory)
+        : master_seed(seed), bin_ctx_(bin_ctx), image_base_(base_addr), oracle_(oracle), value_gen_factory_(gen_factory)
     {
     }
 
