@@ -1,4 +1,4 @@
-# Unicorn bug: stale TLB entry after uc_mem_map() in UC_HOOK_MEM_READ_UNMAPPED
+# Unicorn bug: stale TLB entry after uc_mem_map() in UC_HOOK_MEM_READ_UNMAPPED (Fixed in 2.1.4)
 
 **Upstream repo**: https://github.com/unicorn-engine/unicorn  
 **Affected file**: `qemu/accel/tcg/cputlb.c`, function `load_helper`  

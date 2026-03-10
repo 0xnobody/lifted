@@ -22,6 +22,8 @@ namespace lifted::verification
         uint64_t prev_block = 0;
         uint32_t prev_size = 0;
         uint64_t resume_rip = 0; // set by hook_block to signal a restart address
+        uc_err mem_hook_err = UC_ERR_OK;
+        uint64_t mem_hook_err_addr = 0;
     };
 
     // Helper to create Unicorn error messages
@@ -31,6 +33,62 @@ namespace lifted::verification
         msg << operation << " failed: " << uc_strerror(err);
         return llvm::make_error<llvm::StringError>(msg.str(), llvm::inconvertibleErrorCode());
     }
+
+    static void fail_mem_read_hook(unicorn_ctx_t *ctx, uc_engine *uc, uc_err err, uint64_t address)
+    {
+        if (ctx->mem_hook_err == UC_ERR_OK)
+        {
+            ctx->mem_hook_err = err;
+            ctx->mem_hook_err_addr = address;
+        }
+        uc_emu_stop(uc);
+    }
+
+    static bool is_cross_page_read(uint64_t address, uint8_t size)
+    {
+        return size > 1 && ((address & 0xFFFULL) + size > 0x1000ULL);
+    }
+
+
+    static bool read_from_verifier(verifier_state *state, uint64_t address, uint8_t size, uint64_t &read_value)
+    {
+        switch (size)
+        {
+        case 1:
+        {
+            uint8_t val;
+            bool cont = state->context_ptr()->read8(state->context_ptr()->context, address, val);
+            read_value = val;
+            return cont;
+        }
+        case 2:
+        {
+            uint16_t val;
+            bool cont = state->context_ptr()->read16(state->context_ptr()->context, address, val);
+            read_value = val;
+            return cont;
+        }
+        case 4:
+        {
+            uint32_t val;
+            bool cont = state->context_ptr()->read32(state->context_ptr()->context, address, val);
+            read_value = val;
+            return cont;
+        }
+        case 8:
+        {
+            uint64_t val;
+            bool cont = state->context_ptr()->read64(state->context_ptr()->context, address, val);
+            read_value = val;
+            return cont;
+        }
+        default:
+            read_value = 0;
+            return false;
+        }
+    }
+
+
 
     // Hook callbacks
 
@@ -256,56 +314,33 @@ namespace lifted::verification
     {
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
         auto *state = ctx->state;
+        const uint8_t read_size = static_cast<uint8_t>(size);
 
-        bool cont = false;
-
-        // Read from paged_memory_state (which may sentinel-inject into its page data).
-        // Capture the returned value and write it back into Unicorn's mapped memory so
-        // the emulated CPU sees the same sentinel-injected value as the JIT executor.
-        // This hook fires BEFORE Unicorn's actual hardware read, so the write-back takes
-        // effect in time.
         uint64_t read_value = 0;
-        switch (size)
+        bool cont = read_from_verifier(state, address, read_size, read_value);
+
+        if (is_cross_page_read(address, read_size))
         {
-        case 1:
-        {
-            uint8_t val;
-            cont = state->context_ptr()->read8(state->context_ptr()->context, address, val);
-            read_value = val;
-            break;
-        }
-        case 2:
-        {
-            uint16_t val;
-            cont = state->context_ptr()->read16(state->context_ptr()->context, address, val);
-            read_value = val;
-            break;
-        }
-        case 4:
-        {
-            uint32_t val;
-            cont = state->context_ptr()->read32(state->context_ptr()->context, address, val);
-            read_value = val;
-            break;
-        }
-        case 8:
-        {
-            uint64_t val;
-            cont = state->context_ptr()->read64(state->context_ptr()->context, address, val);
-            read_value = val;
-            break;
-        }
+            // Unicorn 2.1.4 already reports the logical unaligned access once.
+            // Best-effort only: the host write may fail before the second page is
+            // materialized, so ignore that here and let Unicorn proceed.
+            uc_mem_write(uc, address, &read_value, read_size);
+            if (!cont)
+                uc_emu_stop(uc);
+            return;
         }
 
         // Push the (possibly sentinel-patched) value into Unicorn's memory so the
         // emulated CPU reads the same bytes that paged_memory_state returned.
-        // TODO: evaluate performance of this. If it's a problem, we can optimize by
-        // only doing this for actual sentinel injections.
-        uc_mem_write(uc, address, &read_value, size);
-        if (!cont)
+        uc_err err = uc_mem_write(uc, address, &read_value, read_size);
+        if (err != UC_ERR_OK)
         {
-            uc_emu_stop(uc);
+            fail_mem_read_hook(ctx, uc, err, address);
+            return;
         }
+
+        if (!cont)
+            uc_emu_stop(uc);
     }
     void UnicornExecutor::hook_mem_write(uc_engine *uc, uc_mem_type type, uint64_t address,
                                          int size, int64_t value, void *user_data)
@@ -331,6 +366,7 @@ namespace lifted::verification
             cont = state->context_ptr()->write64(state->context_ptr()->context, address, value);
             break;
         }
+
 
         if (!cont)
         {
@@ -662,6 +698,15 @@ namespace lifted::verification
         }
 
         // Check emulation result
+        if (ctx.mem_hook_err != UC_ERR_OK)
+        {
+            return llvm::make_error<llvm::StringError>(
+                std::string("hook_mem_read write-back failed at ") +
+                    std::to_string(ctx.mem_hook_err_addr) + ": " +
+                    uc_strerror(ctx.mem_hook_err),
+                llvm::inconvertibleErrorCode());
+        }
+
         if (err != UC_ERR_OK)
         {
             return llvm::make_error<llvm::StringError>(

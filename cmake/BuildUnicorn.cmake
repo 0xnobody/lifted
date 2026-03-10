@@ -5,7 +5,7 @@ message(STATUS "=== Fetching and Configuring Unicorn Engine ===")
 include(ExternalProject)
 
 # Configuration options
-set(UNICORN_VERSION "2.1.1" CACHE STRING "Unicorn Engine version/tag to fetch")
+set(UNICORN_VERSION "2.1.4" CACHE STRING "Unicorn Engine version/tag to fetch")
 set(UNICORN_REPOSITORY "https://github.com/unicorn-engine/unicorn.git" CACHE STRING "Unicorn Engine repository URL")
 
 # Preferred source/build locations
