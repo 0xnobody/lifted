@@ -138,10 +138,10 @@ namespace lifted::eval
         auto jit = std::shared_ptr<verification::Executor>(std::move(*jit_or));
 
         // Build ext_call_info from the lifter result so UnicornExecutor knows ahead-of-time
-        // which blocks are external callee entry-points and which are indirect-call dispatchers.
+        // which blocks are opaque external callees, recursive callsites, and indirect-call dispatchers.
         verification::UnicornExecutor::ext_call_info_t ext_info;
         {
-            // Map bb_id_t → rva for real blocks (needed to resolve SYNTHETIC_INDIRECT sources).
+            // Map bb_id_t → rva for real blocks (needed to resolve synthetic-edge sources).
             std::unordered_map<lifter::bb_id_t, uint64_t> bb_id_to_rva;
             for (const auto &bb : lift_result->basic_blocks)
                 if (bb.rva_range.has_value())
@@ -153,14 +153,17 @@ namespace lifted::eval
                     synth.dest_addr.has_value())
                     ext_info.ext_function_rvas.insert(*synth.dest_addr);
 
-            // Indirect dispatchers: source block of every SYNTHETIC_INDIRECT edge.
             for (const auto &edge : lift_result->edges)
-                if (edge.type == lifter::edge_t::Type::SYNTHETIC_INDIRECT)
-                {
-                    auto it = bb_id_to_rva.find(edge.source);
-                    if (it != bb_id_to_rva.end())
-                        ext_info.indr_dispatch_block_rvas.insert(it->second);
-                }
+            {
+                auto it = bb_id_to_rva.find(edge.source);
+                if (it == bb_id_to_rva.end())
+                    continue;
+
+                if (edge.type == lifter::edge_t::Type::SYNTHETIC_RECURSIVE_CALL)
+                    ext_info.recursive_callsite_rvas.insert(it->second);
+                else if (edge.type == lifter::edge_t::Type::SYNTHETIC_INDIRECT)
+                    ext_info.indr_dispatch_block_rvas.insert(it->second);
+            }
         }
 
         auto uc_or = verification::UnicornExecutor::create(bin_ctx, std::move(ext_info), entry_rva,

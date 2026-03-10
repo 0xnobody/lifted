@@ -46,12 +46,17 @@ namespace lifted::verification
             LOG_INSTRUCTIONS = 1 << 0, // Log each instruction executed (for debugging)
         };
 
-        /// Describes the external-call topology for a lifted function.
+        /// Describes the opaque-call topology for a lifted function.
         /// Supplied once at construction so no per-run hints are needed.
         ///
         /// ext_function_rvas:        RVAs of callee entry-points reached via CALL to a
         ///                           known external target (PLT stubs, helper functions, etc.).
         ///                           Populated from SYNTHETIC_EXTERNAL synthetic_block entries.
+        ///
+        /// recursive_callsite_rvas: RVAs of real blocks whose self-recursive CALL to the
+        ///                           function entry is summarized instead of followed.
+        ///                           hook_block treats entry_rva reached from one of these
+        ///                           predecessors as recursive re-entry.
         ///
         /// indr_dispatch_block_rvas: RVAs of the *dispatcher* basic blocks that perform
         ///                           indirect calls (e.g. `call [rax]`). Destinations are
@@ -61,13 +66,15 @@ namespace lifted::verification
         struct ext_call_info_t
         {
             std::unordered_set<uint64_t> ext_function_rvas;
+            std::unordered_set<uint64_t> recursive_callsite_rvas;
             std::unordered_set<uint64_t> indr_dispatch_block_rvas;
         };
 
     private:
         const lifted::BinaryContext *bin_ctx_; ///< Non-owning; must outlive this executor.
-        std::unordered_set<uint64_t> ext_rvas_;          // RVAs of known external callees
-        std::unordered_set<uint64_t> indr_dispatch_rvas_; // RVAs of indirect-call dispatcher BBs
+        std::unordered_set<uint64_t> ext_rvas_;               // RVAs of known external callees
+        std::unordered_set<uint64_t> recursive_callsite_rvas_; // RVAs of recursive callsites summarized at entry
+        std::unordered_set<uint64_t> indr_dispatch_rvas_;     // RVAs of indirect-call dispatcher BBs
         std::unique_ptr<uc_engine, decltype(&uc_close)> uc_eng;
         std::unique_ptr<uc_context, decltype(&uc_context_free)> clean_ctx;
         uint64_t entry_rva;
@@ -102,6 +109,7 @@ namespace lifted::verification
                         std::unordered_map<uint64_t, uint64_t> fallthrough_edges)
             : bin_ctx_(bin_ctx),
               ext_rvas_(std::move(ext_info.ext_function_rvas)),
+              recursive_callsite_rvas_(std::move(ext_info.recursive_callsite_rvas)),
               indr_dispatch_rvas_(std::move(ext_info.indr_dispatch_block_rvas)),
               uc_eng(nullptr, uc_close),
               clean_ctx(nullptr, uc_context_free),

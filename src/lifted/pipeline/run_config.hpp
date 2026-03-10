@@ -41,6 +41,10 @@ struct RunConfig
     uint64_t bb_limit   = UINT64_MAX;
     uint64_t loop_limit = UINT64_MAX;
 
+    /// How self-recursive calls are handled during verification.
+    verification::recursive_call_policy recursive_policy =
+        verification::recursive_call_policy::SKIP;
+
     /// Which events to record in checkpoints (passed to checkpoint_config_t::record_on).
     verification::event_flags record_flags = verification::event_flags::DEFAULT;
 
@@ -80,8 +84,9 @@ struct RunConfig
                 .record_details = record_details,
             },
             .loop_policy = verification::loop_limit_policy::TERMINATE,
-            .bb_limit    = bb_limit,
-            .loop_limit  = loop_limit,
+            .bb_limit = bb_limit,
+            .loop_limit = loop_limit,
+            .recursive_policy = recursive_policy,
         };
     }
 };

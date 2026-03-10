@@ -124,7 +124,22 @@ namespace lifted::lifter
             DLOG(WARNING) << "resolve_targets: failed to resolve targets for BB 0x"
                           << std::hex << ctx.bb.id;
 
-        // Step 7 – name resolution for EXTERNAL targets.
+        // Step 7 – direct call-to-entry is self-recursion, not a normal internal edge.
+        if (ctx.bb.terminating_category.has_value() &&
+            *ctx.bb.terminating_category ==
+                remill::Instruction::kCategoryDirectFunctionCall)
+        {
+            for (auto &target : result.targets)
+            {
+                if (target.type == resolved_target_t::Type::INTERNAL &&
+                    target.dest == ctx.entry_rva)
+                {
+                    target.type = resolved_target_t::Type::RECURSIVE;
+                }
+            }
+        }
+
+        // Step 8 – name resolution for EXTERNAL targets.
         // For each external target, look up the symbol name in BinaryContext and
         // create/reuse an fnc_annotation_t so the lifter can generate named stubs.
         for (auto &target : result.targets)
@@ -165,9 +180,8 @@ namespace lifted::lifter
         }
 
         // For `ret`-terminated blocks, signal that this block exits by
-        // returning to its caller.  The lifter will add RETURN_CONTINUATION
-        // edges from this block to every known return site, and use a normal
-        // function return (not dead_end) as the switch default in stitch_cfg.
+        // returning to its caller. The stitched CFG uses a normal function return
+        // (not dead_end) as the switch default for these blocks.
         if (ctx.bb.terminating_category.has_value() &&
             *ctx.bb.terminating_category ==
                 remill::Instruction::kCategoryFunctionReturn)

@@ -349,11 +349,12 @@ std::string overlay_to_dot(const CfgSnapshot    &cfg,
         // Base style from edge type.
         if (opts.cfg_opts.show_edge_labels) {
             switch (e.type) {
-            case ET::FALLTHROUGH:        label = "fall"; break;
-            case ET::SYNTHETIC_EXTERNAL: label = "ext";  break;
-            case ET::SYNTHETIC_INDIRECT: label = "ind";  break;
-            case ET::SYNTHETIC_RETURN:   label = "ret";  break;
-            default:                                      break;
+            case ET::FALLTHROUGH:            label = "fall"; break;
+            case ET::SYNTHETIC_EXTERNAL:     label = "ext";  break;
+            case ET::SYNTHETIC_RECURSIVE_CALL: label = "rec";  break;
+            case ET::SYNTHETIC_INDIRECT:     label = "ind";  break;
+            case ET::SYNTHETIC_RETURN:       label = "ret";  break;
+            default:                                          break;
             }
         }
         switch (e.type) {
@@ -364,6 +365,10 @@ std::string overlay_to_dot(const CfgSnapshot    &cfg,
         case ET::SYNTHETIC_EXTERNAL:
             style = "dotted";
             color = "steelblue";
+            break;
+        case ET::SYNTHETIC_RECURSIVE_CALL:
+            style = "dotted";
+            color = "mediumpurple3";
             break;
         case ET::SYNTHETIC_INDIRECT:
             style = "dotted";

@@ -82,6 +82,10 @@ namespace lifted::abi
             return "__lifted_systemv_call";
         }
 
+        llvm::StringRef getRecursiveCallStubName() const override
+        {
+            return "__lifted_systemv_recursive_call";
+        }
         unsigned getStackArgBaseOffset() const override
         {
             return 8; // Skip return address

@@ -184,11 +184,17 @@ namespace lifted::abi
         /// The ABI stub saves these before the call and restores them after.
         virtual llvm::ArrayRef<ABIRegister> getNonVolatileRegisters() const = 0;
 
-        /// Returns the name of the ABI-specific call stub helper.
+        /// Returns the name of the ABI-specific external-call stub helper.
         /// E.g. "__lifted_systemv_call" for System V x64.
         /// The stub saves non-volatile regs, calls __lifted_ext_call, restores them,
         /// and pops the return address.
         virtual llvm::StringRef getCallStubName() const = 0;
+
+        /// Returns the name of the ABI-specific recursive-call stub helper.
+        /// E.g. "__lifted_systemv_recursive_call" for System V x64.
+        /// The stub mirrors getCallStubName() but routes through
+        /// __lifted_recursive_call instead of __lifted_ext_call.
+        virtual llvm::StringRef getRecursiveCallStubName() const = 0;
 
         /// Base offset from RSP where stack arguments begin.
         /// System V: 8 (skip return address)
@@ -238,6 +244,7 @@ namespace lifted::abi
         llvm::ArrayRef<ABIRegister> getVolatileRegisters() const override;
         llvm::ArrayRef<ABIRegister> getNonVolatileRegisters() const override;
         llvm::StringRef getCallStubName() const override;
+        llvm::StringRef getRecursiveCallStubName() const override;
         unsigned getStackArgBaseOffset() const override;
         unsigned getStackAlignment() const override;
         llvm::FunctionType *getDefaultFunctionType(llvm::LLVMContext &Ctx) const override;

@@ -164,6 +164,11 @@ namespace lifted::abi
         return "__lifted_allregs_call"; // Unused
     }
 
+    llvm::StringRef AllRegistersCC::getRecursiveCallStubName() const
+    {
+        return "__lifted_allregs_recursive_call"; // Unused
+    }
+
     unsigned AllRegistersCC::getStackArgBaseOffset() const
     {
         return 8; // Unused

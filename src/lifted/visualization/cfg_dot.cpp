@@ -33,6 +33,11 @@ void emit_edge_style(std::ostringstream &os,
         if (show_labels) os << ", label=\"ext\"";
         os << "]";
         break;
+    case T::SYNTHETIC_RECURSIVE_CALL:
+        os << " [style=dotted, color=mediumpurple3";
+        if (show_labels) os << ", label=\"rec\"";
+        os << "]";
+        break;
     case T::SYNTHETIC_INDIRECT:
         os << " [style=dotted, color=salmon";
         if (show_labels) os << ", label=\"ind\"";
@@ -64,9 +69,11 @@ std::string cfg_to_dot(const CfgSnapshot &cfg, const CfgDotOptions &opts)
     std::vector<std::tuple<lifter::bb_id_t, lifter::bb_id_t, std::string>> merged_edges;
 
     if (opts.merge_synthetic) {
-        // Pass 1: populate synth_to_caller from SYNTHETIC_EXTERNAL/INDIRECT edges.
+        // Pass 1: populate synth_to_caller from opaque-call synthetic edges.
         for (const auto &e : cfg.edges) {
-            if (e.type == ET::SYNTHETIC_EXTERNAL || e.type == ET::SYNTHETIC_INDIRECT) {
+            if (e.type == ET::SYNTHETIC_EXTERNAL ||
+                e.type == ET::SYNTHETIC_RECURSIVE_CALL ||
+                e.type == ET::SYNTHETIC_INDIRECT) {
                 synth_to_caller[e.dest] = e.source;
                 std::string ann;
                 auto si_it = cfg.synthetic_blocks.find(e.dest);
@@ -74,6 +81,8 @@ std::string cfg_to_dot(const CfgSnapshot &cfg, const CfgDotOptions &opts)
                     const auto &si = si_it->second;
                     if (si.annotation && !si.annotation->name.empty())
                         ann = "\xe2\x86\x92 " + si.annotation->name + "()";
+                    else if (si.type == lifter::synthetic_block_info_t::Type::RECURSIVE)
+                        ann = "\xe2\x86\x92 recursive()";
                     else if (si.type == lifter::synthetic_block_info_t::Type::INDIRECT)
                         ann = "\xe2\x86\x92 indirect()";
                     else
@@ -93,12 +102,17 @@ std::string cfg_to_dot(const CfgSnapshot &cfg, const CfgDotOptions &opts)
                 lifter::bb_id_t caller = caller_it->second;
                 std::string label;
                 auto si_it = cfg.synthetic_blocks.find(e.source);
-                if (si_it != cfg.synthetic_blocks.end() &&
-                    si_it->second.annotation &&
-                    !si_it->second.annotation->name.empty())
-                    label = si_it->second.annotation->name;
-                else
+                if (si_it != cfg.synthetic_blocks.end()) {
+                    const auto &si = si_it->second;
+                    if (si.annotation && !si.annotation->name.empty())
+                        label = si.annotation->name;
+                    else if (si.type == lifter::synthetic_block_info_t::Type::RECURSIVE)
+                        label = "recursive";
+                    else
+                        label = "call/ret";
+                } else {
                     label = "call/ret";
+                }
                 merged_edges.emplace_back(caller, e.dest, label);
             }
         }
@@ -160,6 +174,9 @@ std::string cfg_to_dot(const CfgSnapshot &cfg, const CfgDotOptions &opts)
                     else
                         os << "ext_call";
                     break;
+                case lifter::synthetic_block_info_t::Type::RECURSIVE:
+                    os << "recursive";
+                    break;
                 case lifter::synthetic_block_info_t::Type::INDIRECT:
                     os << "indirect";
                     break;
@@ -178,11 +195,21 @@ std::string cfg_to_dot(const CfgSnapshot &cfg, const CfgDotOptions &opts)
         // Synthetic nodes: distinct shape + fill.
         if (is_synth) {
             auto it = cfg.synthetic_blocks.find(bb.id);
-            if (it != cfg.synthetic_blocks.end() &&
-                it->second.type == lifter::synthetic_block_info_t::Type::EXTERNAL)
-                os << ", shape=hexagon, fillcolor=lightblue, style=filled";
-            else
+            if (it != cfg.synthetic_blocks.end()) {
+                switch (it->second.type) {
+                case lifter::synthetic_block_info_t::Type::EXTERNAL:
+                    os << ", shape=hexagon, fillcolor=lightblue, style=filled";
+                    break;
+                case lifter::synthetic_block_info_t::Type::RECURSIVE:
+                    os << ", shape=hexagon, fillcolor=plum, style=filled";
+                    break;
+                case lifter::synthetic_block_info_t::Type::INDIRECT:
+                    os << ", shape=hexagon, fillcolor=lightsalmon, style=filled";
+                    break;
+                }
+            } else {
                 os << ", shape=hexagon, fillcolor=lightsalmon, style=filled";
+            }
         }
 
         os << "];\n";
@@ -193,6 +220,7 @@ std::string cfg_to_dot(const CfgSnapshot &cfg, const CfgDotOptions &opts)
     // ── Edges ─────────────────────────────────────────────────────────────────
     for (const auto &e : cfg.edges) {
         bool is_synth_edge = (e.type == ET::SYNTHETIC_EXTERNAL ||
+                               e.type == ET::SYNTHETIC_RECURSIVE_CALL ||
                                e.type == ET::SYNTHETIC_INDIRECT ||
                                e.type == ET::SYNTHETIC_RETURN);
         if (opts.merge_synthetic && is_synth_edge)

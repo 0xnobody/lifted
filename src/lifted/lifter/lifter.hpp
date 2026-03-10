@@ -104,8 +104,7 @@ namespace lifted::lifter
         lifted_bb_t lift_bb(uintptr_t addr,
                             std::optional<uintptr_t> stop_at = std::nullopt);
         lifted_bb_t create_synthetic_bb(bb_id_t id,
-                                        const lifted::fnc_annotation_t *annotation,
-                                        lift_context_t &ctx);
+                                        const synthetic_block_info_t &synth_info);
 
         /// Find the nearest already-explored REAL block whose id is strictly
         /// greater than `curr_id`.  Returns nullopt if none exists.
@@ -113,10 +112,12 @@ namespace lifted::lifter
 
         // ── Callee stubs ───────────────────────────────────────────────────
         /// Get or create a per-callee ABI stub in `M`.  The stub saves
-        /// non-volatile registers, calls opaque __lifted_ext_call_<name>,
-        /// restores non-volatile registers, and pops the return address.
+        /// non-volatile registers, calls either __lifted_ext_call_<name> or
+        /// __lifted_recursive_call, restores non-volatile registers, and pops
+        /// the return address.
         llvm::Expected<llvm::Function *> get_or_create_callee_stub(llvm::Module *M,
-                                                                   const lifted::fnc_annotation_t *annotation);
+                                                                   const lifted::fnc_annotation_t *annotation,
+                                                                   bool recursive);
 
         // ── CFG construction (implemented in cfg.cpp) ──────────────────────
 

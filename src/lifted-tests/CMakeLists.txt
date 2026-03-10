@@ -10,7 +10,8 @@ add_executable(lifted-tests
     "test_value_generator.cpp"
     "test_lifter_multi_function.cpp"
     "test_verifier_state_loop_limit.cpp"
-)
+    "test_verifier_state_recursive.cpp"
+    )
 target_link_libraries(lifted-tests PRIVATE lifted)
 
 # Provide the binary path for the multi-function lift test.

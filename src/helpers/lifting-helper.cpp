@@ -9,6 +9,7 @@
 // #include "standard-intrinsics.hpp"
 
 HELPER Memory *__lifted_ext_call(State *__restrict__, addr_t addr, Memory *);
+HELPER Memory *__lifted_recursive_call(State *__restrict__, addr_t addr, Memory *);
 
 HELPER Memory *__lifted_issue_ext_call(State *__restrict__ s, addr_t addr, Memory *m) // TODO: what to do with you
 {
@@ -18,19 +19,11 @@ HELPER Memory *__lifted_issue_ext_call(State *__restrict__ s, addr_t addr, Memor
   return m;
 }
 
-/// System V x64 ABI-aware external call stub.
-///
-/// Saves all callee-saved (non-volatile) registers, issues the opaque
-/// external call, then restores non-volatile registers. This makes the
-/// ABI contract visible to LLVM after inlining: LLVM can see that
-/// RBX, RBP, R12-R15 are preserved across the call and optimize
-/// accordingly, while volatile registers (RAX, RCX, RDX, RSI, RDI,
-/// R8-R11) are treated as clobbered (opaque call may write anything).
-///
-/// Also pops the return address (RIP = [RSP]; RSP += 8).
-HELPER Memory *__lifted_systemv_call(State *__restrict__ s, addr_t addr, Memory *m)
+template <auto OpaqueCall>
+static inline Memory *run_systemv_opaque_call(State *__restrict__ s, addr_t addr, Memory *m)
 {
-  // HACK: LLVM passes don't know what memory the external call might modify.
+  // HACK: LLVM passes don't know what memory the opaque call might modify.
+
   // So it is pessimistic, and assumes it can modify anything. This is a big
   // optimization barrier.
   //
@@ -46,7 +39,6 @@ HELPER Memory *__lifted_systemv_call(State *__restrict__ s, addr_t addr, Memory 
   // now, in order to progress in BB exploration, we just tell LLVM that the return
   // address is not changed across the call, in the same manner that we preserve
   // non-volatile registers.
-  //
   uint64_t retaddr = __remill_read_memory_64(m, s->gpr.rsp.qword);
 
   // Save non-volatile registers
@@ -58,8 +50,8 @@ HELPER Memory *__lifted_systemv_call(State *__restrict__ s, addr_t addr, Memory 
   uint64_t saved_r15 = s->gpr.r15.qword;
   uint64_t saved_rsp = s->gpr.rsp.qword;
 
-  // Issue the opaque external call — this may clobber anything in State
-  __lifted_ext_call(s, addr, m);
+  // Issue the opaque call — this may clobber anything in State
+  OpaqueCall(s, addr, m);
 
   // Restore non-volatile registers (ABI guarantee)
   s->gpr.rbx.qword = saved_rbx;
@@ -71,10 +63,22 @@ HELPER Memory *__lifted_systemv_call(State *__restrict__ s, addr_t addr, Memory 
   s->gpr.rsp.qword = saved_rsp;
 
   // Pop return address: RIP = [RSP]; RSP += 8
-  s->gpr.rip.qword = retaddr; //__remill_read_memory_64(m, s->gpr.rsp.qword);
+  s->gpr.rip.qword = retaddr;
   s->gpr.rsp.qword += 8;
 
   return m;
+}
+
+/// System V x64 ABI-aware external call stub.
+HELPER Memory *__lifted_systemv_call(State *__restrict__ s, addr_t addr, Memory *m)
+{
+  return run_systemv_opaque_call<__lifted_ext_call>(s, addr, m);
+}
+
+/// System V x64 ABI-aware recursive-call summary stub.
+HELPER Memory *__lifted_systemv_recursive_call(State *__restrict__ s, addr_t addr, Memory *m)
+{
+  return run_systemv_opaque_call<__lifted_recursive_call>(s, addr, m);
 }
 
 extern "C" uint64_t __slice_rip(State state, uint64_t rsp, addr_t curr_pc, Memory *__restrict__ memory)

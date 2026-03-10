@@ -135,6 +135,26 @@ namespace lifted::lifter
         B.SetInsertPoint(return_bb);
         B.CreateRet(B.CreateLoad(mem_ptr_ty, mem_var));
 
+        auto add_successor_switch_case = [&](llvm::SwitchInst *sw, bb_id_t succ, llvm::BasicBlock *dest_bb) {
+            auto sit = ctx.synthetic_blocks.find(succ);
+            if (sit == ctx.synthetic_blocks.end())
+            {
+                sw->addCase(B.getInt64(succ), dest_bb);
+                return;
+            }
+
+            switch (sit->second.type)
+            {
+            case synthetic_block_info_t::Type::EXTERNAL:
+            case synthetic_block_info_t::Type::RECURSIVE:
+                sw->addCase(B.getInt64(sit->second.dest_addr.value()), dest_bb);
+                break;
+            case synthetic_block_info_t::Type::INDIRECT:
+                break;
+            }
+        };
+
+
         // Stitching loop: fill each BB's basic block.
         for (bb_id_t id : blocks)
         {
@@ -209,18 +229,7 @@ namespace lifted::lifter
                     if (indirect_default.has_value() && succ == *indirect_default)
                         continue; // already the default
 
-                    auto sit = ctx.synthetic_blocks.find(succ);
-                    if (sit != ctx.synthetic_blocks.end())
-                    {
-                        if (sit->second.type == synthetic_block_info_t::Type::EXTERNAL)
-                            sw->addCase(B.getInt64(sit->second.dest_addr.value()),
-                                        block_map.at(succ));
-                        // INDIRECT handled as default.
-                    }
-                    else
-                    {
-                        sw->addCase(B.getInt64(succ), block_map.at(succ));
-                    }
+                    add_successor_switch_case(sw, succ, block_map.at(succ));
                 }
                 continue;
             }
@@ -282,18 +291,7 @@ namespace lifted::lifter
                     continue;
                 }
 
-                auto sit = ctx.synthetic_blocks.find(succ);
-                if (sit != ctx.synthetic_blocks.end())
-                {
-                    if (sit->second.type == synthetic_block_info_t::Type::EXTERNAL)
-                        sw->addCase(B.getInt64(sit->second.dest_addr.value()),
-                                    block_map.at(succ));
-                    // INDIRECT handled as default.
-                }
-                else
-                {
-                    sw->addCase(B.getInt64(succ), block_map.at(succ));
-                }
+                add_successor_switch_case(sw, succ, block_map.at(succ));
             }
         }
 
@@ -367,15 +365,7 @@ namespace lifted::lifter
 
         std::map<bb_id_t, std::vector<bb_id_t>> predecessors;
         for (const auto &e : ctx.edges)
-        {
-            // RETURN_CONTINUATION edges express forward dispatch reachability
-            // (ret-block → return site).  They must not pollute the backward
-            // slice: a return site's backward slice should only include real
-            // control-flow predecessors, not every block that can ret to it.
-            if (e.type == edge_t::Type::RETURN_CONTINUATION)
-                continue;
             predecessors[e.dest].push_back(e.source);
-        }
 
         for (size_t head = 0; head < worklist.size(); ++head)
         {
@@ -435,9 +425,8 @@ namespace lifted::lifter
             }
         }
 
-        // RETURN_CONTINUATION edges now carry return-site reachability — no
-        // manual injection needed; the BFS above already follows them.
-
+        // Recursive-call continuations are represented explicitly through
+        // synthetic blocks, so the BFS above already captures return reachability.
         // Populate optional output sets.
         if (out_blocks)
         {

@@ -74,14 +74,14 @@ namespace lifted::lifter
         enum class Type
         {
             INTERNAL,          ///< Part of the function – continue lifting.
+            RECURSIVE,         ///< Direct self-recursive call – model via recursive synthetic block.
             EXTERNAL,          ///< External function – emit an ext call stub.
             RETURN_TO_CALLER,  ///< Block exits by returning to its caller (e.g. a `ret`
-                               ///  instruction).  No dest address; signals that
-                               ///  RETURN_CONTINUATION edges should be the dispatch
-                               ///  targets, with a natural function return as the default.
+                               ///  instruction). No dest address; stitched CFG defaults to the
+                               ///  natural function return when no continuation is known.
         };
         Type type;
-        uint64_t dest;                                  ///< Address (RVA for INTERNAL, VA for EXTERNAL).
+        uint64_t dest;                                  ///< Address (RVA for INTERNAL/RECURSIVE, VA for EXTERNAL).
         const lifted::fnc_annotation_t *annotation = nullptr; ///< Valid for EXTERNAL only; null = no annotation.
     };
 
@@ -113,13 +113,14 @@ namespace lifted::lifter
     {
         enum class Type
         {
-            EXTERNAL, ///< External function call dispatcher.
-            INDIRECT, ///< Indirect call dispatcher.
+            EXTERNAL,  ///< External function call dispatcher.
+            RECURSIVE, ///< Self-recursive call dispatcher.
+            INDIRECT,  ///< Indirect call dispatcher.
         };
 
         Type type;
-        std::optional<uint64_t> dest_addr;                       ///< Valid for EXTERNAL – address of the callee.
-        const lifted::fnc_annotation_t *annotation = nullptr;    ///< Annotation for the callee; null = unknown.
+        std::optional<uint64_t> dest_addr;                    ///< Valid for EXTERNAL/RECURSIVE – address used as the dispatch key.
+        const lifted::fnc_annotation_t *annotation = nullptr; ///< Annotation for the callee; null = unknown.
     };
 
     // ── edge_t ────────────────────────────────────────────────────────────────
@@ -131,14 +132,12 @@ namespace lifted::lifter
 
         enum class Type
         {
-            CONTROL_FLOW,        ///< Normal jumps/branches from resolve_targets.
-            FALLTHROUGH,         ///< Sequential flow created during block splitting.
-            SYNTHETIC_EXTERNAL,  ///< Real block → external call dispatcher.
-            SYNTHETIC_INDIRECT,  ///< Real block → indirect call dispatcher.
-            SYNTHETIC_RETURN,    ///< Synthetic dispatcher → continuation (return addr block).
-            RETURN_CONTINUATION, ///< ret-block → return site (dynamic via stack).  Added when
-                                 ///  both the RETURN_TO_CALLER block and the return continuation
-                                 ///  site are known.  Carries the full unwind path in the edge set.
+            CONTROL_FLOW,            ///< Normal jumps/branches from resolve_targets.
+            FALLTHROUGH,             ///< Sequential flow created during block splitting.
+            SYNTHETIC_EXTERNAL,      ///< Real block → external call dispatcher.
+            SYNTHETIC_RECURSIVE_CALL, ///< Real block → recursive call dispatcher.
+            SYNTHETIC_INDIRECT,      ///< Real block → indirect call dispatcher.
+            SYNTHETIC_RETURN,        ///< Synthetic dispatcher → continuation (return addr block).
         } type;
 
         edge_t(bb_id_t src, bb_id_t dst, Type t = Type::CONTROL_FLOW)
@@ -161,7 +160,7 @@ namespace lifted::lifter
     struct callee_stub_entry_t
     {
         std::string stub_func_name;
-        std::string ext_call_decl_name;
+        std::string ext_call_decl_name; ///< Empty for recursive stubs that call the shared helper directly.
         const lifted::fnc_annotation_t *annotation; ///< Non-owning; valid for BinaryContext lifetime.
     };
 
@@ -218,8 +217,14 @@ namespace lifted::lifter
         case resolved_target_t::Type::INTERNAL:
             os << "INTERNAL(0x" << llvm::format_hex(t.dest, 16) << ")";
             break;
+        case resolved_target_t::Type::RECURSIVE:
+            os << "RECURSIVE(entry)";
+            break;
         case resolved_target_t::Type::EXTERNAL:
             os << "EXTERNAL(0x" << llvm::format_hex(t.dest, 16) << ")";
+            break;
+        case resolved_target_t::Type::RETURN_TO_CALLER:
+            os << "RETURN_TO_CALLER";
             break;
         }
         return os;

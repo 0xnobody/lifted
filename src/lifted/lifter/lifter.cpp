@@ -18,6 +18,7 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/Support/Error.h>
+#include <llvm/Support/ErrorHandling.h>
 #include <llvm/Transforms/Utils/Cloning.h>
 
 #include <glog/logging.h>
@@ -159,7 +160,8 @@ namespace lifted::lifter
     // ── Callee stubs ────────────────────────────────────────────────────────────
 
     llvm::Expected<llvm::Function *> Lifter::get_or_create_callee_stub(llvm::Module *M,
-                                                                       const lifted::fnc_annotation_t *annotation)
+                                                                       const lifted::fnc_annotation_t *annotation,
+                                                                       bool recursive)
     {
         std::string key = (annotation && !annotation->name.empty())
                               ? annotation->name
@@ -179,21 +181,26 @@ namespace lifted::lifter
                 "get_or_create_callee_stub: no calling convention for callee '" + key + "'",
                 llvm::inconvertibleErrorCode());
 
-        std::string template_stub_name = cc->getCallStubName().str();
+        std::string template_stub_name =
+            (recursive ? cc->getRecursiveCallStubName() : cc->getCallStubName()).str();
         auto *template_stub = M->getFunction(template_stub_name);
         assert(template_stub && ("Missing ABI stub template: " + template_stub_name).c_str());
 
-        // Create per-callee ext call declaration.
-        std::string ext_call_name = "__lifted_ext_call_" + key;
-        auto *ext_call_decl = M->getFunction(ext_call_name);
-        if (!ext_call_decl)
+        llvm::Function *ext_call_decl = nullptr;
+        if (!recursive)
         {
-            auto *orig_ext_call = M->getFunction("__lifted_ext_call");
-            assert(orig_ext_call && "Missing __lifted_ext_call declaration");
-            ext_call_decl = llvm::Function::Create(
-                orig_ext_call->getFunctionType(),
-                llvm::Function::ExternalLinkage,
-                ext_call_name, M);
+            // Create per-callee ext call declaration.
+            std::string ext_call_name = "__lifted_ext_call_" + key;
+            ext_call_decl = M->getFunction(ext_call_name);
+            if (!ext_call_decl)
+            {
+                auto *orig_ext_call = M->getFunction("__lifted_ext_call");
+                assert(orig_ext_call && "Missing __lifted_ext_call declaration");
+                ext_call_decl = llvm::Function::Create(
+                    orig_ext_call->getFunctionType(),
+                    llvm::Function::ExternalLinkage,
+                    ext_call_name, M);
+            }
         }
 
         // Clone template stub → per-callee stub.
@@ -202,29 +209,43 @@ namespace lifted::lifter
         auto *stub = llvm::CloneFunction(template_stub, vmap);
         stub->setName(stub_name);
 
-        // Redirect calls to __lifted_ext_call → __lifted_ext_call_<name>.
-        auto *orig_ext_call = M->getFunction("__lifted_ext_call");
-        for (auto &BB : *stub)
-            for (auto &I : BB)
-                if (auto *ci = llvm::dyn_cast<llvm::CallInst>(&I))
-                    if (ci->getCalledFunction() == orig_ext_call)
-                        ci->setCalledFunction(ext_call_decl);
+        if (!recursive)
+        {
+            // Redirect calls to __lifted_ext_call → __lifted_ext_call_<name>.
+            auto *orig_ext_call = M->getFunction("__lifted_ext_call");
+            for (auto &BB : *stub)
+                for (auto &I : BB)
+                    if (auto *ci = llvm::dyn_cast<llvm::CallInst>(&I))
+                        if (ci->getCalledFunction() == orig_ext_call)
+                            ci->setCalledFunction(ext_call_decl);
+        }
 
         callee_stubs_[key] = callee_stub_entry_t{
-            stub->getName().str(), ext_call_decl->getName().str(), annotation};
+            stub->getName().str(),
+            ext_call_decl ? ext_call_decl->getName().str() : std::string{},
+            annotation};
         return stub;
     }
 
     // ── Synthetic BB ────────────────────────────────────────────────────────────
 
     lifted_bb_t Lifter::create_synthetic_bb(bb_id_t id,
-                                            const lifted::fnc_annotation_t *annotation,
-                                            lift_context_t &ctx)
+                                            const synthetic_block_info_t &synth_info)
     {
-        (void)ctx; // Currently unused; kept for future callbacks.
-
         std::stringstream ss;
-        ss << "BB_" << std::hex << id << "_indr";
+        ss << "BB_" << std::hex << id;
+        switch (synth_info.type)
+        {
+        case synthetic_block_info_t::Type::EXTERNAL:
+            ss << "_ext";
+            break;
+        case synthetic_block_info_t::Type::RECURSIVE:
+            ss << "_recur";
+            break;
+        case synthetic_block_info_t::Type::INDIRECT:
+            ss << "_indr";
+            break;
+        }
         auto *F = arch_->DeclareLiftedFunction(ss.str(), work_module_.get());
         arch_->InitializeEmptyLiftedFunction(F);
 
@@ -234,25 +255,31 @@ namespace lifted::lifter
 
         llvm::IRBuilder<> ir(&F->getEntryBlock());
 
+        const auto *annotation = synth_info.annotation;
+        const bool recursive = synth_info.type == synthetic_block_info_t::Type::RECURSIVE;
         const abi::CallingConvention *cc = callbacks_->resolve_cc(annotation);
         if (cc)
         {
-            auto stub_or = get_or_create_callee_stub(work_module_.get(), annotation);
+            auto stub_or = get_or_create_callee_stub(work_module_.get(), annotation, recursive);
             if (stub_or)
             {
                 ir.CreateRet(ir.CreateCall(*stub_or, {state_ptr, pc, mem}));
             }
             else
             {
+                if (recursive)
+                    llvm::report_fatal_error("create_synthetic_bb: recursive stub creation failed");
                 DLOG(WARNING) << "create_synthetic_bb: " << llvm::toString(stub_or.takeError());
-                auto *ext_func = work_module_->getFunction("__lifted_issue_ext_call");
-                ir.CreateRet(ir.CreateCall(ext_func, {state_ptr, pc, mem}));
+                auto *fallback = work_module_->getFunction("__lifted_issue_ext_call");
+                ir.CreateRet(ir.CreateCall(fallback, {state_ptr, pc, mem}));
             }
         }
         else
         {
-            auto *ext_func = work_module_->getFunction("__lifted_issue_ext_call");
-            ir.CreateRet(ir.CreateCall(ext_func, {state_ptr, pc, mem}));
+            if (recursive)
+                llvm::report_fatal_error("create_synthetic_bb: recursive synthetic block requires a calling convention");
+            auto *fallback = work_module_->getFunction("__lifted_issue_ext_call");
+            ir.CreateRet(ir.CreateCall(fallback, {state_ptr, pc, mem}));
         }
 
         return lifted_bb_t{
@@ -537,7 +564,7 @@ namespace lifted::lifter
                 if (is_synthetic(curr_id))
                 {
                     const auto &synth_info = ctx.synthetic_blocks.at(curr_id);
-                    bb = create_synthetic_bb(curr_id, synth_info.annotation, ctx);
+                    bb = create_synthetic_bb(curr_id, synth_info);
                 }
                 else
                 {
@@ -644,11 +671,27 @@ namespace lifted::lifter
                         ctx.reprove_subtree(new_id);
                     break;
                 }
+                case resolved_target_t::Type::RECURSIVE:
+                {
+                    if (ctx.recursive_synthetic_index.count(curr_id))
+                        break; // already created
+                    bb_id_t disp_id = next_synthetic_id_++;
+                    ctx.synthetic_blocks[disp_id] = synthetic_block_info_t{
+                        .type = synthetic_block_info_t::Type::RECURSIVE,
+                        .dest_addr = ctx.entry_rva,
+                        .annotation = nullptr};
+                    ctx.recursive_synthetic_index[curr_id] = disp_id;
+                    ctx.edges.insert(edge_t{curr_id, disp_id,
+                                            edge_t::Type::SYNTHETIC_RECURSIVE_CALL});
+                    ctx.worklist.push_back(disp_id);
+                    break;
+                }
                 case resolved_target_t::Type::EXTERNAL:
                 {
                     auto ext_key = std::make_pair(curr_id, target.dest);
                     if (ctx.external_synthetic_index.count(ext_key))
                         break; // already created
+
 
                     bb_id_t disp_id = next_synthetic_id_++;
                     ctx.synthetic_blocks[disp_id] = synthetic_block_info_t{
@@ -665,12 +708,6 @@ namespace lifted::lifter
                 {
                     // Record this block as a ret-terminated caller-returning block.
                     ctx.return_to_caller_blocks.insert(curr_id);
-                    // Add RETURN_CONTINUATION edges to every continuation site
-                    // that has already been discovered (ordering-safe).
-                    for (bb_id_t rcs : ctx.return_continuation_sites)
-                        if (!ctx.has_edge_between(curr_id, rcs))
-                            ctx.edges.insert(
-                                edge_t{curr_id, rcs, edge_t::Type::RETURN_CONTINUATION});
                     break;
                 }
                 }
@@ -693,21 +730,13 @@ namespace lifted::lifter
             }
 
             // The callback signals the return site of a call-like block via
-            // return_continuation.  Register it and cross-reference with every
-            // already-known RETURN_TO_CALLER block (ordering-safe).
+            // return_continuation. Duplicate enqueue before first exploration is
+            // benign because the main loop skips blocks that were already explored.
             if (targets_result.return_continuation.has_value())
             {
                 bb_id_t return_site = *targets_result.return_continuation;
-                if (!ctx.return_continuation_sites.count(return_site))
-                {
-                    ctx.return_continuation_sites.insert(return_site);
-                    for (bb_id_t rtcb : ctx.return_to_caller_blocks)
-                        if (!ctx.has_edge_between(rtcb, return_site))
-                            ctx.edges.insert(
-                                edge_t{rtcb, return_site, edge_t::Type::RETURN_CONTINUATION});
-                    if (!explored_.count(return_site))
-                        ctx.worklist.push_back(return_site);
-                }
+                if (!explored_.count(return_site))
+                    ctx.worklist.push_back(return_site);
             }
         } // end main loop
 

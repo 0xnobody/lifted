@@ -233,34 +233,45 @@ namespace lifted::verification
         State state = unicorn_to_state(uc);
 
         // Compute the normalised predecessor RVA once.
-        // Used for both INDIRECT dispatch detection and the bb_entered call.
+        // Used for opaque-call detection and the bb_entered call.
+        const uint64_t current_rva = address - LOAD_BASE;
         const uint64_t from_rva_uc = (prev < LOAD_BASE)
             ? uint64_t(-1)
             : ctx->executor->normalize_from(prev - LOAD_BASE, prev_tb_size);
 
         // EXTERNAL call: block being entered is a known external callee (PLT stub, helper, …).
-        const bool is_ext = ctx->executor->ext_rvas_.contains(address - LOAD_BASE);
+        const bool is_ext = ctx->executor->ext_rvas_.contains(current_rva);
+
+        // RECURSIVE call: a known self-recursive callsite re-entered the function entry.
+        const bool is_recursive = !is_ext &&
+                                  current_rva == ctx->executor->entry_rva &&
+                                  from_rva_uc != uint64_t(-1) &&
+                                  ctx->executor->recursive_callsite_rvas_.contains(from_rva_uc);
 
         // INDIRECT call: the previous real BB was an indirect-call dispatcher.
         // Because a dispatcher BB may ONLY dispatch indirect calls (it cannot mix
         // EXTERNAL or INTERNAL targets), any block it lands on is an opaque callee.
-        const bool is_indr = !is_ext &&
+        const bool is_indr = !is_ext && !is_recursive &&
                              from_rva_uc != uint64_t(-1) &&
                              ctx->executor->indr_dispatch_rvas_.contains(from_rva_uc);
 
-        if (is_ext || is_indr)
+        if (is_ext || is_recursive || is_indr)
         {
-            if (!ctx->state->context_ptr()->ext_call(ctx->state->context_ptr()->context, &state, address))
+            auto *vctx = ctx->state->context_ptr();
+            bool keep_running = is_recursive
+                                    ? vctx->recursive_call(vctx->context, &state, address)
+                                    : vctx->ext_call(vctx->context, &state, address);
+            if (!keep_running)
             {
                 uc_emu_stop(uc);
                 return;
             }
 
             // Pop the return address that `call` pushed, restoring the stack as if
-            // the callee returned normally.  Signal the outer run_single_impl loop
-            // to restart emulation from retaddr — Unicorn must not execute the
-            // callee body (PLT stub / oracle-injected code) or it can spin forever
-            // inside a single tight-loop TB that uc_emu_stop cannot interrupt.
+            // the opaque callee returned normally. Signal the outer run_single_impl
+            // loop to restart emulation from retaddr — Unicorn must not execute the
+            // summarized callee body or it can spin forever inside a single tight-loop
+            // TB that uc_emu_stop cannot interrupt.
             uint64_t rsp;
             uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
             uint64_t retaddr = ctx->state->memory().read64(rsp);
@@ -273,7 +284,7 @@ namespace lifted::verification
         }
         else
         {
-            if (!ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, &state, from_rva_uc, address - LOAD_BASE))
+            if (!ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, &state, from_rva_uc, current_rva))
             {
                 uc_emu_stop(uc);
                 return;
@@ -666,11 +677,11 @@ namespace lifted::verification
             }
         }
 
-        // Run emulation; restart after each ext_call that signals a resume address.
-        // hook_block sets ctx.resume_rip and calls uc_emu_stop so QEMU exits
-        // cleanly after the current TB (PLT stub) without launching the
-        // oracle-injected callee body (which may contain a tight `jmp -2` loop
-        // that uc_emu_stop cannot interrupt while inside a single TB).
+        // Run emulation; restart after each opaque call that signals a resume
+        // address. hook_block sets ctx.resume_rip and calls uc_emu_stop so QEMU
+        // exits cleanly after the current TB without launching the summarized
+        // callee body (which may contain a tight `jmp -2` loop that uc_emu_stop
+        // cannot interrupt while inside a single TB).
         uint64_t next_rip = state.get_initial_state().gpr.rip.qword;
         do {
             ctx.resume_rip = 0;

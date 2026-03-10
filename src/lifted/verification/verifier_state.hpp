@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/Format.h>
 #include <llvm/Support/raw_ostream.h>
 
@@ -41,6 +42,12 @@ namespace lifted::verification
         FORCE_EXECUTION,
     };
 
+    enum class recursive_call_policy
+    {
+        SKIP,
+        FOLLOW,
+    };
+
     struct run_params_t
     {
         uint64_t seed;
@@ -56,6 +63,7 @@ namespace lifted::verification
         loop_limit_policy loop_policy = loop_limit_policy::TERMINATE;
         uint64_t bb_limit = UINT64_MAX;   // max basic blocks executed (UINT64_MAX = unlimited)
         uint64_t loop_limit = UINT64_MAX; // max back-edge arrivals per header (UINT64_MAX = unlimited)
+        recursive_call_policy recursive_policy = recursive_call_policy::SKIP;
     };
 
     struct execution_flags_t
@@ -94,6 +102,7 @@ namespace lifted::verification
         uint64_t bb_step = 0;
         uint64_t bb_loop_limit = -1;
         uint64_t bb_limit = -1;
+        recursive_call_policy recursive_policy_ = recursive_call_policy::SKIP;
 
         exit_type exit_reason = exit_type::NATURAL_EXIT;
         execution_flags_t flags{};
@@ -341,6 +350,21 @@ namespace lifted::verification
                        : true;
         }
 
+        virtual bool on_recursive_call(State *state, uint64_t addr)
+        {
+            // Recursive summaries participate in the same opaque-call trace as
+            // external calls so comparator ext-call diffs still see skipped recursion.
+            (void)state;
+            ext_calls.push_back(addr);
+
+            if (has_flag(log_on, event_flags::EXT_CALL))
+            {
+                llvm::outs() << "on_recursive_call " << llvm::format_hex(addr, 16) << "\n";
+            }
+
+            return true;
+        }
+
     private:
         // Static proxies invoke virtual methods
         static bool read8_proxy(void *context, uint64_t addr, uint8_t &value)
@@ -391,6 +415,11 @@ namespace lifted::verification
         static bool ext_call_proxy(void *context, State *state, uint64_t addr)
         {
             return from_context(context)->on_ext_call(state, addr);
+        }
+
+        static bool recursive_call_proxy(void *context, State *state, uint64_t addr)
+        {
+            return from_context(context)->on_recursive_call(state, addr);
         }
 
         void initialize_initial_state(uint64_t seed, uint64_t entry_rva)
@@ -454,6 +483,7 @@ namespace lifted::verification
 
             verifier_context.bb_entered = &bb_entered_proxy;
             verifier_context.ext_call = &ext_call_proxy;
+            verifier_context.recursive_call = &recursive_call_proxy;
 
             verifier_context.entry_rva = entry_rva;
             verifier_context.context = this;
@@ -463,8 +493,8 @@ namespace lifted::verification
     public:
         verifier_state(const run_params_t &params, const verification_params_t &verif_params, event_flags log_on_flags = event_flags::NONE)
             : mem_state(params.seed ^ 0xFEEDFEEDFEEDFEED, params.bin_ctx, LOAD_BASE, params.oracle, params.value_gen_factory),
-              bbs_entered_rvas(),
               ext_calls(),
+              bbs_entered_rvas(),
               verifier_context(),
               log_on(log_on_flags),
               sentinel_oracle_(params.oracle),
@@ -476,6 +506,11 @@ namespace lifted::verification
                 checkpoint_record.enable_details();
             bb_limit = verif_params.bb_limit;
             bb_loop_limit = verif_params.loop_limit;
+            recursive_policy_ = verif_params.recursive_policy;
+            if (recursive_policy_ != recursive_call_policy::SKIP)
+            {
+                llvm::report_fatal_error("recursive_call_policy::FOLLOW is not implemented");
+            }
             initialize_context(params.seed, params.entry_rva);
         }
 
@@ -519,6 +554,11 @@ namespace lifted::verification
         const std::vector<uint64_t> &external_calls() const
         {
             return ext_calls;
+        }
+
+        recursive_call_policy recursive_policy() const
+        {
+            return recursive_policy_;
         }
 
         static run_result_t finalize(verifier_state &&state)

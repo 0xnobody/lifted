@@ -12,6 +12,7 @@
 jit_executor_context_t *__ctx;
 
 HELPER Memory *__lifted_ext_call(State *__restrict__, addr_t addr, Memory *);
+HELPER Memory *__lifted_recursive_call(State *__restrict__, addr_t addr, Memory *);
 
 void assert_exit(bool value)
 {
@@ -101,6 +102,15 @@ HELPER Memory *__lifted_ext_call(State *state, addr_t addr, Memory *m)
     synchronize_flags(state);
 
     assert_exit(__ctx->verifier_context->ext_call(__ctx->verifier_context->context, state, addr));
+    return m;
+}
+
+HELPER Memory *__lifted_recursive_call(State *state, addr_t addr, Memory *m)
+{
+    synchronize_flags(state);
+
+    assert_exit(__ctx->verifier_context->recursive_call(
+        __ctx->verifier_context->context, state, addr));
     return m;
 }
 

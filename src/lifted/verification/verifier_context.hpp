@@ -18,6 +18,7 @@ using fn_write64 = bool (*)(void *context, uint64_t addr, uint64_t value);
 
 using fn_bb_entered = bool (*)(void *context, State *state, uint64_t from_rva, uint64_t rva);
 using fn_ext_call = bool (*)(void *context, State *state, uint64_t addr);
+using fn_recursive_call = bool (*)(void *context, State *state, uint64_t addr);
 
 struct verifier_context_t
 {
@@ -33,6 +34,7 @@ struct verifier_context_t
 
     fn_bb_entered bb_entered;
     fn_ext_call ext_call;
+    fn_recursive_call recursive_call;
 
     uint64_t entry_rva;
     void *context;
