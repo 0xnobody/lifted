@@ -1,0 +1,8 @@
+CompileFlags:
+  CompilationDatabase: build/
+  # Strip flags clangd does not understand (gcc-11 / Remill build flags)
+  Remove:
+    - -Wno-register
+
+Diagnostics:
+  UnusedIncludes: None

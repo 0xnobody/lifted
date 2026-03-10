@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "clangd": {
+      "command": "clangd-16",
+      "args": [
+        "--background-index",
+        "--clang-tidy",
+        "--header-insertion=iwyu",
+        "--compile-commands-dir=build"
+      ]
+    }
+  }
+}
