@@ -556,6 +556,11 @@ namespace lifted::verification
             return ext_calls;
         }
 
+        void set_exit_reason(exit_type reason)
+        {
+            exit_reason = reason;
+        }
+
         recursive_call_policy recursive_policy() const
         {
             return recursive_policy_;

@@ -316,6 +316,11 @@ namespace lifted::verification
             rsp += 8;
             uc_reg_write(uc, UC_X86_REG_RSP, &rsp);
 
+            // A summarized callee must not become the logical predecessor of the
+            // continuation. Preserve the caller-side TB so the resumed bb_entered
+            // matches JIT last_bb_rva bookkeeping.
+            ctx->prev_block = prev;
+            ctx->prev_size = prev_tb_size;
             ctx->resume_rip = retaddr;
             uc_emu_stop(uc);
             return;
@@ -739,9 +744,9 @@ namespace lifted::verification
                 break;
             if (ctx.resume_rip != 0)
             {
-                next_rip       = ctx.resume_rip;
-                ctx.prev_block = 0; // next bb_entered is logically first
-                ctx.prev_size  = 0;
+                // hook_block already restored the caller-side predecessor for
+                // the resumed continuation; only the restart RIP changes here.
+                next_rip = ctx.resume_rip;
             }
         } while (ctx.resume_rip != 0);
 
@@ -767,14 +772,20 @@ namespace lifted::verification
                 llvm::inconvertibleErrorCode());
         }
 
-        if (err != UC_ERR_OK)
+        const bool guest_exception = (err == UC_ERR_EXCEPTION);
+        if (err != UC_ERR_OK && !guest_exception)
         {
             return llvm::make_error<llvm::StringError>(
                 std::string("uc_emu_start failed: ") + uc_strerror(err),
                 llvm::inconvertibleErrorCode());
         }
 
-        // Read final state from Unicorn
+        if (guest_exception)
+            state.set_exit_reason(exit_type::EXCEPTION);
+
+        // Read final state from Unicorn even for guest CPU traps: they are an
+        // expected execution outcome (compared as FAIL_INCOMPARABLE), not an
+        // executor infrastructure failure.
         State final_state = unicorn_to_state(uc_eng.get());
         state.context_ptr()->final_reg_state = final_state;
 
