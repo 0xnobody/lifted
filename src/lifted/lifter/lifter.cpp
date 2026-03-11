@@ -539,6 +539,7 @@ namespace lifted::lifter
                             ctx.edges.erase(e);
                         for (const auto &e : to_add)
                             ctx.edges.insert(e);
+                        ctx.remap_synthetic_sources(orig_id, bb_end.id);
 
                         // Fallthrough edge from bb_start → bb_end.
                         ctx.edges.insert(edge_t{bb_start.id, bb_end.id,

@@ -53,6 +53,45 @@ struct lift_context_t
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
+    /// When block splitting redirects all original successors to `new_source`,
+    /// the per-source synthetic dedup indices must follow the same ownership so
+    /// later reprove of `new_source` reuses the existing synthetic blocks.
+    void remap_synthetic_sources(bb_id_t old_source, bb_id_t new_source)
+    {
+        if (old_source == new_source)
+            return;
+
+        for (auto it = external_synthetic_index.begin();
+             it != external_synthetic_index.end(); )
+        {
+            if (it->first.first != old_source)
+            {
+                ++it;
+                continue;
+            }
+
+            const auto dest_addr = it->first.second;
+            const auto synth_id = it->second;
+            it = external_synthetic_index.erase(it);
+            external_synthetic_index.emplace(
+                std::make_pair(new_source, dest_addr), synth_id);
+        }
+
+        auto remap_single_source_index = [old_source, new_source](auto &index)
+        {
+            auto it = index.find(old_source);
+            if (it == index.end())
+                return;
+
+            const auto synth_id = it->second;
+            index.erase(it);
+            index.emplace(new_source, synth_id);
+        };
+
+        remap_single_source_index(indirect_synthetic_index);
+        remap_single_source_index(recursive_synthetic_index);
+    }
+
     /// Returns true when any edge exists between src and dst (ignoring type).
     bool has_edge_between(bb_id_t src, bb_id_t dst) const
     {

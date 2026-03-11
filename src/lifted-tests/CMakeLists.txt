@@ -8,6 +8,7 @@ add_executable(lifted-tests
     "test_comparator.cpp"
     "test_comparator_diff.cpp"
     "test_value_generator.cpp"
+    "test_lift_context.cpp"
     "test_lifter_multi_function.cpp"
     "test_verifier_state_loop_limit.cpp"
     "test_verifier_state_recursive.cpp"
