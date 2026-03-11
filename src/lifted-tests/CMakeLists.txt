@@ -23,3 +23,4 @@ if(DEFINED EVAL_TWO_FUNCS_SO)
 endif()
 
 target_link_libraries(lifted-tests PRIVATE lifted)
+

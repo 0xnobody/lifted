@@ -50,6 +50,34 @@ namespace lifted::verification
     }
 
 
+    static uc_err materialize_page(unicorn_ctx_t *ctx, uc_engine *uc, uint64_t page_addr)
+    {
+        auto data = ctx->state->memory().map(page_addr);
+        if (data.empty())
+            return UC_ERR_OK;
+
+        uc_err err = uc_mem_map(uc, page_addr, data.size(), UC_PROT_ALL);
+        if (err == UC_ERR_OK)
+            return uc_mem_write(uc, page_addr, data.data(), data.size());
+        if (err == UC_ERR_MAP)
+            return UC_ERR_OK;
+        return err;
+    }
+
+    static uc_err materialize_range(unicorn_ctx_t *ctx, uc_engine *uc, uint64_t address, uint8_t size)
+    {
+        uint64_t first_page = address & ~0xFFFULL;
+        if (uc_err err = materialize_page(ctx, uc, first_page); err != UC_ERR_OK)
+            return err;
+
+        uint64_t last_page = (address + size - 1) & ~0xFFFULL;
+        if (last_page != first_page)
+            if (uc_err err = materialize_page(ctx, uc, last_page); err != UC_ERR_OK)
+                return err;
+
+        return UC_ERR_OK;
+    }
+
     static bool read_from_verifier(verifier_state *state, uint64_t address, uint8_t size, uint64_t &read_value)
     {
         switch (size)
@@ -258,23 +286,33 @@ namespace lifted::verification
         if (is_ext || is_recursive || is_indr)
         {
             auto *vctx = ctx->state->context_ptr();
-            bool keep_running = is_recursive
-                                    ? vctx->recursive_call(vctx->context, &state, address)
-                                    : vctx->ext_call(vctx->context, &state, address);
+
+            // HACK: the JIT opaque-call helper reads [RSP] to capture the return
+            // address before it emits the EXT_CALL / recursive_call event. Mirror
+            // that helper-internal read here so record_flags=ALL produces the same
+            // observable event sequence in Unicorn. This is executor bookkeeping,
+            // not guest intent, but keeping the traces aligned is simpler than
+            // teaching the JIT helper to hide it.
+            uint64_t rsp;
+            uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
+
+            uint64_t retaddr = 0;
+            bool keep_running = vctx->read64(vctx->context, rsp, retaddr);
             if (!keep_running)
             {
                 uc_emu_stop(uc);
                 return;
             }
 
-            // Pop the return address that `call` pushed, restoring the stack as if
-            // the opaque callee returned normally. Signal the outer run_single_impl
-            // loop to restart emulation from retaddr — Unicorn must not execute the
-            // summarized callee body or it can spin forever inside a single tight-loop
-            // TB that uc_emu_stop cannot interrupt.
-            uint64_t rsp;
-            uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
-            uint64_t retaddr = ctx->state->memory().read64(rsp);
+            keep_running = is_recursive
+                               ? vctx->recursive_call(vctx->context, &state, address)
+                               : vctx->ext_call(vctx->context, &state, address);
+            if (!keep_running)
+            {
+                uc_emu_stop(uc);
+                return;
+            }
+
             rsp += 8;
             uc_reg_write(uc, UC_X86_REG_RSP, &rsp);
 
@@ -299,20 +337,12 @@ namespace lifted::verification
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
 
         // address is already page-aligned (unicorn_fill_tlb passes address & TARGET_PAGE_MASK).
-        // Map the page from paged_memory_state if it is not yet present in Unicorn.
-        auto data = ctx->state->memory().map(address);
-        if (!data.empty())
-        {
-            uc_err err = uc_mem_map(uc, address, data.size(), UC_PROT_ALL);
-            if (err == UC_ERR_OK)
-            {
-                // Newly mapped: write initial page data.  hook_mem_read will
-                // overwrite individual bytes with oracle-injected values on each read.
-                uc_mem_write(uc, address, data.data(), data.size());
-            }
-            // UC_ERR_MAP = already mapped from a prior run; hook_mem_read
-            // will inject the current oracle values on each read regardless.
-        }
+        // Materialize the verifier's page contents into Unicorn if this page has not
+        // been mapped yet. Existing mappings are fine; byte-level read hooks patch
+        // accessed bytes on demand.
+        uc_err err = materialize_page(ctx, uc, address);
+        if (err != UC_ERR_OK)
+            return false;
 
         // Identity mapping (virtual == physical), required by UC_TLB_VIRTUAL mode.
         result->paddr = address;
@@ -332,10 +362,23 @@ namespace lifted::verification
 
         if (is_cross_page_read(address, read_size))
         {
-            // Unicorn 2.1.4 already reports the logical unaligned access once.
-            // Best-effort only: the host write may fail before the second page is
-            // materialized, so ignore that here and let Unicorn proceed.
-            uc_mem_write(uc, address, &read_value, read_size);
+            // Cross-page reads are only sound if Unicorn is forced to consume the
+            // same logical bytes the verifier just returned. Ensure every touched page
+            // exists first, then fail hard if the write-back still cannot be applied.
+            uc_err err = materialize_range(ctx, uc, address, read_size);
+            if (err != UC_ERR_OK)
+            {
+                fail_mem_read_hook(ctx, uc, err, address);
+                return;
+            }
+
+            err = uc_mem_write(uc, address, &read_value, read_size);
+            if (err != UC_ERR_OK)
+            {
+                fail_mem_read_hook(ctx, uc, err, address);
+                return;
+            }
+
             if (!cont)
                 uc_emu_stop(uc);
             return;
@@ -534,6 +577,12 @@ namespace lifted::verification
         // Virtual TLB so we have 1:1 address mapping.
         // We don't care about arch limitations as we're using invalid memory anyway.
         uc_ctl_tlb_mode(uc_eng.get(), UC_TLB_VIRTUAL);
+
+        err = uc_ctl_context_mode(uc_eng.get(), UC_CTL_CONTEXT_MEMORY | UC_CTL_CONTEXT_CPU);
+        if (err != UC_ERR_OK)
+        {
+            return uc_error("uc_ctl_context_mode", err);
+        }
 
         // Save clean context
         uc_context *ctx_raw = nullptr;
