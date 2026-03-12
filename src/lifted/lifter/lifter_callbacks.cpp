@@ -22,24 +22,13 @@ void LifterCallbacks::on_function_built(llvm::Function * /*func*/,
 {
 }
 
-const abi::CallingConvention *
-LifterCallbacks::resolve_cc(const lifted::fnc_annotation_t * /*annotation*/) const
-{
-    return nullptr;
-}
-
-void LifterCallbacks::on_targets_resolved(const lifted_bb_t & /*bb*/,
-                                          const resolved_targets_result_t & /*result*/)
-{
-}
-
 void LifterCallbacks::on_block_split(bb_id_t /*original*/,
                                      bb_id_t /*first_half*/,
                                      bb_id_t /*second_half*/)
 {
 }
 
-bool LifterCallbacks::should_continue_exploration(bb_id_t       /*next_id*/,
+bool LifterCallbacks::should_continue_exploration(bb_id_t /*next_id*/,
                                                   const lift_context_t & /*ctx*/) const
 {
     return true;

@@ -4,7 +4,7 @@
 // Helper to force LLVM to emit the __lifted_bb_entered symbol in the module (a bit spaghet yes)
 HELPER void __lifted_declare()
 {
-    __lifted_bb_entered({}, 0, nullptr);
+    (void)__lifted_bb_entered({}, 0, nullptr);
 }
 
 // Register extraction helpers
@@ -52,6 +52,10 @@ HELPER uint64_t __extract_r11(State *__restrict__ state)
 HELPER uint64_t __extract_rsp(State *__restrict__ state)
 {
     return state->gpr.rsp.qword;
+}
+HELPER uint64_t __extract_rflags(State *__restrict__ state)
+{
+    return state->rflag.flat;
 }
 HELPER uint64_t __extract_rbx(State *__restrict__ state)
 {
@@ -119,6 +123,10 @@ HELPER void __store_r11(State *__restrict__ state, uint64_t val)
 HELPER void __store_rsp(State *__restrict__ state, uint64_t val)
 {
     state->gpr.rsp.qword = val;
+}
+HELPER void __store_rflags(State *__restrict__ state, uint64_t val)
+{
+    state->rflag.flat = val;
 }
 HELPER void __store_rip(State *__restrict__ state, uint64_t val)
 {

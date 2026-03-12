@@ -14,6 +14,10 @@
 
 #include <glog/logging.h>
 
+#include "abi/all_registers_cc.hpp"
+#include "abi/state_fold.hpp"
+#include "abi/systemv_x64.hpp"
+
 #include "eval_pipeline.hpp"
 #include "lifter/lifter.hpp"
 #include "lifter/standard_lifter_callbacks.hpp"
@@ -155,7 +159,11 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
         return the_lifter_or.takeError();
     auto &the_lifter = *the_lifter_or;
 
-    auto lift_result = the_lifter.lift(entry_rva, {.instrument_bb_entry = true});
+    auto entry_ann = std::make_unique<lifted::fnc_annotation_t>();
+    entry_ann->cc = &lifted::abi::AllRegistersCC::get();
+    annotation_id_t entry_annotation_id = bin_ctx.add_annotation(std::move(entry_ann));
+
+    auto lift_result = the_lifter.lift(entry_rva, entry_annotation_id, {.instrument_bb_entry = true});
     if (!lift_result)
     {
         return lift_result.takeError();
@@ -192,16 +200,37 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
         return r1.takeError();
 
     r1->print(std::cout);
-    utils::output_to_file("/home/atlas/lifted/out/raw_lifted.ll",
-                          lift_result->module.get());
+    utils::output_to_file("/home/atlas/lifted/out/raw_lifted.ll", lift_result->module.get());
 
     // Run some 'deobfuscations'
-    opt::always_inline(lift_result->module.get());
-    opt::default_opt(lift_result->module.get());
+    auto clone = llvm::CloneModule(*lift_result->module);
+
+    opt::always_inline(clone.get());
+
+    auto unfolded_or = lifted::abi::unfold_function_state_recursive(clone->getFunction(fn_name), bin_ctx);
+    if (!unfolded_or)
+        return unfolded_or.takeError();
+    (*unfolded_or)->setLinkage(llvm::GlobalValue::ExternalLinkage);
+
+    utils::output_to_file("/home/atlas/lifted/out/unfolded.ll", clone.get());
+
+    opt::always_inline(clone.get());
+    opt::default_opt(clone.get());
+
+    utils::output_to_file("/home/atlas/lifted/out/unfolded_deob.ll", clone.get());
+
+    auto refolded_or = lifted::abi::fold_function_state_recursive(*unfolded_or, bin_ctx);
+    if (!refolded_or)
+        return refolded_or.takeError();
+    (*refolded_or)->setLinkage(llvm::GlobalValue::ExternalLinkage);
+
+    opt::always_inline(clone.get());
+
+    utils::output_to_file("/home/atlas/lifted/out/refolded_deob.ll", clone.get());
 
     // Create new JIT from optimized module.
     auto opt_jit_or = verification::JITExecutor::create(
-        llvm::CloneModule(*lift_result->module), fn_name, fallthrough_edges);
+        std::move(clone), (*refolded_or)->getName().str(), fallthrough_edges);
     if (!opt_jit_or)
         return opt_jit_or.takeError();
     auto opt_jit =
@@ -229,19 +258,18 @@ int main(int argc, char **argv)
 
     llvm::LLVMContext context;
 
-    // test_full_pipeline(context,
-    // "/home/atlas/lifted/build/src/evaluation/tum/libeval-anagram.so", 0x124A);
+    if (auto err = test_full_pipeline(context, "/home/atlas/lifted/build/src/evaluation/tum/libeval-anagram.so", 0x124A))
+        llvm::errs() << "test_full_pipeline error: " << llvm::toString(std::move(err)) << "\n";
 
     // if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
-    //     llvm::errs() << "synthetic suite error: " <<
-    //     llvm::toString(std::move(err)) << "\n";
+    //     llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
 
     // if (auto err = lift_suite(context, EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV))
     //     llvm::errs() << "tum-basic-algorithms suite error: "
     //                  << llvm::toString(std::move(err)) << "\n";
 
-    if (auto err = lift_suite(context, EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV))
-        llvm::errs() << "tum-small-programs suite error: " << llvm::toString(std::move(err)) << "\n";
+    // if (auto err = lift_suite(context, EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV))
+    //     llvm::errs() << "tum-small-programs suite error: " << llvm::toString(std::move(err)) << "\n";
     //
     // if (auto err = lift_suite(context,
     // EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV))

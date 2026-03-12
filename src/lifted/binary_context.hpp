@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -55,7 +56,7 @@ struct ptr_param_t
     bool read;
     bool written;
     bool captured;
-    std::optional<size_t>   fixed_size;
+    std::optional<size_t> fixed_size;
     std::optional<uint32_t> sized_by_param_idx;
 };
 
@@ -71,10 +72,10 @@ struct ret_ptr_t
 
 struct fnc_annotation_t
 {
-    annotation_id_t id;           ///< Set by BinaryContext on insertion; never changed after.
+    annotation_id_t id; ///< Set by BinaryContext on insertion; never changed after.
     std::string name;
-    const abi::CallingConvention *cc = nullptr;
-    bool reads_global_memory  = false;
+    const abi::CallingConvention *cc = nullptr; ///< Required invariant: non-null before BinaryContext insertion.
+    bool reads_global_memory = false;
     bool writes_global_memory = false;
     std::optional<uint32_t> frees_param_idx;
     std::unordered_map<uint32_t, ptr_param_t> ptr_params;
@@ -82,6 +83,12 @@ struct fnc_annotation_t
     uint8_t ret_size_bytes = 0;
     bool volatile_call = false;
     bool no_return = false;
+};
+
+enum class builtin_annotation_kind_t
+{
+    lifted_core_all_registers,
+    lifted_observer_all_registers,
 };
 
 // ── BinaryContext ─────────────────────────────────────────────────────────────
@@ -93,7 +100,7 @@ struct fnc_annotation_t
 /// Not thread-safe — consistent with the existing Lifter thread-safety contract.
 class BinaryContext
 {
-public:
+  public:
     explicit BinaryContext(std::unique_ptr<LIEF::Binary> binary);
 
     // Non-copyable, non-movable — raw pointers into this object must remain stable.
@@ -113,37 +120,42 @@ public:
 
     // ── Lookups — const; no mutation after insertion ──────────────────────────
 
-    const fnc_annotation_t *get_by_id  (annotation_id_t    id)           const;
-    const fnc_annotation_t *get_by_name(const std::string &name)         const;
-    const fnc_annotation_t *get_ext_call  (uint64_t dest_rva)             const;
-    const fnc_annotation_t *get_indr_call (uint64_t dispatcher_rva)       const;
+    const fnc_annotation_t *get_by_id(annotation_id_t id) const;
+    annotation_id_t get_by_name(const std::string &name) const;
+    annotation_id_t get_ext_call(uint64_t dest_rva) const;
+    annotation_id_t get_indr_call(uint64_t dispatcher_rva) const;
 
     // ── Creation ──────────────────────────────────────────────────────────────
 
+    /// Register or retrieve a binary-agnostic built-in annotation for internal lifted IR.
+    annotation_id_t get_or_create_builtin_annotation(builtin_annotation_kind_t kind);
+
     /// Register an annotation for a known-address external call target.
-    /// Returns the assigned id.  Also updates annotations_by_name if name non-empty.
-    annotation_id_t create_ext_call (uint64_t dest_rva,
-                                     std::unique_ptr<fnc_annotation_t> ann);
+    /// The annotation must carry a non-null calling convention.
+    annotation_id_t create_ext_call(uint64_t dest_rva,
+                                    std::unique_ptr<fnc_annotation_t> ann);
 
     /// Register an annotation for an indirect-call dispatcher block.
+    /// The annotation must carry a non-null calling convention.
     annotation_id_t create_indr_call(uint64_t dispatcher_rva,
                                      std::unique_ptr<fnc_annotation_t> ann);
 
-    /// Insert an annotation with no RVA binding (for manually-created entries).
-    annotation_id_t add_annotation  (std::unique_ptr<fnc_annotation_t> ann);
+    /// Insert an annotation with no RVA binding. The annotation must carry a non-null CC.
+    annotation_id_t add_annotation(std::unique_ptr<fnc_annotation_t> ann);
 
-private:
+  private:
     /// Assigns id, inserts into annotations_, updates by_name index.
     /// Called by all three public creation helpers.
     annotation_id_t insert(std::unique_ptr<fnc_annotation_t> ann);
 
-    std::unique_ptr<LIEF::Binary>                                         binary_;
-    uint64_t                                                               next_id_raw_ = 0;
+    std::unique_ptr<LIEF::Binary> binary_;
+    uint64_t next_id_raw_ = 0;
 
     std::unordered_map<annotation_id_t, std::unique_ptr<fnc_annotation_t>> annotations_;
-    std::unordered_map<std::string,     const fnc_annotation_t *>          annotations_by_name_;
-    std::unordered_map<uint64_t,        const fnc_annotation_t *>          ext_call_annotations_;
-    std::unordered_map<uint64_t,        const fnc_annotation_t *>          indr_call_annotations_;
+    std::unordered_map<std::string, const fnc_annotation_t *> annotations_by_name_;
+    std::unordered_map<uint64_t, const fnc_annotation_t *> ext_call_annotations_;
+    std::unordered_map<uint64_t, const fnc_annotation_t *> indr_call_annotations_;
+    std::map<builtin_annotation_kind_t, annotation_id_t> builtin_annotation_ids_;
 };
 
 } // namespace lifted

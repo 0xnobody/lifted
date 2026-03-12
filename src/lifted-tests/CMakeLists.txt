@@ -12,7 +12,9 @@ add_executable(lifted-tests
     "test_lifter_multi_function.cpp"
     "test_verifier_state_loop_limit.cpp"
     "test_verifier_state_recursive.cpp"
-    )
+    "test_state_fold.cpp"
+)
+
 target_link_libraries(lifted-tests PRIVATE lifted)
 
 # Provide the binary path for the multi-function lift test.
@@ -22,6 +24,3 @@ if(DEFINED EVAL_TWO_FUNCS_SO)
     )
     add_dependencies(lifted-tests eval-two-funcs)
 endif()
-
-target_link_libraries(lifted-tests PRIVATE lifted)
-

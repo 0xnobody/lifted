@@ -79,14 +79,14 @@ std::string cfg_to_dot(const CfgSnapshot &cfg, const CfgDotOptions &opts)
                 auto si_it = cfg.synthetic_blocks.find(e.dest);
                 if (si_it != cfg.synthetic_blocks.end()) {
                     const auto &si = si_it->second;
-                    if (si.annotation && !si.annotation->name.empty())
-                        ann = "\xe2\x86\x92 " + si.annotation->name + "()";
+                    if (!si.annotation_name.empty())
+                        ann = "→ " + si.annotation_name + "()";
                     else if (si.type == lifter::synthetic_block_info_t::Type::RECURSIVE)
-                        ann = "\xe2\x86\x92 recursive()";
+                        ann = "→ recursive()";
                     else if (si.type == lifter::synthetic_block_info_t::Type::INDIRECT)
-                        ann = "\xe2\x86\x92 indirect()";
+                        ann = "→ indirect()";
                     else
-                        ann = "\xe2\x86\x92 ext_call()";
+                        ann = "→ ext_call()";
                 } else {
                     ann = "\xe2\x86\x92 call()";
                 }
@@ -104,8 +104,8 @@ std::string cfg_to_dot(const CfgSnapshot &cfg, const CfgDotOptions &opts)
                 auto si_it = cfg.synthetic_blocks.find(e.source);
                 if (si_it != cfg.synthetic_blocks.end()) {
                     const auto &si = si_it->second;
-                    if (si.annotation && !si.annotation->name.empty())
-                        label = si.annotation->name;
+                    if (!si.annotation_name.empty())
+                        label = si.annotation_name;
                     else if (si.type == lifter::synthetic_block_info_t::Type::RECURSIVE)
                         label = "recursive";
                     else
@@ -169,8 +169,8 @@ std::string cfg_to_dot(const CfgSnapshot &cfg, const CfgDotOptions &opts)
                 const auto &si = it->second;
                 switch (si.type) {
                 case lifter::synthetic_block_info_t::Type::EXTERNAL:
-                    if (si.annotation && !si.annotation->name.empty())
-                        os << safe_dot(si.annotation->name);
+                    if (!si.annotation_name.empty())
+                        os << safe_dot(si.annotation_name);
                     else
                         os << "ext_call";
                     break;

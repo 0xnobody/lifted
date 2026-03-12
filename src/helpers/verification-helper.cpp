@@ -105,6 +105,15 @@ HELPER Memory *__lifted_ext_call(State *state, addr_t addr, Memory *m)
     return m;
 }
 
+HELPER Memory *__lifted_verifier_ext_call(State *state, addr_t addr, Memory *m, uint64_t annotation_id)
+{
+    (void)annotation_id;
+    synchronize_flags(state);
+
+    assert_exit(__ctx->verifier_context->ext_call(__ctx->verifier_context->context, state, addr));
+    return m;
+}
+
 HELPER Memory *__lifted_recursive_call(State *state, addr_t addr, Memory *m)
 {
     synchronize_flags(state);

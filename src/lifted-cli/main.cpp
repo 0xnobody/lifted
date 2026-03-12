@@ -11,30 +11,32 @@
 //   1  At least one divergence (FAIL_DIVERGED).
 //   2  Fatal error (parse/lift/pipeline failure, or invalid arguments).
 #include <llvm/Support/CommandLine.h>
-#include <llvm/Support/InitLLVM.h>
 #include <llvm/Support/Format.h>
+#include <llvm/Support/InitLLVM.h>
 #include <llvm/Support/raw_ostream.h>
 
-#include "suite.hpp"
+#include "abi/all_registers_cc.hpp"
+#include "abi/systemv_x64.hpp"
 #include "eval_pipeline.hpp"
+#include "suite.hpp"
 #include "utils.hpp"
 
 #include "compat/lief_compat.hpp"
 
+#include "visualization/cfg_dot.hpp"
+#include "visualization/pipeline_overlay.hpp"
 #include <filesystem>
 #include <iostream>
 #include <optional>
 #include <set>
 #include <string>
 #include <vector>
-#include "visualization/cfg_dot.hpp"
-#include "visualization/pipeline_overlay.hpp"
 
+#include "lifter/lifter.hpp"
+#include "lifter/standard_lifter_callbacks.hpp"
 #include <remill/Arch/Arch.h>
 #include <remill/Arch/Name.h>
 #include <remill/OS/OS.h>
-#include "lifter/lifter.hpp"
-#include "lifter/standard_lifter_callbacks.hpp"
 
 namespace fs = std::filesystem;
 using namespace llvm;
@@ -45,10 +47,10 @@ using namespace lifted::eval;
 // Hide LLVM's internal options (debug, stats, etc.) from --help output.
 // Subcommand descriptions are not options and survive this filter.
 static cl::OptionCategory LiftedCLICategory("lifted-cli options");
-static cl::SubCommand ListCmd("list",   "List suites, targets and functions");
-static cl::SubCommand SuiteCmd("suite",  "Run all targets in a named suite");
+static cl::SubCommand ListCmd("list", "List suites, targets and functions");
+static cl::SubCommand SuiteCmd("suite", "Run all targets in a named suite");
 static cl::SubCommand TargetCmd("target", "Run all functions in one suite target");
-static cl::SubCommand FnCmd("fn",       "Run a single function");
+static cl::SubCommand FnCmd("fn", "Run a single function");
 static cl::SubCommand GraphCmd("graph", "Generate CFG DOT output for a single function");
 // ── list options ───────────────────────────────────────────────────────────────
 
@@ -624,18 +626,23 @@ static int run_fn_cmd(LLVMContext &ctx)
 
 static int run_list_cmd()
 {
-    auto print_suite = [](const std::string &suite_name) {
+    auto print_suite = [](const std::string &suite_name)
+    {
         auto csv_path = resolve_suite_name(suite_name);
-        if (!csv_path) {
+        if (!csv_path)
+        {
             errs() << "  [ERROR] Cannot resolve suite '" << suite_name << "'\n";
             return;
         }
         auto suite = parse_suite_csv(*csv_path);
         outs() << "Suite: " << suite_name << "  (" << suite.size() << " targets)\n";
-        for (const auto &entry : suite) {
+        for (const auto &entry : suite)
+        {
             std::string stem = entry.so_path.stem().string();
-            if (stem.starts_with("libeval-")) stem = stem.substr(8);
-            else if (stem.starts_with("lib")) stem = stem.substr(3);
+            if (stem.starts_with("libeval-"))
+                stem = stem.substr(8);
+            else if (stem.starts_with("lib"))
+                stem = stem.substr(3);
             auto targets = parse_targets_csv(entry.targets_csv_path);
             outs() << "  " << stem << "  (" << targets.size() << " function(s))\n";
             for (const auto &t : targets)
@@ -645,11 +652,15 @@ static int run_list_cmd()
         outs() << "\n";
     };
 
-    if (!ListSuite.empty()) {
+    if (!ListSuite.empty())
+    {
         print_suite(std::string(ListSuite));
-    } else {
+    }
+    else
+    {
         auto names = known_suite_names();
-        if (names.empty()) {
+        if (names.empty())
+        {
             errs() << "list error: no known suites (built without CSV paths)\n";
             return 2;
         }
@@ -665,80 +676,99 @@ static int run_graph_cmd(LLVMContext &ctx)
 {
     // -- Resolve input (replicated from run_fn_cmd) ---------------------------
     bool has_binary = !GraphBinary.empty();
-    bool has_rva    = !GraphRva.empty();
+    bool has_rva = !GraphRva.empty();
     bool has_export = !GraphExport.empty();
-    bool has_suite  = !GraphSuite.empty();
+    bool has_suite = !GraphSuite.empty();
     bool has_target = !GraphTarget.empty();
-    bool has_func   = !GraphFunc.empty();
+    bool has_func = !GraphFunc.empty();
 
-    fs::path    binary_path;
-    uint64_t    rva = 0;
+    fs::path binary_path;
+    uint64_t rva = 0;
     std::string func_name;
 
-    if (has_binary && has_rva && !has_export && !has_suite) {
+    if (has_binary && has_rva && !has_export && !has_suite)
+    {
         // Mode A: --binary + --rva
         binary_path = fs::path(std::string(GraphBinary));
-        try {
+        try
+        {
             rva = std::stoull(GraphRva, nullptr, 16);
-        } catch (...) {
+        }
+        catch (...)
+        {
             errs() << "graph error: invalid RVA '" << GraphRva << "'\n";
             return 2;
         }
         func_name = GraphDisplayName.empty()
                         ? ("sub_" + llvm::utohexstr(rva))
                         : std::string(GraphDisplayName);
-    } else if (has_binary && has_export && !has_rva && !has_suite) {
+    }
+    else if (has_binary && has_export && !has_rva && !has_suite)
+    {
         // Mode B: --binary + --export
         binary_path = fs::path(std::string(GraphBinary));
         auto binary = LIEF::Parser::parse(binary_path.string());
-        if (!binary) {
+        if (!binary)
+        {
             errs() << "graph error: failed to parse binary '" << GraphBinary << "'\n";
             return 2;
         }
         auto rva_result = lifted::utils::rva_from_export(*binary, GraphExport);
-        if (!rva_result) {
+        if (!rva_result)
+        {
             errs() << "graph error: " << toString(rva_result.takeError()) << "\n";
             return 2;
         }
         rva = *rva_result;
         func_name = GraphDisplayName.empty() ? std::string(GraphExport) : std::string(GraphDisplayName);
-    } else if (has_suite && has_target && has_func && !has_binary && !has_rva && !has_export) {
+    }
+    else if (has_suite && has_target && has_func && !has_binary && !has_rva && !has_export)
+    {
         // Mode C: --suite + --target + --func
         auto csv_path = resolve_suite_arg(GraphSuite);
-        if (!csv_path) {
+        if (!csv_path)
+        {
             errs() << "graph error: " << toString(csv_path.takeError()) << "\n";
             return 2;
         }
         auto suite = parse_suite_csv(*csv_path);
         std::optional<SuiteEntry> found_entry;
-        for (const auto &entry : suite) {
-            if (target_stem(entry.so_path) == std::string(GraphTarget)) {
+        for (const auto &entry : suite)
+        {
+            if (target_stem(entry.so_path) == std::string(GraphTarget))
+            {
                 found_entry = entry;
                 break;
             }
         }
-        if (!found_entry) {
+        if (!found_entry)
+        {
             errs() << "graph error: no target '" << GraphTarget
                    << "' in suite '" << GraphSuite << "'\n";
             return 2;
         }
         auto targets = parse_targets_csv(found_entry->targets_csv_path);
         std::optional<TargetEntry> found_fn;
-        for (const auto &t : targets) {
-            if (t.func_name == std::string(GraphFunc)) {
+        for (const auto &t : targets)
+        {
+            if (t.func_name == std::string(GraphFunc))
+            {
                 found_fn = t;
                 break;
             }
         }
-        if (!found_fn) {
+        if (!found_fn)
+        {
             errs() << "graph error: no function '" << GraphFunc
                    << "' in target '" << GraphTarget << "'\n";
             return 2;
         }
         binary_path = found_entry->so_path;
-        rva         = found_fn->addr;
-        func_name   = GraphDisplayName.empty() ? std::string(GraphFunc) : std::string(GraphDisplayName);
-    } else {
+        rva = found_fn->addr;
+        func_name = GraphDisplayName.empty() ? std::string(GraphFunc) : std::string(GraphDisplayName);
+    }
+    else
+    {
         errs() << "graph error: specify one of:\n"
                << "  Mode A: --binary <path> --rva <hex>\n"
                << "  Mode B: --binary <path> --export <name>\n"
@@ -749,24 +779,28 @@ static int run_graph_cmd(LLVMContext &ctx)
     // -- Build CfgDotOptions from flags ---------------------------------------
     lifted::visualization::CfgDotOptions cfg_opts;
     cfg_opts.merge_synthetic = GraphMergeSynthetic;
-    cfg_opts.graph_title     = func_name + " @ 0x" + llvm::utohexstr(rva);
+    cfg_opts.graph_title = func_name + " @ 0x" + llvm::utohexstr(rva);
 
     // -- Generate DOT string --------------------------------------------------
     std::string dot;
 
-    if (GraphOverlay) {
+    if (GraphOverlay)
+    {
         // Overlay mode: run the full pipeline, then overlay execution data.
         size_t deep_count = static_cast<size_t>(GraphMaxDeepDives < 0 ? 0 : GraphMaxDeepDives);
         auto result = lift_and_verify_named(ctx, binary_path, func_name, rva, deep_count);
-        if (!result) {
+        if (!result)
+        {
             errs() << "  [FATAL] " << toString(result.takeError()) << "\n";
             return 2;
         }
-        if (result->lift_failed) {
+        if (result->lift_failed)
+        {
             errs() << "  [LIFTING] FAILED: " << result->lift_error << "\n";
             return 2;
         }
-        if (!result->cfg) {
+        if (!result->cfg)
+        {
             errs() << "graph error: no CFG snapshot produced (internal error)\n";
             return 2;
         }
@@ -778,15 +812,23 @@ static int run_graph_cmd(LLVMContext &ctx)
 
         // Find the requested divergence (GraphDivergenceIdx).
         const lifted::pipeline::RunOutcome *div_ptr = nullptr;
-        if (result->report) {
+        if (result->report)
+        {
             int want = GraphDivergenceIdx < 0 ? 0 : GraphDivergenceIdx;
             int seen = 0;
-            for (const auto &stage : result->report->stages) {
-                for (const auto &d : stage.divergences) {
-                    if (seen == want) { div_ptr = &d; break; }
+            for (const auto &stage : result->report->stages)
+            {
+                for (const auto &d : stage.divergences)
+                {
+                    if (seen == want)
+                    {
+                        div_ptr = &d;
+                        break;
+                    }
                     ++seen;
                 }
-                if (div_ptr) break;
+                if (div_ptr)
+                    break;
             }
         }
         od.divergence = div_ptr;
@@ -798,11 +840,14 @@ static int run_graph_cmd(LLVMContext &ctx)
         lifted::visualization::OverlayOptions oo;
         oo.cfg_opts = cfg_opts;
         dot = lifted::visualization::overlay_to_dot(*result->cfg, od, oo);
-    } else {
+    }
+    else
+    {
         // CFG-only mode: lift without running the pipeline.
         auto arch = remill::Arch::Get(ctx, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
         auto binary = LIEF::Parser::parse(binary_path.string());
-        if (!binary) {
+        if (!binary)
+        {
             errs() << "graph error: failed to parse binary '" << binary_path.string() << "'\n";
             return 2;
         }
@@ -810,46 +855,59 @@ static int run_graph_cmd(LLVMContext &ctx)
         auto cb_cfg = lifted::lifter::standard_lifter_config_t::from_standard_linux_binary(bin_ctx.binary());
         lifted::lifter::StandardLifterCallbacks callbacks(std::move(cb_cfg));
         auto lifter_or = lifted::lifter::Lifter::create(arch.get(), bin_ctx, &callbacks);
-        if (!lifter_or) {
+        if (!lifter_or)
+        {
             errs() << "graph error: " << toString(lifter_or.takeError()) << "\n";
             return 2;
         }
-        auto lift_result = (*lifter_or).lift(rva, {.instrument_bb_entry = false});
-        if (!lift_result) {
+        auto entry_ann = std::make_unique<lifted::fnc_annotation_t>();
+        entry_ann->cc = &lifted::abi::AllRegistersCC::get();
+        lifted::annotation_id_t entry_annotation_id = bin_ctx.add_annotation(std::move(entry_ann));
+        auto lift_result = (*lifter_or).lift(rva, entry_annotation_id, {.instrument_bb_entry = false});
+        if (!lift_result)
+        {
             errs() << "graph error: " << toString(lift_result.takeError()) << "\n";
             return 2;
         }
-        auto snapshot = lifted::visualization::make_cfg_snapshot(*lift_result, rva, func_name);
+        auto snapshot = lifted::visualization::make_cfg_snapshot(*lift_result, bin_ctx, rva, func_name);
         dot = lifted::visualization::cfg_to_dot(snapshot, cfg_opts);
     }
 
     // -- Write or render output -----------------------------------------------
     std::string dot_path;
-    bool        render = !GraphRender.empty();
+    bool render = !GraphRender.empty();
 
-    if (!GraphOutput.empty()) {
+    if (!GraphOutput.empty())
+    {
         dot_path = std::string(GraphOutput);
-    } else if (render) {
+    }
+    else if (render)
+    {
         // Default DOT file name when rendering.
         dot_path = GraphOverlay ? "overlay.dot" : "cfg.dot";
     }
 
-    if (!dot_path.empty()) {
+    if (!dot_path.empty())
+    {
         // Write DOT to file.
         std::error_code ec;
         raw_fd_ostream os(dot_path, ec);
-        if (ec) {
+        if (ec)
+        {
             errs() << "graph error: cannot open '" << dot_path << "': " << ec.message() << "\n";
             return 2;
         }
         os << dot;
-    } else {
+    }
+    else
+    {
         // Write DOT to stdout.
         outs() << dot;
     }
 
     // Render via graphviz if requested.
-    if (render) {
+    if (render)
+    {
         const std::string &fmt = GraphRender;
         // Derive rendered output path: same base as dot_path but with .fmt extension.
         std::string render_path;
@@ -859,10 +917,13 @@ static int run_graph_cmd(LLVMContext &ctx)
         }
         std::string cmd = "dot -T" + fmt + " -o " + render_path + " " + dot_path;
         int rc = std::system(cmd.c_str());
-        if (rc != 0) {
+        if (rc != 0)
+        {
             errs() << "graph warning: graphviz 'dot' returned " << rc
                    << "; is graphviz installed?\n";
-        } else {
+        }
+        else
+        {
             errs() << "Rendered: " << render_path << "\n";
         }
     }

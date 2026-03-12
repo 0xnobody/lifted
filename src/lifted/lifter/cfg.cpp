@@ -1,5 +1,7 @@
 #include "lifter.hpp"
 
+#include "../abi/function_state_attrs.hpp"
+
 #include <remill/BC/Util.h>
 
 #include <llvm/IR/IRBuilder.h>
@@ -72,6 +74,10 @@ namespace lifted::lifter
         wrapper->addParamAttr(0, llvm::Attribute::NoCapture);
         wrapper->addParamAttr(2, llvm::Attribute::NoAlias);
         wrapper->addParamAttr(2, llvm::Attribute::NoCapture);
+        if (auto err = lifted::abi::set_state_form(*wrapper, lifted::abi::state_form_t::folded))
+            return std::move(err);
+        if (auto err = lifted::abi::set_annotation_id(*wrapper, core_annotation_id_))
+            return std::move(err);
 
         auto *arg_state = wrapper->getArg(0);
         arg_state->setName("state");
@@ -327,6 +333,7 @@ namespace lifted::lifter
             mem_ptr_ty, {state_ptr_ty, rva_ty, mem_ptr_ty}, false);
         auto *wrapper = llvm::Function::Create(
             wrapper_ty, llvm::Function::ExternalLinkage, wrapper_name, M);
+        lifted::abi::copy_lifted_state_attrs(*based_func, *wrapper);
 
         wrapper->addParamAttr(0, llvm::Attribute::NoAlias);
         wrapper->addParamAttr(0, llvm::Attribute::NoCapture);
@@ -425,8 +432,8 @@ namespace lifted::lifter
             }
         }
 
-        // Recursive-call continuations are represented explicitly through
-        // synthetic blocks, so the BFS above already captures return reachability.
+        // Synthetic call continuations are discovered by resolving the synthetic
+        // dispatcher itself, so the BFS above already captures return reachability.
         // Populate optional output sets.
         if (out_blocks)
         {

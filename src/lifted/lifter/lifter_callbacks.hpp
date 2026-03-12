@@ -1,8 +1,8 @@
 #pragma once
 
-#include "lifter_types.hpp"
-#include "lift_context.hpp"
 #include "../binary_context.hpp"
+#include "lift_context.hpp"
+#include "lifter_types.hpp"
 
 namespace lifted::abi
 {
@@ -20,14 +20,14 @@ namespace lifted::lifter
 struct resolve_context_t
 {
     const lifted_bb_t &bb;
-    uint64_t           entry_rva;
-    lift_context_t    &lift_ctx;
+    uint64_t entry_rva;
+    lift_context_t &lift_ctx;
 
     // Pre-built by Lifter:
-    std::unique_ptr<llvm::Module> slice_module;    ///< Clone of bb_cache_module_ with helpers linked.
-    llvm::Function               *slice_cfg;       ///< Backward-slice CFG, 4-param (state,rva,mem,base).
-    llvm::Function               *concretized_slice; ///< Base-concretized, 3-param (state,rva,mem).
-    BinaryContext             &bin_ctx;          ///< For ConstantMemoryFoldingPass and name resolution.
+    std::unique_ptr<llvm::Module> slice_module; ///< Clone of bb_cache_module_ with helpers linked.
+    llvm::Function *slice_cfg;                  ///< Backward-slice CFG, 4-param (state,rva,mem,base).
+    llvm::Function *concretized_slice;          ///< Base-concretized, 3-param (state,rva,mem).
+    BinaryContext &bin_ctx;                     ///< For ConstantMemoryFoldingPass and name resolution.
 };
 
 // ── LifterCallbacks ───────────────────────────────────────────────────────
@@ -62,17 +62,7 @@ struct LifterCallbacks
     /// is a no-op.  Override for whole-function deobfuscation passes.
     virtual void on_function_built(llvm::Function *func, lift_context_t &ctx);
 
-    // ── Calling convention ────────────────────────────────────────────
-
-    /// Resolve the calling convention for a callee.  Default: nullptr.
-    virtual const abi::CallingConvention *resolve_cc(
-        const lifted::fnc_annotation_t *annotation) const;
-
     // ── Observation hooks (all no-op by default) ──────────────────────
-
-    /// Called after targets are resolved for a BB.
-    virtual void on_targets_resolved(
-        const lifted_bb_t &bb, const resolved_targets_result_t &result);
 
     /// Called when a block is split due to a mid-block target landing
     /// inside an existing block.

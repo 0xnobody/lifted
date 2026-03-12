@@ -18,6 +18,8 @@ add_library(lifted STATIC
     "lifter/lift_context.hpp"
     "lifter/lifter_utils.hpp"
     "lifter/lifter_utils.cpp"
+    "lifter/helper_state_annotations.hpp"
+    "lifter/helper_state_annotations.cpp"
     "lifter/lifter_callbacks.hpp"
     "lifter/lifter_callbacks.cpp"
     "lifter/standard_lifter_callbacks.hpp"
@@ -43,9 +45,15 @@ add_library(lifted STATIC
 
     "abi/calling_convention.hpp"
     "abi/calling_convention.cpp"
+    "abi/all_registers_cc.hpp"
+    "abi/all_registers_cc.cpp"
     "abi/systemv_x64.hpp"
     "abi/abi_utils.hpp"
     "abi/abi_utils.cpp"
+    "abi/function_state_attrs.hpp"
+    "abi/function_state_attrs.cpp"
+    "abi/state_fold.hpp"
+    "abi/state_fold.cpp"
 
     # Verification framework
     "verification/sentinel_oracle.hpp"
@@ -110,7 +118,6 @@ target_compile_definitions(lifted PRIVATE
     "HELPERS_VERIFICATION_INTRINSICS_PATH=\"${HELPERS_VERIFICATION_INTRINSICS_PATH}\""
     "HELPERS_STATE_UTILS_PATH=\"${HELPERS_STATE_UTILS_PATH}\""
     "KLEE_RUNTIME_LIBRARY_PATH=\"${KLEE_RUNTIME_LIBRARY_PATH}\""
-    "HELPERS_ABI_PATH=\"${HELPERS_ABI_PATH}\""
     "HELPERS_LIFTING_PATH=\"${HELPERS_LIFTING_PATH}\""
     "HELPERS_RAM_PATH=\"${HELPERS_RAM_PATH}\""
 )

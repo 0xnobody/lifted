@@ -1,10 +1,13 @@
 #include <set>
+#include <vector>
 
 #include "jit_executor.hpp"
+#include "../abi/function_state_attrs.hpp"
 #include "../helpers.hpp"
 
 #include <llvm/ExecutionEngine/Orc/Core.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
+#include <llvm/IR/IRBuilder.h>
 #include <llvm/Support/TargetSelect.h>
 
 #include "../passes/verification/memory_intrinsic_lowering_pass.hpp"
@@ -53,21 +56,55 @@ namespace lifted::verification
                 llvm::inconvertibleErrorCode());
         }
 
-        auto *extCallFunc = module->getFunction("__lifted_ext_call");
-        if (!extCallFunc)
+        auto *verifierExtFunc = module->getFunction("__lifted_verifier_ext_call");
+        if (!verifierExtFunc)
         {
             return llvm::make_error<llvm::StringError>(
-                "Missing __lifted_ext_call function declaration",
+                "Missing __lifted_verifier_ext_call function declaration",
                 llvm::inconvertibleErrorCode());
         }
 
-        // TODO: better interop between lifter and this
+        std::vector<llvm::Function *> named_ext_calls;
         for (auto &F : module->functions())
-        {
             if (F.getName().starts_with("__lifted_ext_call_"))
+                named_ext_calls.push_back(&F);
+
+        for (auto *named_ext : named_ext_calls)
+        {
+            auto annotation_id_or = abi::get_annotation_id(*named_ext);
+            if (!annotation_id_or)
+                return annotation_id_or.takeError();
+
+            std::vector<llvm::CallBase *> callsites;
+            for (auto *U : named_ext->users())
+                if (auto *CB = llvm::dyn_cast<llvm::CallBase>(U))
+                    callsites.push_back(CB);
+
+            for (auto *CB : callsites)
             {
-                F.replaceAllUsesWith(extCallFunc);
+                if (CB->arg_size() != 3)
+                {
+                    return llvm::make_error<llvm::StringError>(
+                        "named external call stub has unexpected arity",
+                        llvm::inconvertibleErrorCode());
+                }
+
+                llvm::IRBuilder<> B(CB);
+                auto *new_call = B.CreateCall(
+                    verifierExtFunc,
+                    {CB->getArgOperand(0),
+                     CB->getArgOperand(1),
+                     CB->getArgOperand(2),
+                     B.getInt64(annotation_id_or->value)});
+                new_call->setCallingConv(CB->getCallingConv());
+                if (CB->hasName())
+                    new_call->setName(CB->getName());
+                CB->replaceAllUsesWith(new_call);
+                CB->eraseFromParent();
             }
+
+            if (named_ext->use_empty() && named_ext->isDeclaration())
+                named_ext->eraseFromParent();
         }
 
         // Initialize native target for JIT

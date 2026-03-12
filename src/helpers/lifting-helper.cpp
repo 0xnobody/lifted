@@ -11,108 +11,44 @@
 HELPER Memory *__lifted_ext_call(State *__restrict__, addr_t addr, Memory *);
 HELPER Memory *__lifted_recursive_call(State *__restrict__, addr_t addr, Memory *);
 
-HELPER Memory *__lifted_issue_ext_call(State *__restrict__ s, addr_t addr, Memory *m) // TODO: what to do with you
+HELPER void __lifted_make_resident()
 {
-  __lifted_ext_call(s, addr, m);
-  s->gpr.rip.qword = __remill_read_memory_64(m, s->gpr.rsp.qword);
-  s->gpr.rsp.qword += 8;
-  return m;
-}
-
-template <auto OpaqueCall>
-static inline Memory *run_systemv_opaque_call(State *__restrict__ s, addr_t addr, Memory *m)
-{
-  // HACK: LLVM passes don't know what memory the opaque call might modify.
-
-  // So it is pessimistic, and assumes it can modify anything. This is a big
-  // optimization barrier.
-  //
-  // In the future we want to use custom aliasing passes to specify what a given
-  // function can alias based on:
-  //   1) its params (no stack refs passed? can't modify caller's stack)
-  //   2) its convention (well-formed functions are assumed to not be able to
-  //      write below their stack refs (e.g. buf[-1] = x is not well-formed))
-  //   3) user-provided into (e.g. pointer param X is of max size A, pointer
-  //      param Y is of max size of the value of integer param Z)
-  //
-  // This has to be implemented as proper stack aliasing passes/analysis. But for
-  // now, in order to progress in BB exploration, we just tell LLVM that the return
-  // address is not changed across the call, in the same manner that we preserve
-  // non-volatile registers.
-  uint64_t retaddr = __remill_read_memory_64(m, s->gpr.rsp.qword);
-
-  // Save non-volatile registers
-  uint64_t saved_rbx = s->gpr.rbx.qword;
-  uint64_t saved_rbp = s->gpr.rbp.qword;
-  uint64_t saved_r12 = s->gpr.r12.qword;
-  uint64_t saved_r13 = s->gpr.r13.qword;
-  uint64_t saved_r14 = s->gpr.r14.qword;
-  uint64_t saved_r15 = s->gpr.r15.qword;
-  uint64_t saved_rsp = s->gpr.rsp.qword;
-
-  // Issue the opaque call — this may clobber anything in State
-  OpaqueCall(s, addr, m);
-
-  // Restore non-volatile registers (ABI guarantee)
-  s->gpr.rbx.qword = saved_rbx;
-  s->gpr.rbp.qword = saved_rbp;
-  s->gpr.r12.qword = saved_r12;
-  s->gpr.r13.qword = saved_r13;
-  s->gpr.r14.qword = saved_r14;
-  s->gpr.r15.qword = saved_r15;
-  s->gpr.rsp.qword = saved_rsp;
-
-  // Pop return address: RIP = [RSP]; RSP += 8
-  s->gpr.rip.qword = retaddr;
-  s->gpr.rsp.qword += 8;
-
-  return m;
-}
-
-/// System V x64 ABI-aware external call stub.
-HELPER Memory *__lifted_systemv_call(State *__restrict__ s, addr_t addr, Memory *m)
-{
-  return run_systemv_opaque_call<__lifted_ext_call>(s, addr, m);
-}
-
-/// System V x64 ABI-aware recursive-call summary stub.
-HELPER Memory *__lifted_systemv_recursive_call(State *__restrict__ s, addr_t addr, Memory *m)
-{
-  return run_systemv_opaque_call<__lifted_recursive_call>(s, addr, m);
+    (void)__lifted_ext_call(nullptr, 0, nullptr);
+    (void)__lifted_recursive_call(nullptr, 0, nullptr);
 }
 
 extern "C" uint64_t __slice_rip(State state, uint64_t rsp, addr_t curr_pc, Memory *__restrict__ memory)
 {
-  State S = {};
+    State S = {};
 
-  S.gpr.rax = state.gpr.rax;
-  S.gpr.rbx = state.gpr.rbx;
-  S.gpr.rcx = state.gpr.rcx;
-  S.gpr.rdx = state.gpr.rdx;
-  S.gpr.rsi = state.gpr.rsi;
-  S.gpr.rdi = state.gpr.rdi;
-  S.gpr.rbp = state.gpr.rbp;
-  S.gpr.rsp.qword = rsp;
-  S.gpr.r8 = state.gpr.r8;
-  S.gpr.r9 = state.gpr.r9;
-  S.gpr.r10 = state.gpr.r10;
-  S.gpr.r11 = state.gpr.r11;
-  S.gpr.r12 = state.gpr.r12;
-  S.gpr.r13 = state.gpr.r13;
-  S.gpr.r14 = state.gpr.r14;
-  S.gpr.r15 = state.gpr.r15;
+    S.gpr.rax = state.gpr.rax;
+    S.gpr.rbx = state.gpr.rbx;
+    S.gpr.rcx = state.gpr.rcx;
+    S.gpr.rdx = state.gpr.rdx;
+    S.gpr.rsi = state.gpr.rsi;
+    S.gpr.rdi = state.gpr.rdi;
+    S.gpr.rbp = state.gpr.rbp;
+    S.gpr.rsp.qword = rsp;
+    S.gpr.r8 = state.gpr.r8;
+    S.gpr.r9 = state.gpr.r9;
+    S.gpr.r10 = state.gpr.r10;
+    S.gpr.r11 = state.gpr.r11;
+    S.gpr.r12 = state.gpr.r12;
+    S.gpr.r13 = state.gpr.r13;
+    S.gpr.r14 = state.gpr.r14;
+    S.gpr.r15 = state.gpr.r15;
 
-  S.gpr.rip.qword = curr_pc;
+    S.gpr.rip.qword = curr_pc;
 
-  S.aflag.af = state.aflag.af;
-  S.aflag.cf = state.aflag.cf;
-  S.aflag.pf = state.aflag.pf;
-  S.aflag.zf = state.aflag.zf;
-  S.aflag.sf = state.aflag.sf;
-  S.aflag.of = state.aflag.of;
-  S.aflag.df = state.aflag.df;
+    S.aflag.af = state.aflag.af;
+    S.aflag.cf = state.aflag.cf;
+    S.aflag.pf = state.aflag.pf;
+    S.aflag.zf = state.aflag.zf;
+    S.aflag.sf = state.aflag.sf;
+    S.aflag.of = state.aflag.of;
+    S.aflag.df = state.aflag.df;
 
-  __remill_function(S, curr_pc, memory);
+    __remill_function(S, curr_pc, memory);
 
-  return S.gpr.rip.qword;
+    return S.gpr.rip.qword;
 }

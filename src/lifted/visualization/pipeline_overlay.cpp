@@ -289,8 +289,8 @@ std::string overlay_to_dot(const CfgSnapshot    &cfg,
             if (it != cfg.synthetic_blocks.end()) {
                 const auto &si = it->second;
                 if (si.type == lifter::synthetic_block_info_t::Type::EXTERNAL) {
-                    if (si.annotation && !si.annotation->name.empty())
-                        os << safe_dot(si.annotation->name);
+                    if (!si.annotation_name.empty())
+                        os << safe_dot(si.annotation_name);
                     else
                         os << "ext_call";
                 } else {

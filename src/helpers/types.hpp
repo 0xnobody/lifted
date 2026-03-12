@@ -27,3 +27,4 @@ HELPER Memory *__remill_write_memory_32(Memory *m, addr_t a, uint32_t v);
 HELPER Memory *__remill_write_memory_64(Memory *m, addr_t a, uint64_t v);
 
 HELPER __attribute__((pure)) Memory *__lifted_bb_entered(State state, addr_t a, Memory *m);
+HELPER Memory *__lifted_verifier_ext_call(State *state, addr_t pc, Memory *m, uint64_t annotation_id);

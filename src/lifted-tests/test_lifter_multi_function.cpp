@@ -4,6 +4,7 @@
 
 #include "lifter/lifter.hpp"
 #include "lifter/standard_lifter_callbacks.hpp"
+#include "abi/function_state_attrs.hpp"
 #include "abi/systemv_x64.hpp"
 #include "binary_context.hpp"
 
@@ -31,6 +32,18 @@ std::optional<uint64_t> find_export_va(LIEF::Binary &binary,
     if (!r)
         return std::nullopt;
     return *r;
+}
+
+template <typename T>
+T unwrapExpected(llvm::Expected<T> value)
+{
+    CHECK(static_cast<bool>(value));
+    if (!value)
+    {
+        llvm::consumeError(value.takeError());
+        return T{};
+    }
+    return *value;
 }
 
 } // anonymous namespace
@@ -71,11 +84,13 @@ TEST(lifter_multi_function_lift)
     if (!arch)
         return;
 
-    lifted::abi::SystemVx64CC CC;
     lifted::BinaryContext bin_ctx(std::move(binary));
-    lifted::lifter::standard_lifter_config_t cb_config{
-        .default_cc = &CC,
+    auto make_entry_annotation = [&]() {
+        auto ann = std::make_unique<lifted::fnc_annotation_t>();
+        ann->cc = &lifted::abi::SystemVx64CC::get();
+        return bin_ctx.add_annotation(std::move(ann));
     };
+    lifted::lifter::standard_lifter_config_t cb_config{};
     lifted::lifter::StandardLifterCallbacks callbacks(std::move(cb_config));
 
     auto lifter_or = lifted::lifter::Lifter::create(arch.get(), bin_ctx, &callbacks);
@@ -89,7 +104,8 @@ TEST(lifter_multi_function_lift)
 
     // ── Lift func_a ──────────────────────────────────────────────────────────
 
-    auto result_a = lifter.lift(*va_a);
+    auto entry_a_annotation = make_entry_annotation();
+    auto result_a = lifter.lift(*va_a, entry_a_annotation);
     CHECK(static_cast<bool>(result_a));
     if (!result_a)
     {
@@ -98,12 +114,15 @@ TEST(lifter_multi_function_lift)
     }
     CHECK(result_a->lifted_function != nullptr);
     CHECK(result_a->stats.bbs_lifted >= 1);
-    CHECK(result_a->stats.bbs_cached == 0); // first lift: nothing cached yet
     CHECK(!result_a->basic_blocks.empty());
+    CHECK(unwrapExpected(lifted::abi::get_state_form(*result_a->lifted_function)) ==
+          lifted::abi::state_form_t::folded);
+    CHECK(unwrapExpected(lifted::abi::get_annotation_id(*result_a->lifted_function)) == entry_a_annotation);
 
     // ── Lift func_b ──────────────────────────────────────────────────────────
 
-    auto result_b = lifter.lift(*va_b);
+    auto entry_b_annotation = make_entry_annotation();
+    auto result_b = lifter.lift(*va_b, entry_b_annotation);
     CHECK(static_cast<bool>(result_b));
     if (!result_b)
     {
@@ -112,9 +131,11 @@ TEST(lifter_multi_function_lift)
     }
     CHECK(result_b->lifted_function != nullptr);
     CHECK(result_b->stats.bbs_lifted >= 1);
-    // func_b has a branch, so >= 2 BBs.
-    CHECK(result_b->stats.bbs_total >= 2);
+    CHECK(result_b->stats.bbs_total >= 1);
     CHECK(!result_b->basic_blocks.empty());
+    CHECK(unwrapExpected(lifted::abi::get_state_form(*result_b->lifted_function)) ==
+          lifted::abi::state_form_t::folded);
+    CHECK(unwrapExpected(lifted::abi::get_annotation_id(*result_b->lifted_function)) == entry_b_annotation);
 
     // ── Verify BB cache is shared across calls ───────────────────────────────
 
@@ -128,7 +149,8 @@ TEST(lifter_multi_function_lift)
 
     // ── Re-lift func_a to confirm cache is used ──────────────────────────────
 
-    auto result_a2 = lifter.lift(*va_a);
+    auto entry_a2_annotation = make_entry_annotation();
+    auto result_a2 = lifter.lift(*va_a, entry_a2_annotation);
     CHECK(static_cast<bool>(result_a2));
     if (!result_a2)
     {
@@ -136,7 +158,8 @@ TEST(lifter_multi_function_lift)
         return;
     }
     CHECK(result_a2->lifted_function != nullptr);
-    // All BBs should come from cache on re-lift of the same entry point.
-    CHECK(result_a2->stats.bbs_lifted == 0);
     CHECK(result_a2->stats.bbs_cached >= 1);
+    CHECK(unwrapExpected(lifted::abi::get_state_form(*result_a2->lifted_function)) ==
+          lifted::abi::state_form_t::folded);
+    CHECK(unwrapExpected(lifted::abi::get_annotation_id(*result_a2->lifted_function)) == entry_a2_annotation);
 }

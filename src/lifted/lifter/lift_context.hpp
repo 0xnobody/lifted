@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lifter_types.hpp"
+#include "../binary_context.hpp"
 
 #include <deque>
 #include <map>
@@ -47,10 +48,9 @@ struct lift_context_t
     /// stitch_cfg uses this to default their synthetic dispatch to the natural
     /// function return when no continuation block is known.
     std::set<bb_id_t> return_to_caller_blocks;
-    // ── Entry point (for resolve_context_t) ──────────────────────────────
-
+    // ── Entry-point metadata ───────────────────────────────────────────────
     uint64_t entry_rva = 0;
-
+    annotation_id_t entry_annotation_id = INVALID_ANNOTATION_ID;
     // ── Helpers ───────────────────────────────────────────────────────────
 
     /// When block splitting redirects all original successors to `new_source`,

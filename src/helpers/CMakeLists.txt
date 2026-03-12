@@ -51,7 +51,6 @@ set(HELPER_BINARY_DIR "${CMAKE_BINARY_DIR}/helpers")
 set(HELPER_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
 set(HELPER_SOURCES
-    "${HELPER_DIR}/abi-helper.cpp"
     "${HELPER_DIR}/deobfuscation-helper.cpp"
     "${HELPER_DIR}/verification-helper.cpp"
     "${HELPER_DIR}/state-utils.cpp"
@@ -74,7 +73,6 @@ foreach(source ${HELPER_SOURCES})
     list(APPEND HELPER_OUTPUTS ${ll})
 endforeach()
 
-set(HELPERS_ABI_PATH "${HELPER_BINARY_DIR}/abi-helper.ll" CACHE STRING "abi-helper.ll path")
 set(HELPERS_DEOBFUSCATION_INTRINSICS_PATH "${HELPER_BINARY_DIR}/deobfuscation-helper.ll" CACHE STRING "deobfuscation-helper.ll path")
 set(HELPERS_VERIFICATION_INTRINSICS_PATH "${HELPER_BINARY_DIR}/verification-helper.ll" CACHE STRING "verification-helper.ll path")
 set(HELPERS_VERIFICATION_HARNESS_PATH "${HELPER_BINARY_DIR}/verification-harness.ll" CACHE STRING "verification-harness.ll path")
