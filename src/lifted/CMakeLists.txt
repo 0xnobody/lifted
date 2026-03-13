@@ -31,17 +31,11 @@ add_library(lifted STATIC
     "passes/pass_utils.cpp"
     "passes/pass_utils.hpp"
 
-    "passes/deobfuscation/ram_direct_access_pass.cpp"
-    "passes/deobfuscation/canonicalize_stack_pass.cpp"
-    "passes/deobfuscation/canonicalize_stack_pass.hpp"
     "passes/deobfuscation/constant_memory_folding_pass.cpp"
     "passes/deobfuscation/constant_memory_folding_pass.hpp"
 
     "passes/verification/memory_intrinsic_lowering_pass.cpp"
     "passes/verification/memory_intrinsic_lowering_pass.hpp"
-
-    "passes/analysis/stack_aa_pass.cpp"
-    "passes/analysis/stack_aa_pass.hpp"
 
     "abi/calling_convention.hpp"
     "abi/calling_convention.cpp"
