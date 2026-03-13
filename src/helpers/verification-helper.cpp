@@ -85,6 +85,42 @@ HELPER void __lifted_write_memory_64(addr_t a, uint64_t v)
     assert_exit(__ctx->verifier_context->write64(__ctx->verifier_context->context, a, v));
 }
 
+HELPER void __lifted_memset_memory(addr_t addr, uint8_t byte, uint64_t len)
+{
+    for (uint64_t i = 0; i < len; ++i)
+    {
+        __lifted_write_memory_8(addr + i, byte);
+    }
+}
+
+HELPER void __lifted_memcpy_memory(addr_t dst, addr_t src, uint64_t len)
+{
+    for (uint64_t i = 0; i < len; ++i)
+    {
+        uint8_t byte = __lifted_read_memory_8(src + i);
+        __lifted_write_memory_8(dst + i, byte);
+    }
+}
+
+HELPER void __lifted_memmove_memory(addr_t dst, addr_t src, uint64_t len)
+{
+    if (dst <= src || dst - src >= len)
+    {
+        for (uint64_t i = 0; i < len; ++i)
+        {
+            uint8_t byte = __lifted_read_memory_8(src + i);
+            __lifted_write_memory_8(dst + i, byte);
+        }
+        return;
+    }
+
+    for (uint64_t i = len; i != 0; --i)
+    {
+        uint8_t byte = __lifted_read_memory_8(src + i - 1);
+        __lifted_write_memory_8(dst + i - 1, byte);
+    }
+}
+
 HELPER __attribute__((pure)) Memory *__lifted_bb_entered(State state, addr_t a, Memory *m) // Pass state byval so it's not an optimization barrier.
 {
     synchronize_flags(&state);
