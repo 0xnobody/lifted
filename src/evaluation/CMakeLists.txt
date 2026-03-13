@@ -18,3 +18,4 @@ endif()
 # ── Evaluation suites ─────────────────────────────────────────────────────────
 add_subdirectory(synthetic)
 add_subdirectory(tum)
+add_subdirectory(coreutils)

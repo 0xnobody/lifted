@@ -17,7 +17,7 @@ include(FetchContent)
 FetchContent_Declare(
     tum_benchmarks
     GIT_REPOSITORY https://github.com/tum-i4/obfuscation-benchmarks.git
-    GIT_TAG        master
+    GIT_TAG        d11452ffb3ec7418a462f65d4034f9f1474136c8
     GIT_SHALLOW    TRUE
 )
 FetchContent_GetProperties(tum_benchmarks)

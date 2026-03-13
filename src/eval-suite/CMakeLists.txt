@@ -19,6 +19,7 @@ target_compile_definitions(eval-suite PRIVATE
     "EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV=\"${EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV}\""
     "EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV=\"${EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV}\""
     "EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV=\"${EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV}\""
+    "EVAL_SUITE_GNU_COREUTILS_CSV=\"${EVAL_SUITE_GNU_COREUTILS_CSV}\""
 )
 
 # Must be built after the suite targets so .so files + CSVs exist at link time.
@@ -26,7 +27,8 @@ foreach(suite_target IN ITEMS
     eval-suite-synthetic
     eval-suite-tum-small-programs
     eval-suite-tum-basic-algorithms
-    eval-suite-tum-simple-hash-functions)
+    eval-suite-tum-simple-hash-functions
+    eval-suite-gnu-coreutils)
   if(TARGET ${suite_target})
     add_dependencies(eval-suite ${suite_target})
   endif()

@@ -153,9 +153,9 @@ function(define_eval_target)
     # Build optional --functions args
     set(_fn_args "")
     if(ET_FUNCTIONS)
-        foreach(_fn IN LISTS ET_FUNCTIONS)
-            list(APPEND _fn_args "--functions" "${_fn}")
-        endforeach()
+        # Pass all names after a single --functions flag so argparse (nargs="+")
+        # collects them all.  Repeating --functions overwrites the previous value.
+        list(APPEND _fn_args "--functions" ${ET_FUNCTIONS})
     endif()
 
     add_custom_command(

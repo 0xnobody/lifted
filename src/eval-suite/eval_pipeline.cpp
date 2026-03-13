@@ -256,6 +256,10 @@ std::optional<std::filesystem::path> resolve_suite_name(const std::string &name)
     if (name == "tum-simple-hash-functions")
         return std::filesystem::path{EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV};
 #endif
+#ifdef EVAL_SUITE_GNU_COREUTILS_CSV
+    if (name == "gnu-coreutils")
+        return std::filesystem::path{EVAL_SUITE_GNU_COREUTILS_CSV};
+#endif
     return std::nullopt;
 }
 
@@ -273,6 +277,9 @@ std::vector<std::string> known_suite_names()
 #endif
 #ifdef EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV
     names.push_back("tum-simple-hash-functions");
+#endif
+#ifdef EVAL_SUITE_GNU_COREUTILS_CSV
+    names.push_back("gnu-coreutils");
 #endif
     return names;
 }
