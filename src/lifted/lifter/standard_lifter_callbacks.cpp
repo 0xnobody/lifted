@@ -59,22 +59,16 @@ resolved_targets_result_t StandardLifterCallbacks::heuristically_extract_targets
     auto ensure_external_annotation = [&](uint64_t dest) -> annotation_id_t
     {
         if (auto anno_id = ctx.bin_ctx.get_ext_call(dest); anno_id != INVALID_ANNOTATION_ID)
-        {
             return anno_id;
-        }
+
         std::optional<std::string> name_opt = ctx.bin_ctx.symbol_name_at_rva(dest);
         if (name_opt)
-        {
             if (auto anno_id = ctx.bin_ctx.get_by_name(*name_opt); anno_id != INVALID_ANNOTATION_ID)
-            {
                 return anno_id;
-            }
-        }
 
         auto ann = std::make_unique<fnc_annotation_t>();
         ann->name = name_opt.value_or("ext_auto_" + llvm::utohexstr(dest));
         ann->cc = entry_anno->cc;
-
         return ctx.bin_ctx.create_ext_call(dest, std::move(ann));
     };
 
@@ -85,9 +79,7 @@ resolved_targets_result_t StandardLifterCallbacks::heuristically_extract_targets
                 remill::Instruction::kCategoryDirectFunctionCall)
         {
             if (addr == ctx.entry_rva)
-            {
                 return resolved_target_t::Type::RECURSIVE;
-            }
         }
 
         for (const auto &r : config_.ext_func_rva_ranges)
@@ -97,7 +89,6 @@ resolved_targets_result_t StandardLifterCallbacks::heuristically_extract_targets
     };
 
     auto dests = extract_constant_returns(F);
-
     if (!dests.empty())
     {
         for (auto dest : dests)
@@ -107,21 +98,25 @@ resolved_targets_result_t StandardLifterCallbacks::heuristically_extract_targets
                 .dest = dest,
                 .annotation_id = ensure_external_annotation(dest)});
         }
-
         return result;
     }
 
-    auto ensure_indirect_annotation = [&]() -> annotation_id_t
+    auto ensure_indirect_annotation = [&](std::optional<uint64_t> slot_addr) -> annotation_id_t
     {
         if (auto anno_id = ctx.bin_ctx.get_indr_call(ctx.bb.id); anno_id != INVALID_ANNOTATION_ID)
-        {
             return anno_id;
-        }
+
+        std::optional<std::string> name_opt;
+        if (slot_addr)
+            name_opt = ctx.bin_ctx.import_name_for_slot(*slot_addr);
+
+        if (name_opt)
+            if (auto anno_id = ctx.bin_ctx.get_by_name(*name_opt); anno_id != INVALID_ANNOTATION_ID)
+                return anno_id;
 
         auto ann = std::make_unique<fnc_annotation_t>();
-        ann->name = "indr_dispatch_" + llvm::utohexstr(ctx.bb.id);
+        ann->name = name_opt.value_or("indr_dispatch_" + llvm::utohexstr(ctx.bb.id));
         ann->cc = entry_anno->cc;
-
         return ctx.bin_ctx.create_indr_call(ctx.bb.id, std::move(ann));
     };
 
@@ -137,12 +132,13 @@ resolved_targets_result_t StandardLifterCallbacks::heuristically_extract_targets
                 auto *offset = gep->getOperand(2);
                 if (auto *const_off = llvm::dyn_cast<llvm::ConstantInt>(offset))
                 {
-                    if (is_got_entry(const_off->getZExtValue()))
+                    uint64_t slot_addr = const_off->getZExtValue();
+                    if (is_got_entry(slot_addr))
                     {
                         DLOG(INFO) << "Resolved indirect target via GOT at offset 0x"
-                                   << std::hex << const_off->getZExtValue();
+                                   << std::hex << slot_addr;
 
-                        result.indirect_annotation_id = ensure_indirect_annotation();
+                        result.indirect_annotation_id = ensure_indirect_annotation(slot_addr);
                     }
                 }
             }
@@ -229,8 +225,11 @@ resolved_targets_result_t StandardLifterCallbacks::resolve_targets(resolve_conte
         *ctx.bb.terminating_category ==
             remill::Instruction::kCategoryFunctionReturn)
     {
-        result.targets.push_back(
-            {resolved_target_t::Type::RETURN_TO_CALLER, /*dest=*/0});
+        result.targets.push_back({
+            .type = resolved_target_t::Type::RETURN_TO_CALLER,
+            .dest = 0,
+            .annotation_id = std::nullopt,
+        });
     }
 
     return result;

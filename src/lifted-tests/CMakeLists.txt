@@ -13,7 +13,8 @@ add_executable(lifted-tests
     "test_verifier_state_loop_limit.cpp"
     "test_verifier_state_recursive.cpp"
     "test_state_fold.cpp"
-)
+    "test_binary_context_annotations.cpp"
+ )
 
 target_link_libraries(lifted-tests PRIVATE lifted)
 
@@ -23,4 +24,12 @@ if(DEFINED EVAL_TWO_FUNCS_SO)
         EVAL_TWO_FUNCS_SO="${EVAL_TWO_FUNCS_SO}"
     )
     add_dependencies(lifted-tests eval-two-funcs)
+endif()
+
+get_property(EVAL_IOFILE_SO GLOBAL PROPERTY "_EVAL_TARGET_IOFILE_SO")
+if(EVAL_IOFILE_SO)
+    target_compile_definitions(lifted-tests PRIVATE
+        EVAL_IOFILE_SO="${EVAL_IOFILE_SO}"
+    )
+    add_dependencies(lifted-tests eval-iofile)
 endif()

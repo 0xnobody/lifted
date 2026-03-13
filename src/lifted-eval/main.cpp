@@ -262,11 +262,11 @@ int main(int argc, char **argv)
 
     llvm::LLVMContext context;
 
-    if (auto err = test_full_pipeline(context, "/home/atlas/lifted/build/src/evaluation/tum/libeval-anagram.so", 0x124A))
-        llvm::errs() << "test_full_pipeline error: " << llvm::toString(std::move(err)) << "\n";
+    // if (auto err = test_full_pipeline(context, "/home/atlas/lifted/build/src/evaluation/tum/libeval-anagram.so", 0x124A))
+    //     llvm::errs() << "test_full_pipeline error: " << llvm::toString(std::move(err)) << "\n";
 
-    // if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
-    //     llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
+    if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
+        llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
 
     // if (auto err = lift_suite(context, EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV))
     //     llvm::errs() << "tum-basic-algorithms suite error: "
@@ -274,11 +274,12 @@ int main(int argc, char **argv)
 
     // if (auto err = lift_suite(context, EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV))
     //     llvm::errs() << "tum-small-programs suite error: " << llvm::toString(std::move(err)) << "\n";
-    //
-    // if (auto err = lift_suite(context,
-    // EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV))
-    //    llvm::errs() << "tum-simple-hash-functions suite error: " <<
-    //    llvm::toString(std::move(err)) << "\n";
+
+    // if (auto err = lift_suite(context, EVAL_SUITE_GNU_COREUTILS_CSV))
+    //     llvm::errs() << "gnu-coreutils suite error: " << llvm::toString(std::move(err)) << "\n";
+
+    // if (auto err = lift_suite(context, EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV))
+    //     llvm::errs() << "tum-simple-hash-functions suite error: " << llvm::toString(std::move(err)) << "\n";
 
     return EXIT_SUCCESS;
 }

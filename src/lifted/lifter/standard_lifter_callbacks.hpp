@@ -43,12 +43,13 @@ class StandardLifterCallbacks : public LifterCallbacks
     resolved_targets_result_t resolve_targets(resolve_context_t &ctx) override;
     const standard_lifter_config_t &config() const { return config_; }
 
-  private:
-    standard_lifter_config_t config_;
-
+  protected:
     resolved_targets_result_t heuristically_extract_targets(llvm::Function &F, resolve_context_t &ctx);
 
     bool is_got_entry(uint64_t addr);
+
+  private:
+    standard_lifter_config_t config_;
 
     static void maybe_write_artifact(std::string_view artifact_dir,
                                      std::string_view name,

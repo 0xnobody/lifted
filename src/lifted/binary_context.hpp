@@ -3,12 +3,20 @@
 #include "compat/lief_compat.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <vector>
+
+namespace llvm
+{
+class Error;
+}
 
 namespace lifted::abi
 {
@@ -93,8 +101,8 @@ enum class builtin_annotation_kind_t
 
 // ── BinaryContext ─────────────────────────────────────────────────────────────
 
-/// Per-binary annotation registry.  Owns all fnc_annotation_t instances and the
-/// LIEF Binary.  Must outlive every component that holds a pointer into it
+/// Per-binary annotation registry. Owns all fnc_annotation_t instances and the
+/// LIEF Binary. Must outlive every component that holds a pointer into it
 /// (Lifter, executors, pipeline).
 ///
 /// Not thread-safe — consistent with the existing Lifter thread-safety contract.
@@ -111,17 +119,31 @@ class BinaryContext
 
     // ── Binary access ─────────────────────────────────────────────────────────
 
-    /// Returns a reference to the owned binary.  BinaryContext is the sole owner.
+    /// Returns a reference to the owned binary. BinaryContext is the sole owner.
     const LIEF::Binary &binary() const;
 
-    /// LIEF-backed name resolution: symbol name at a given RVA (or VA for PIE=0).
-    /// Returns nullopt if no symbol is known at that address.
+    /// Best-effort direct-target name resolution for a binary address.
+    /// Accepts either RVA or VA-style inputs and normalizes through imagebase
+    /// aliases when needed. Returns nullopt if no symbol/import metadata is known.
     std::optional<std::string> symbol_name_at_rva(uint64_t rva) const;
+
+    /// Resolve an imported-function name for a GOT/IAT slot address.
+    /// Accepts either RVA or VA-style inputs and normalizes through imagebase
+    /// aliases when needed. Returns nullopt if the slot is not tied to an import.
+    std::optional<std::string> import_name_for_slot(uint64_t slot_rva) const;
+
+    /// Import function annotations from a JSON array on disk.
+    /// Rejects ambiguous matchers (duplicate name/normalized-name/RVA/dispatcher).
+    llvm::Error import_annotations_from_json(std::filesystem::path path);
 
     // ── Lookups — const; no mutation after insertion ──────────────────────────
 
     const fnc_annotation_t *get_by_id(annotation_id_t id) const;
+
+    /// Exact-name lookup first, then ELF version-stripped alias lookup
+    /// (e.g. `printf@GLIBC_2.2.5` → `printf`, `foo@@VER` → `foo`).
     annotation_id_t get_by_name(const std::string &name) const;
+
     annotation_id_t get_ext_call(uint64_t dest_rva) const;
     annotation_id_t get_indr_call(uint64_t dispatcher_rva) const;
 
@@ -144,9 +166,21 @@ class BinaryContext
     annotation_id_t add_annotation(std::unique_ptr<fnc_annotation_t> ann);
 
   private:
-    /// Assigns id, inserts into annotations_, updates by_name index.
-    /// Called by all three public creation helpers.
+
+    /// Assigns id, inserts into annotations_, updates primary-name index.
+    /// Called by all three public creation helpers and JSON import.
     annotation_id_t insert(std::unique_ptr<fnc_annotation_t> ann);
+
+    void bind_name_alias(const fnc_annotation_t &ann, std::string_view name);
+    void bind_ext_call_alias(const fnc_annotation_t &ann, uint64_t dest_rva);
+    void bind_indr_call_alias(const fnc_annotation_t &ann, uint64_t dispatcher_rva);
+
+    std::vector<uint64_t> address_aliases(uint64_t addr) const;
+    static std::optional<std::string> strip_elf_symbol_version(std::string_view name);
+
+    void index_binary_metadata();
+    void index_direct_target_name(uint64_t addr, std::string_view name, bool overwrite = false);
+    void index_import_slot_name(uint64_t addr, std::string_view name, bool overwrite = false);
 
     std::unique_ptr<LIEF::Binary> binary_;
     uint64_t next_id_raw_ = 0;
@@ -156,6 +190,9 @@ class BinaryContext
     std::unordered_map<uint64_t, const fnc_annotation_t *> ext_call_annotations_;
     std::unordered_map<uint64_t, const fnc_annotation_t *> indr_call_annotations_;
     std::map<builtin_annotation_kind_t, annotation_id_t> builtin_annotation_ids_;
+
+    std::unordered_map<uint64_t, std::string> direct_target_names_;
+    std::unordered_map<uint64_t, std::string> import_slot_names_;
 };
 
 } // namespace lifted
