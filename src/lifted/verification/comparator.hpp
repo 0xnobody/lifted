@@ -32,18 +32,20 @@ namespace lifted::verification
     };
 
     // ── checkpoint_field ─────────────────────────────────────────────────────
-    // Which component hash first diverged inside a checkpoint entry.
+    // Which checkpoint component first diverged inside a checkpoint entry.
     //
-    // combined_hash is intentionally NOT listed here — it is a derived value.
-    // If combined_hash diverges but no sub-field does, that indicates a hash
-    // computation bug; compare_runs asserts rather than surfacing it.
+    // combined_hash is intentionally not listed here — it is derived from the
+    // enabled compare dimensions. If combined_hash diverges but no component
+    // does, that indicates a hash-composition bug.
 
     enum class checkpoint_field
     {
-        STATE,     // state_hash    (GPR/flag snapshots at BB and ext-call events)
-        MEM_WRITE, // mem_write_hash
-        READ,      // read_hash
-        EXT_CALL,  // ext_call_hash
+        STATE,        // state_hash (checkpoint-time register snapshots at BB/ext-call sync points)
+        BB_TRACE,     // bb_trace_hash
+        MEM_CONTENTS, // memory_contents_hash
+        MEM_WRITE,    // mem_write_hash (exact write sequence)
+        READ,         // read_hash
+        EXT_CALL,     // ext_call_hash
     };
 
     // ── checkpoint_divergence_t ───────────────────────────────────────────────
@@ -62,6 +64,7 @@ namespace lifted::verification
         bool checkpoint_match = false;
         bool reg_state_match = false;
         bool mem_snapshot_match = false;
+        bool write_sequence_match = false;
         bool bb_trace_match = false;
         bool ext_calls_match = false;
     };
@@ -104,11 +107,15 @@ namespace lifted::verification
 
     struct compare_config_t
     {
-        // Optional ABI for register comparison.  If non-null, only ABI-relevant
-        // registers are compared via get_divergent_registers().  If null, the 16
+        // Optional ABI for register comparison. If non-null, only ABI-relevant
+        // registers are compared via get_divergent_registers(). If null, the 16
         // GPRs + rflags are compared via the same hash used by checkpoints,
         // avoiding false divergences from uninitialised padding/vector bytes.
         const abi::CallingConvention *abi = nullptr;
+
+        // Which semantic dimensions are required for PASS. Disabled dimensions
+        // are ignored by compare_runs and diff_runs.
+        compare_dimension_flags dimensions = compare_dimension_flags::DEFAULT;
     };
 
     // ── compare_runs ─────────────────────────────────────────────────────────
@@ -186,12 +193,12 @@ namespace lifted::verification
     };
 
     // ── checkpoint_diff_t ─────────────────────────────────────────────────────
-    // All checkpoint entries where combined_hash differs.
+    // All checkpoint entries where the enabled checkpoint dimensions diverge.
     // The raw checkpoint_t values for both sides are included so downstream
-    // tools can inspect individual sub-hashes (state_hash, mem_write_hash, …).
-    // For length-only divergences (one record is shorter), the entry at
-    // index == min(len_r1, len_r2) + 1 has a zero-valued checkpoint_t on the
-    // shorter side (sentinel) — first_diverging_field is STATE as a placeholder.
+    // tools can inspect individual component hashes (state_hash, bb_trace_hash,
+    // memory_contents_hash, mem_write_hash, ...). For length-only divergences
+    // (one record is shorter), the entry at index == min(len_r1, len_r2) + 1
+    // has a zero-valued checkpoint_t on the shorter side.
 
     struct checkpoint_diff_entry_t
     {

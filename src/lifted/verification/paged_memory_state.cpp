@@ -9,7 +9,7 @@ namespace lifted::verification
 {
 
     page_t::page_t(uint64_t page_seed)
-        : type(Type::DYNAMIC), data{}, read{}, written{}
+        : type(Type::DYNAMIC), data{}, read{}, written{}, sentinel_filled{}
     {
         // Initialize data with random values based on page-specific seed
         std::mt19937_64 rng(page_seed);
@@ -42,6 +42,30 @@ namespace lifted::verification
         // Use a distinct salt so oracle rolls are statistically uncorrelated
         // with the initial random data fill of each page.
         return hash::mix(master_seed ^ 0xdeadbeefcafe0000ULL, slot_addr);
+    }
+
+    uint64_t paged_memory_state::written_set_contribution(uint64_t addr)
+    {
+        return hash::mix(0x9f2d4a6bc31e7d55ULL, addr);
+    }
+
+    uint64_t paged_memory_state::written_value_contribution(uint64_t addr, uint8_t value)
+    {
+        return hash::mix_many(0x1c6e4f8ab59d2307ULL, addr, static_cast<uint64_t>(value));
+    }
+
+    void paged_memory_state::note_byte_write(uint64_t addr, page_t &page, uint64_t offset, uint8_t value)
+    {
+        const bool was_written = page.written.test(offset);
+        const uint8_t old_value = page.data[offset];
+
+        if (was_written)
+            digest_.written_value_hash ^= written_value_contribution(addr, old_value);
+        else
+            digest_.written_set_hash ^= written_set_contribution(addr);
+
+        page.write8(offset, value);
+        digest_.written_value_hash ^= written_value_contribution(addr, value);
     }
 
     bool paged_memory_state::try_load_image_page(uint64_t page_addr, std::array<uint8_t, 4096> &out_data)
@@ -187,7 +211,7 @@ namespace lifted::verification
 
     memory_snapshot_t paged_memory_state::finalize(paged_memory_state &&mem)
     {
-        return memory_snapshot_t{std::move(mem.pages)};
+        return memory_snapshot_t{std::move(mem.pages), mem.digest_};
     }
 
     bool memory_snapshot_t::compare(const memory_snapshot_t &other, std::span<const llvm::AddressRange> ignored) const

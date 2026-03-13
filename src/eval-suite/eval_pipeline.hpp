@@ -33,11 +33,22 @@ namespace lifted::eval
     // Stage 2 – small inputs:   100 runs, max=0x10000 inputs, bb=2000, loop=50
     // Stage 3 – corpus replay:   replay interesting entries + 30 medium seeds, bb=3000, loop=75
     //
+    // Checkpointing policy is profile-driven so raw/native validation can remain
+    // strict while optimized-vs-optimized comparisons can relax synchronization
+    // without changing stage structure.
+
+    enum class PipelineCheckpointProfile
+    {
+        RAW_STRICT,
+        OPTIMIZED_RELAXED,
+    };
+
     // This is the canonical pipeline for all eval-suite + lifted-cli runs.
     pipeline::PipelineSpec make_default_pipeline(
         const std::string &func_name,
         std::shared_ptr<verification::Executor> src,
-        std::shared_ptr<verification::Executor> tgt);
+        std::shared_ptr<verification::Executor> tgt,
+        PipelineCheckpointProfile profile = PipelineCheckpointProfile::RAW_STRICT);
 
     // Core: lift binary at entry_rva, run the default pipeline.
     // deep_dive_count: 0 = skip deep-dive; >= 1 = deep-dive the first divergence found.

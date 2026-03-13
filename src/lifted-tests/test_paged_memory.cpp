@@ -263,6 +263,54 @@ TEST(cross_page_read64_sentinel_filled_on_both_pages)
         CHECK(it1->second.sentinel_filled.test(i));
 }
 
+// ── Memory-content digest ─────────────────────────────────────────────────────
+
+TEST(memory_contents_digest_matches_across_chunking_and_reordering)
+{
+    paged_memory_state a(0x1234);
+    paged_memory_state b(0x1234);
+
+    a.write64(0xE0000, 0x1122334455667788ULL);
+
+    // Same final bytes, but split into two writes and issue them in the opposite order.
+    b.write32(0xE0004, 0x11223344U);
+    b.write32(0xE0000, 0x55667788U);
+
+    CHECK_EQ(a.memory_contents_digest(), b.memory_contents_digest());
+
+    auto snap_a = paged_memory_state::finalize(std::move(a));
+    auto snap_b = paged_memory_state::finalize(std::move(b));
+    CHECK_EQ(snap_a.memory_contents_digest(), snap_b.memory_contents_digest());
+    CHECK(snap_a.compare(snap_b));
+}
+
+TEST(memory_contents_digest_detects_write_set_changes)
+{
+    paged_memory_state a(0x1234);
+    paged_memory_state b(0x1234);
+
+    a.write8(0xE1000, 0xAA);
+    b.write8(0xE1001, 0xAA);
+
+    CHECK_NE(a.memory_contents_digest(), b.memory_contents_digest());
+    CHECK(!paged_memory_state::finalize(std::move(a)).compare(
+        paged_memory_state::finalize(std::move(b))));
+}
+
+TEST(memory_contents_digest_tracks_overwrites_by_final_value)
+{
+    paged_memory_state a(0x1234);
+    paged_memory_state b(0x1234);
+
+    a.write8(0xE2000, 0x11);
+    a.write8(0xE2000, 0x22);
+    b.write8(0xE2000, 0x22);
+
+    CHECK_EQ(a.memory_contents_digest(), b.memory_contents_digest());
+    CHECK(paged_memory_state::finalize(std::move(a)).compare(
+        paged_memory_state::finalize(std::move(b))));
+}
+
 // ── compare() ignores sentinel bytes ─────────────────────────────────────────
 
 TEST(compare_unaffected_by_sentinel_injection)

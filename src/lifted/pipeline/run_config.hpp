@@ -45,11 +45,15 @@ struct RunConfig
     verification::recursive_call_policy recursive_policy =
         verification::recursive_call_policy::SKIP;
 
-    /// Which events to record in checkpoints (passed to checkpoint_config_t::record_on).
-    verification::event_flags record_flags = verification::event_flags::DEFAULT;
+    /// Which events append checkpoint entries and drive rerun synchronization.
+    verification::event_flags sync_on = verification::event_flags::DEFAULT;
+
+    /// Which semantic dimensions are enforced when checkpoints are compared.
+    verification::compare_dimension_flags compare_dims =
+        verification::compare_dimension_flags::DEFAULT;
 
     /// When true, each checkpointed event also stores a full checkpoint_detail_t
-    /// (including the remill::State copy for BB/EXT_CALL events).  Off by default.
+    /// (including the remill::State copy for BB/EXT_CALL events). Off by default.
     bool record_details = false;
 
     // ── Conversion helpers ────────────────────────────────────────────────────
@@ -79,8 +83,9 @@ struct RunConfig
     {
         return {
             .checkpoint_config = {
-                .record_on      = record_flags,
-                .prev_record    = prev_record,
+                .sync_on = sync_on,
+                .compare_dims = compare_dims,
+                .prev_record = prev_record,
                 .record_details = record_details,
             },
             .loop_policy = verification::loop_limit_policy::TERMINATE,

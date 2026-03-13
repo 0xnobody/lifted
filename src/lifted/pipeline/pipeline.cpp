@@ -198,7 +198,9 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
         return tgt_result.takeError();
 
     // ── compare ─────────────────────────────────────────────────────────────────────────
-    auto cmp = verification::compare_runs(*src_result, *tgt_result, spec_.compare_cfg);
+    auto compare_cfg = spec_.compare_cfg;
+    compare_cfg.dimensions = cfg.compare_dims;
+    auto cmp = verification::compare_runs(*src_result, *tgt_result, compare_cfg);
 
     const auto initial_src_exit  = src_result->exit_reason;  // save before any rerun overwrites
     bool was_rerun               = false;
@@ -219,14 +221,14 @@ llvm::Expected<RunOutcome> Pipeline::execute_one(
             return src_result2.takeError();
 
         *src_result = std::move(*src_result2);
-        cmp = verification::compare_runs(*src_result, *tgt_result, spec_.compare_cfg);
+        cmp = verification::compare_runs(*src_result, *tgt_result, compare_cfg);
         was_rerun_resolved = (cmp.status == verification::comparison_status::PASS);
     }
 
     // ── diff if diverged ──────────────────────────────────────────────────────────────────────────
     std::optional<verification::diff_result_t> diff;
     if (cmp.status == verification::comparison_status::FAIL_DIVERGED)
-        diff = verification::diff_runs(*src_result, *tgt_result, spec_.compare_cfg);
+        diff = verification::diff_runs(*src_result, *tgt_result, compare_cfg);
 
     return RunOutcome{
         .run_index               = run_index,

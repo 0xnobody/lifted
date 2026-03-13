@@ -191,13 +191,14 @@ namespace lifted::pipeline
                 llvm::inconvertibleErrorCode());
 
         // Clone the diverging run's config and enable detail recording.
-        // record_flags is preserved exactly from outcome.config so the checkpoint
-        // sequence is identical to the original pipeline run — that is the only way
-        // to reproduce the same NEEDS_RERUN path and expose the real divergence.
+        // sync_on / compare_dims are preserved exactly from outcome.config so the
+        // checkpoint sequence and sampled digests match the original pipeline run.
         RunConfig deep_cfg = outcome.config;
         deep_cfg.record_details = true;
 
         auto run_params = deep_cfg.to_run_params(binary, entry_rva);
+        auto compare_cfg = spec_.compare_cfg;
+        compare_cfg.dimensions = deep_cfg.compare_dims;
 
         // ── src run (no prev_record) ──────────────────────────────────────────────
         auto src_verif = deep_cfg.to_verif_params(nullptr);
@@ -212,7 +213,7 @@ namespace lifted::pipeline
             return tgt_result.takeError();
 
         // ── compare ───────────────────────────────────────────────────────────────
-        auto cmp = verification::compare_runs(*src_result, *tgt_result, spec_.compare_cfg);
+        auto cmp = verification::compare_runs(*src_result, *tgt_result, compare_cfg);
 
         // ── NEEDS_RERUN: re-run src constrained to tgt's depth ───────────────────
         if (cmp.status == verification::comparison_status::NEEDS_RERUN)
@@ -222,7 +223,7 @@ namespace lifted::pipeline
             if (!src_result2)
                 return src_result2.takeError();
             *src_result = std::move(*src_result2);
-            cmp = verification::compare_runs(*src_result, *tgt_result, spec_.compare_cfg);
+            cmp = verification::compare_runs(*src_result, *tgt_result, compare_cfg);
         }
 
         return DeepDiveResult{

@@ -193,7 +193,8 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
     auto uc = std::shared_ptr<verification::Executor>(std::move(*uc_or));
 
     // Pipeline 1: raw JIT vs Unicorn.
-    pipeline::Pipeline p1(eval::make_default_pipeline("raw_lifted", jit, uc));
+    pipeline::Pipeline p1(eval::make_default_pipeline(
+        "raw_lifted", jit, uc, eval::PipelineCheckpointProfile::RAW_STRICT));
 
     auto r1 = p1.run(bin_ctx, entry_rva);
     if (!r1)
@@ -236,9 +237,12 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
     auto opt_jit =
         std::shared_ptr<verification::Executor>(std::move(*opt_jit_or));
 
-    // Pipeline 2: reuse raw JIT as baseline, compare against optimized JIT.
+    // Pipeline 2: reuse raw JIT as baseline, compare against optimized JIT with
+    // relaxed synchronization and dimension policy.
     pipeline::Pipeline p2(
-        eval::make_default_pipeline("opt_vs_raw_lifted", jit, opt_jit));
+        eval::make_default_pipeline(
+            "opt_vs_raw_lifted", jit, opt_jit,
+            eval::PipelineCheckpointProfile::OPTIMIZED_RELAXED));
 
     auto r2 = p2.run(bin_ctx, entry_rva);
     if (!r2)
@@ -258,15 +262,15 @@ int main(int argc, char **argv)
 
     llvm::LLVMContext context;
 
-    if (auto err = test_full_pipeline(context, "/home/atlas/lifted/build/src/evaluation/tum/libeval-anagram.so", 0x124A))
-        llvm::errs() << "test_full_pipeline error: " << llvm::toString(std::move(err)) << "\n";
+    // if (auto err = test_full_pipeline(context, "/home/atlas/lifted/build/src/evaluation/tum/libeval-anagram.so", 0x124A))
+    //     llvm::errs() << "test_full_pipeline error: " << llvm::toString(std::move(err)) << "\n";
 
     // if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
     //     llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
 
-    // if (auto err = lift_suite(context, EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV))
-    //     llvm::errs() << "tum-basic-algorithms suite error: "
-    //                  << llvm::toString(std::move(err)) << "\n";
+    if (auto err = lift_suite(context, EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV))
+        llvm::errs() << "tum-basic-algorithms suite error: "
+                     << llvm::toString(std::move(err)) << "\n";
 
     // if (auto err = lift_suite(context, EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV))
     //     llvm::errs() << "tum-small-programs suite error: " << llvm::toString(std::move(err)) << "\n";

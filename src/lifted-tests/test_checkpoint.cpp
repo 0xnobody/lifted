@@ -27,44 +27,44 @@ TEST(checkpoint_identical_sequences)
 
     checkpoint_record_t a, b;
 
-    a.push_bb(0x1000, &s);
-    a.push_write(0x4000, 0xAA, 8);
-    a.push_bb(0x1010, &s);
+    a.push_bb(0x1000, &s, 0);
+    a.push_write(0x4000, 0xAA, 8, 0);
+    a.push_bb(0x1010, &s, 0);
 
-    b.push_bb(0x1000, &s);
-    b.push_write(0x4000, 0xAA, 8);
-    b.push_bb(0x1010, &s);
+    b.push_bb(0x1000, &s, 0);
+    b.push_write(0x4000, 0xAA, 8, 0);
+    b.push_bb(0x1010, &s, 0);
 
     CHECK(a == b);
 }
 
-// RVA is not mixed into any hash, so two runs that visit different BBs but carry
-// identical register state produce equal checkpoint records.  State divergence —
-// not address divergence — is what checkpoints track.
+// BB trace is now a first-class checkpoint dimension: different RVAs diverge
+// even when the register state is identical.
 TEST(checkpoint_diverge_on_bb)
 {
     State s1 = make_state(1);   // rax = 1
     State s2 = make_state(2);   // rax = 2
 
-    // ── Same state, different RVAs: records must be equal.
+    // ── Same state, different RVAs: bb_trace_hash and combined_hash diverge.
     {
         checkpoint_record_t a, b;
-        a.push_bb(0x1000, &s1);
-        b.push_bb(0x1000, &s1);
+        a.push_bb(0x1000, &s1, 0);
+        b.push_bb(0x1000, &s1, 0);
         CHECK_EQ(a.final_hash(), b.final_hash());
 
-        a.push_bb(0x1010, &s1);  // different RVA, same state
-        b.push_bb(0x2000, &s1);
-        CHECK(a == b);
+        a.push_bb(0x1010, &s1, 0);
+        b.push_bb(0x2000, &s1, 0);
+        CHECK(a != b);
         CHECK_EQ(a.checkpoints[2].state_hash, b.checkpoints[2].state_hash);
-        CHECK_EQ(a.checkpoints[2].combined_hash, b.checkpoints[2].combined_hash);
+        CHECK_NE(a.checkpoints[2].bb_trace_hash, b.checkpoints[2].bb_trace_hash);
+        CHECK_NE(a.checkpoints[2].combined_hash, b.checkpoints[2].combined_hash);
     }
 
     // ── Different state at first BB: records must diverge.
     {
         checkpoint_record_t a, b;
-        a.push_bb(0x1000, &s1);
-        b.push_bb(0x1000, &s2);  // same RVA, different state
+        a.push_bb(0x1000, &s1, 0);
+        b.push_bb(0x1000, &s2, 0);  // same RVA, different state
         CHECK(a != b);
         CHECK_NE(a.checkpoints[1].state_hash, b.checkpoints[1].state_hash);
         CHECK_NE(a.checkpoints[1].combined_hash, b.checkpoints[1].combined_hash);
@@ -80,11 +80,11 @@ TEST(checkpoint_diverge_on_write)
 
     checkpoint_record_t a, b;
 
-    a.push_bb(0x1000, &s);
-    b.push_bb(0x1000, &s);
+    a.push_bb(0x1000, &s, 0);
+    b.push_bb(0x1000, &s, 0);
 
-    a.push_write(0x4000, 0xAA, 8);
-    b.push_write(0x4000, 0xBB, 8); // value differs
+    a.push_write(0x4000, 0xAA, 8, 0);
+    b.push_write(0x4000, 0xBB, 8, 0); // value differs
 
     CHECK(a != b);
     CHECK_NE(a.checkpoints[2].mem_write_hash, b.checkpoints[2].mem_write_hash);
@@ -92,17 +92,33 @@ TEST(checkpoint_diverge_on_write)
     CHECK_EQ(a.checkpoints[2].state_hash, b.checkpoints[2].state_hash);
 }
 
-// push_read is sensitive to differing values.
+// Read-sequence divergence is only part of the combined checkpoint verdict when
+// the READ_SEQUENCE dimension is enabled explicitly.
 TEST(checkpoint_read_sensitive)
 {
     checkpoint_record_t a, b;
+    a.compare_dims = compare_dimension_flags::READ_SEQUENCE;
+    b.compare_dims = compare_dimension_flags::READ_SEQUENCE;
 
-    a.push_read(0x5000, 0x11, 4);
-    b.push_read(0x5000, 0xFF, 4);
+    a.push_read(0x5000, 0x11, 4, 0);
+    b.push_read(0x5000, 0xFF, 4, 0);
 
     CHECK(a != b);
     CHECK_NE(a.checkpoints[1].read_hash, b.checkpoints[1].read_hash);
 }
+
+TEST(checkpoint_samples_memory_contents_hash)
+{
+    State s = make_state(7);
+    checkpoint_record_t rec;
+
+    rec.push_bb(0x1000, &s, 0x1111);
+    CHECK_EQ(rec.checkpoints[1].memory_contents_hash, static_cast<uint64_t>(0x1111));
+
+    rec.push_write(0x4000, 0xAA, 8, 0x2222);
+    CHECK_EQ(rec.checkpoints[2].memory_contents_hash, static_cast<uint64_t>(0x2222));
+}
+
 
 // Records of different sizes are not equal.
 TEST(checkpoint_size_mismatch)
@@ -111,12 +127,12 @@ TEST(checkpoint_size_mismatch)
 
     checkpoint_record_t a, b;
 
-    a.push_bb(0x1000, &s);
-    a.push_bb(0x1010, &s);
-    a.push_bb(0x1020, &s);
+    a.push_bb(0x1000, &s, 0);
+    a.push_bb(0x1010, &s, 0);
+    a.push_bb(0x1020, &s, 0);
 
-    b.push_bb(0x1000, &s);
-    b.push_bb(0x1010, &s);
+    b.push_bb(0x1000, &s, 0);
+    b.push_bb(0x1010, &s, 0);
 
     CHECK(a != b);
     CHECK_EQ(a.event_count(), static_cast<size_t>(3));
@@ -138,7 +154,7 @@ TEST(checkpoint_push_returns_combined_hash)
     State s = make_state(42);
     checkpoint_record_t rec;
 
-    uint64_t h = rec.push_bb(0x1000, &s);
+    uint64_t h = rec.push_bb(0x1000, &s, 0);
     CHECK_EQ(h, rec.final_hash());
     CHECK_EQ(h, rec.checkpoints[1].combined_hash);
 }
@@ -147,20 +163,20 @@ TEST(checkpoint_push_returns_combined_hash)
 TEST(checkpoint_write_size_sensitive)
 {
     checkpoint_record_t a, b;
-    a.push_write(0x1000, 0xAB, 4);
-    b.push_write(0x1000, 0xAB, 8);
+    a.push_write(0x1000, 0xAB, 4, 0);
+    b.push_write(0x1000, 0xAB, 8, 0);
 
     CHECK(a != b);
 }
 
-// config_t: DEFAULT flags cover BB, MEM_WRITE, EXT_CALL but not MEM_READ.
+// config_t: DEFAULT sync policy covers BB, MEM_WRITE, EXT_CALL but not MEM_READ.
 TEST(checkpoint_config_default_flags)
 {
     checkpoint_config_t cfg;
-    CHECK(has_flag(cfg.record_on, event_flags::BB));
-    CHECK(has_flag(cfg.record_on, event_flags::MEM_WRITE));
-    CHECK(has_flag(cfg.record_on, event_flags::EXT_CALL));
-    CHECK(!has_flag(cfg.record_on, event_flags::MEM_READ));
+    CHECK(has_flag(cfg.sync_on, event_flags::BB));
+    CHECK(has_flag(cfg.sync_on, event_flags::MEM_WRITE));
+    CHECK(has_flag(cfg.sync_on, event_flags::EXT_CALL));
+    CHECK(!has_flag(cfg.sync_on, event_flags::MEM_READ));
     CHECK(cfg.prev_record == nullptr);
 }
 
@@ -172,8 +188,8 @@ TEST(checkpoint_caller_driven_comparison)
     State s2 = make_state(999); // different rax
 
     checkpoint_record_t ref;
-    ref.push_bb(0x1000, &s1);
-    ref.push_bb(0x1010, &s1);
+    ref.push_bb(0x1000, &s1, 0);
+    ref.push_bb(0x1010, &s1, 0);
 
     checkpoint_config_t cfg;
     cfg.prev_record = &ref;
@@ -181,12 +197,12 @@ TEST(checkpoint_caller_driven_comparison)
     checkpoint_record_t rec;
 
     // Event 1: same — hashes should match
-    uint64_t h1 = rec.push_bb(0x1000, &s1);
+    uint64_t h1 = rec.push_bb(0x1000, &s1, 0);
     uint64_t prev_h1 = cfg.prev_record->checkpoints[1].combined_hash;
     CHECK_EQ(h1, prev_h1);
 
     // Event 2: different state — hashes should diverge
-    uint64_t h2 = rec.push_bb(0x1010, &s2);
+    uint64_t h2 = rec.push_bb(0x1010, &s2, 0);
     uint64_t prev_h2 = cfg.prev_record->checkpoints[2].combined_hash;
     CHECK_NE(h2, prev_h2);
 }

@@ -34,7 +34,7 @@ namespace
         static verification_params_t make_vparams()
         {
             verification_params_t vp;
-            vp.checkpoint_config.record_on = event_flags::NONE; // callbacks receive nullptr State*
+            vp.checkpoint_config.sync_on = event_flags::NONE; // callbacks receive nullptr State*
             vp.bb_limit = std::numeric_limits<uint64_t>::max();
             vp.loop_limit = std::numeric_limits<uint64_t>::max();
             vp.recursive_policy = recursive_call_policy::SKIP;

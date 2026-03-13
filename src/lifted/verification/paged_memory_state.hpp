@@ -3,6 +3,7 @@
 #include "sentinel_oracle.hpp"
 #include "value_generator.hpp"
 #include "../binary_context.hpp"
+#include "../hash_mix.hpp"
 
 #include <cstdint>
 #include <array>
@@ -50,6 +51,19 @@ namespace lifted::verification
     {
         bool equivalent;
         std::vector<page_diff_t> page_diffs;
+    };
+
+    struct memory_contents_digest_t
+    {
+        uint64_t written_set_hash = 0;
+        uint64_t written_value_hash = 0;
+
+        uint64_t combined_hash() const noexcept
+        {
+            return hash::mix_many(written_set_hash, written_value_hash);
+        }
+
+        bool operator==(const memory_contents_digest_t &other) const noexcept = default;
     };
 
     //
@@ -130,6 +144,7 @@ namespace lifted::verification
     struct memory_snapshot_t
     {
         std::unordered_map<uint64_t, page_t> pages;
+        memory_contents_digest_t digest;
 
         struct stats_t
         {
@@ -143,6 +158,7 @@ namespace lifted::verification
         memory_diff_result_t compare_detailed(const memory_snapshot_t &other, std::span<const llvm::AddressRange> ignored = {}) const;
         stats_t get_stats() const;
         const std::unordered_map<uint64_t, page_t> &get_pages() const { return pages; }
+        memory_contents_digest_t memory_contents_digest() const noexcept { return digest; }
     };
 
     class paged_memory_state
@@ -150,6 +166,7 @@ namespace lifted::verification
     private:
         std::unordered_map<uint64_t, page_t> pages;
         uint64_t master_seed;
+        memory_contents_digest_t digest_{};
 
         // Lazy image loading: non-owning pointer to BinaryContext.
         const lifted::BinaryContext *bin_ctx_ = nullptr;
@@ -167,6 +184,11 @@ namespace lifted::verification
         // Deterministic hash combining master_seed and page_addr
         // Uses a simple but effective mixing based on golden ratio prime
         static uint64_t compute_page_seed(uint64_t master_seed, uint64_t page_addr);
+
+        // Order-insensitive memory-content digest contributions.
+        static uint64_t written_set_contribution(uint64_t addr);
+        static uint64_t written_value_contribution(uint64_t addr, uint8_t value);
+        void note_byte_write(uint64_t addr, page_t &page, uint64_t offset, uint8_t value);
 
         // Try to load page content from binary image (ELF or PE)
         // Returns true if page_addr falls within a loadable segment/section
@@ -257,6 +279,7 @@ namespace lifted::verification
 
         uint64_t get_master_seed() const { return master_seed; }
         uint64_t get_image_base() const { return image_base_; }
+        memory_contents_digest_t memory_contents_digest() const noexcept { return digest_; }
 
         std::span<uint8_t, 4096> map(uint64_t addr)
         {
@@ -291,7 +314,8 @@ namespace lifted::verification
         {
             uint64_t page_addr = addr & ~0xFFFULL;
             uint64_t offset = addr & 0xFFFULL;
-            get_or_create_page(page_addr).write8(offset, val);
+            page_t &page = get_or_create_page(page_addr);
+            note_byte_write(addr, page, offset, val);
         }
 
         void write16(uint64_t addr, uint16_t val)

@@ -30,8 +30,28 @@ namespace lifted::eval
 pipeline::PipelineSpec make_default_pipeline(
     const std::string &func_name,
     std::shared_ptr<verification::Executor> src,
-    std::shared_ptr<verification::Executor> tgt)
+    std::shared_ptr<verification::Executor> tgt,
+    PipelineCheckpointProfile profile)
 {
+    const auto apply_profile = [profile](pipeline::RunConfig &cfg) {
+        using EF = verification::event_flags;
+        using DF = verification::compare_dimension_flags;
+        switch (profile)
+        {
+        case PipelineCheckpointProfile::RAW_STRICT:
+            cfg.sync_on = EF::BB | EF::MEM_WRITE | EF::EXT_CALL;
+            cfg.compare_dims =
+                DF::REG_STATE | DF::MEM_CONTENTS | DF::WRITE_SEQUENCE |
+                DF::BB_TRACE | DF::EXT_CALLS;
+            break;
+        case PipelineCheckpointProfile::OPTIMIZED_RELAXED:
+            cfg.sync_on = EF::EXT_CALL;
+            cfg.compare_dims =
+                DF::REG_STATE | DF::MEM_CONTENTS | DF::EXT_CALLS;
+            break;
+        }
+    };
+
     // Stage 1 — wide discovery
     pipeline::RunConfig wide_cfg{
         .seed = 0x1338,
@@ -44,6 +64,7 @@ pipeline::PipelineSpec make_default_pipeline(
         .bb_limit = 5000,
         .loop_limit = 100,
     };
+    apply_profile(wide_cfg);
 
     // Stage 2 — small inputs (converges data-dependent loops)
     pipeline::RunConfig small_cfg{
@@ -57,6 +78,7 @@ pipeline::PipelineSpec make_default_pipeline(
         .bb_limit = 2000,
         .loop_limit = 50,
     };
+    apply_profile(small_cfg);
 
     // Stage 3 — corpus replay + medium boost
     pipeline::RunConfig medium_cfg{
@@ -70,6 +92,7 @@ pipeline::PipelineSpec make_default_pipeline(
         .bb_limit = 3000,
         .loop_limit = 75,
     };
+    apply_profile(medium_cfg);
 
     pipeline::PipelineSpec spec;
     spec.name = "raw_vs_native[" + func_name + "]";

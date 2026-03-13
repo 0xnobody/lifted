@@ -34,44 +34,56 @@ namespace lifted::verification
         return r1.exit_reason == r2.exit_reason;
     }
 
+    static std::optional<checkpoint_field> first_checkpoint_field_mismatch(
+        const checkpoint_t &c1,
+        const checkpoint_t &c2,
+        compare_dimension_flags dims)
+    {
+        if (has_flag(dims, compare_dimension_flags::REG_STATE) &&
+            c1.state_hash != c2.state_hash)
+            return checkpoint_field::STATE;
+        if (has_flag(dims, compare_dimension_flags::BB_TRACE) &&
+            c1.bb_trace_hash != c2.bb_trace_hash)
+            return checkpoint_field::BB_TRACE;
+        if (has_flag(dims, compare_dimension_flags::MEM_CONTENTS) &&
+            c1.memory_contents_hash != c2.memory_contents_hash)
+            return checkpoint_field::MEM_CONTENTS;
+        if (has_flag(dims, compare_dimension_flags::WRITE_SEQUENCE) &&
+            c1.mem_write_hash != c2.mem_write_hash)
+            return checkpoint_field::MEM_WRITE;
+        if (has_flag(dims, compare_dimension_flags::READ_SEQUENCE) &&
+            c1.read_hash != c2.read_hash)
+            return checkpoint_field::READ;
+        if (has_flag(dims, compare_dimension_flags::EXT_CALLS) &&
+            c1.ext_call_hash != c2.ext_call_hash)
+            return checkpoint_field::EXT_CALL;
+        return std::nullopt;
+    }
+
     static bool cmp_checkpoints(
         const run_result_t &r1,
         const run_result_t &r2,
+        compare_dimension_flags dims,
         std::optional<checkpoint_divergence_t> &out_divergence)
     {
         const auto &cp1 = r1.checkpoint_record.checkpoints;
         const auto &cp2 = r2.checkpoint_record.checkpoints;
 
-        // Skip sentinel at index 0; real events start at 1.
         size_t common = std::min(cp1.size(), cp2.size());
         for (size_t i = 1; i < common; ++i)
         {
-            if (cp1[i].combined_hash == cp2[i].combined_hash)
+            uint64_t h1 = checkpoint_record_t::compose_combined_hash(cp1[i], i, dims);
+            uint64_t h2 = checkpoint_record_t::compose_combined_hash(cp2[i], i, dims);
+            if (h1 == h2)
                 continue;
 
-            // Narrow to which sub-field first diverges at this index.
-            checkpoint_field field;
-            if (cp1[i].state_hash != cp2[i].state_hash)
-                field = checkpoint_field::STATE;
-            else if (cp1[i].mem_write_hash != cp2[i].mem_write_hash)
-                field = checkpoint_field::MEM_WRITE;
-            else if (cp1[i].read_hash != cp2[i].read_hash)
-                field = checkpoint_field::READ;
-            else if (cp1[i].ext_call_hash != cp2[i].ext_call_hash)
-                field = checkpoint_field::EXT_CALL;
-            else
-            {
-                assert(false &&
-                       "combined_hash diverged but no sub-field differs — hash computation bug");
-                field = checkpoint_field::STATE; // unreachable; suppress warning
-            }
-
-            out_divergence = checkpoint_divergence_t{i, field};
+            auto field = first_checkpoint_field_mismatch(cp1[i], cp2[i], dims);
+            assert(field.has_value() &&
+                   "combined_hash diverged but no enabled checkpoint component differs");
+            out_divergence = checkpoint_divergence_t{i, *field};
             return false;
         }
 
-        // If shared prefix matches but lengths differ, that is itself a divergence.
-        // field = STATE is a placeholder; the meaningful information is the index.
         if (cp1.size() != cp2.size())
         {
             out_divergence = checkpoint_divergence_t{common, checkpoint_field::STATE};
@@ -91,9 +103,6 @@ namespace lifted::verification
             auto diffs = cfg.abi->get_divergent_registers(r1.final_state, r2.final_state);
             return diffs.empty();
         }
-        // No ABI: compare via the same running hash used by checkpoints (16 GPRs
-        // + rflags).  This avoids false divergences from uninitialised padding or
-        // vector-register bytes that neither executor initialises meaningfully.
         return checkpoint_record_t::hash_state(&r1.final_state) ==
                checkpoint_record_t::hash_state(&r2.final_state);
     }
@@ -174,6 +183,10 @@ namespace lifted::verification
         {
         case checkpoint_field::STATE:
             return "state";
+        case checkpoint_field::BB_TRACE:
+            return "bb_trace";
+        case checkpoint_field::MEM_CONTENTS:
+            return "mem_contents";
         case checkpoint_field::MEM_WRITE:
             return "mem_write";
         case checkpoint_field::READ:
@@ -200,6 +213,7 @@ namespace lifted::verification
                << " chk=" << dimensions.checkpoint_match
                << " reg=" << dimensions.reg_state_match
                << " mem=" << dimensions.mem_snapshot_match
+               << " wrseq=" << dimensions.write_sequence_match
                << " bb=" << dimensions.bb_trace_match
                << " ext=" << dimensions.ext_calls_match;
         }
@@ -274,93 +288,105 @@ namespace lifted::verification
         }
 
         // ── Phase 3: Per-dimension comparison ────────────────────────────────
-        //
-        // For each dimension, use the corresponding checkpoint sub-hash as a
-        // fast-path when:
-        //   (a) the flag for that event type is set in BOTH records, and
-        //   (b) the final sub-hash values agree.
-        //
-        // If a flag is absent in either record, the sub-hash stayed zero
-        // throughout — zero==zero cannot distinguish "no events" from "not
-        // recorded", so we fall through to full run_result_t comparison.
-        //
-        // Sub-hash → event and isolation (from checkpoint.cpp):
-        //   state_hash     ← push_bb only      → encodes (rva, state) per BB
-        //   mem_write_hash ← push_write only    → encodes (addr, value, size) per write
-        //   read_hash      ← push_read only     → encodes (addr, value, size) per read
-        //   ext_call_hash  ← push_ext_call only → encodes (addr, state) per ext call
-        //
-        // reg_state_match has NO shortcut: state_hash captures state at BB
-        // ENTRY, not after the last instruction — the final register state is
-        // not encoded in any checkpoint sub-hash.
+        const auto dims = cfg.dimensions;
+        const auto common_sync = r1.checkpoint_record.sync_on & r2.checkpoint_record.sync_on;
 
-        const auto common_flags =
-            r1.checkpoint_record.record_on & r2.checkpoint_record.record_on;
-
-        // Final checkpoint entry (sentinel always at [0]; real data at back()).
         const checkpoint_t &cf1 = r1.checkpoint_record.checkpoints.back();
         const checkpoint_t &cf2 = r2.checkpoint_record.checkpoints.back();
 
         bool all_match = true;
 
-        // ── exit_type: always explicit ────────────────────────────────────────
         result.dimensions.exit_type_match = cmp_exit_types(r1, r2);
         all_match &= result.dimensions.exit_type_match;
 
-        // ── checkpoint_match ──────────────────────────────────────────────────
-        // If event counts and final combined_hash agree, all intermediate
-        // entries agree too (by construction of the running hash).  Skip walk.
         {
             size_t n1 = r1.checkpoint_record.event_count();
             size_t n2 = r2.checkpoint_record.event_count();
-            if (n1 > 0 && n1 == n2 && cf1.combined_hash == cf2.combined_hash)
+            if (n1 == n2 &&
+                (n1 == 0 || checkpoint_record_t::compose_combined_hash(cf1, n1, dims) ==
+                                checkpoint_record_t::compose_combined_hash(cf2, n2, dims)))
+            {
                 result.dimensions.checkpoint_match = true;
+            }
             else
+            {
                 result.dimensions.checkpoint_match =
-                    cmp_checkpoints(r1, r2, result.first_checkpoint_divergence);
+                    cmp_checkpoints(r1, r2, dims, result.first_checkpoint_divergence);
+            }
         }
         all_match &= result.dimensions.checkpoint_match;
 
-        // ── bb_trace_match ────────────────────────────────────────────────────
-        // state_hash is exclusively accumulated by push_bb; matching final
-        // state_hash implies an identical (rva, state) sequence at every BB
-        // entry, which implies an identical bb_trace vector.
-        if (has_flag(common_flags, event_flags::BB) &&
-            cf1.state_hash == cf2.state_hash)
+        if (!has_flag(dims, compare_dimension_flags::BB_TRACE))
+        {
             result.dimensions.bb_trace_match = true;
+        }
+        else if (has_flag(common_sync, event_flags::BB) &&
+                 r1.checkpoint_record.bb_counts.back() > 0 &&
+                 r2.checkpoint_record.bb_counts.back() > 0 &&
+                 cf1.bb_trace_hash == cf2.bb_trace_hash)
+        {
+            result.dimensions.bb_trace_match = true;
+        }
         else
+        {
             result.dimensions.bb_trace_match =
                 cmp_bb_traces(r1, r2, result.first_trace_divergence);
+        }
         all_match &= result.dimensions.bb_trace_match;
 
-        // ── ext_calls_match ───────────────────────────────────────────────────
-        // ext_call_hash is exclusively accumulated by push_ext_call; matching
-        // final hash implies an identical external-call address sequence.
-        if (has_flag(common_flags, event_flags::EXT_CALL) &&
-            cf1.ext_call_hash == cf2.ext_call_hash)
+        if (!has_flag(dims, compare_dimension_flags::EXT_CALLS))
+        {
             result.dimensions.ext_calls_match = true;
+        }
+        else if (has_flag(common_sync, event_flags::EXT_CALL) &&
+                 r1.checkpoint_record.ext_call_count > 0 &&
+                 r2.checkpoint_record.ext_call_count > 0 &&
+                 cf1.ext_call_hash == cf2.ext_call_hash)
+        {
+            result.dimensions.ext_calls_match = true;
+        }
         else
+        {
             result.dimensions.ext_calls_match =
                 cmp_ext_calls(r1, r2, result.first_ext_call_divergence);
+        }
         all_match &= result.dimensions.ext_calls_match;
 
-        // ── mem_snapshot_match ────────────────────────────────────────────────
-        // mem_write_hash encodes the full write sequence (addr, value, size).
-        // Matching hashes imply identical writes → identical written memory.
-        // MEM_READ is not required: if oracle reads diverged, any effect on
-        // computation would propagate into the write sequence and cause
-        // mem_write_hash to diverge first.
-        if (has_flag(common_flags, event_flags::MEM_WRITE) &&
-            cf1.mem_write_hash == cf2.mem_write_hash)
+        if (!has_flag(dims, compare_dimension_flags::MEM_CONTENTS))
+        {
             result.dimensions.mem_snapshot_match = true;
+        }
+        else if (has_flag(common_sync, event_flags::MEM_WRITE) &&
+                 cf1.memory_contents_hash == cf2.memory_contents_hash)
+        {
+            result.dimensions.mem_snapshot_match = true;
+        }
         else
+        {
             result.dimensions.mem_snapshot_match = cmp_mem_snapshots(r1, r2);
+        }
         all_match &= result.dimensions.mem_snapshot_match;
 
-        // ── reg_state_match ───────────────────────────────────────────────────
-        // Final register state is captured after the last instruction executes.
-        // state_hash only records state at BB ENTRY — no shortcut is available.
-        result.dimensions.reg_state_match = cmp_reg_states(r1, r2, cfg);
+        if (!has_flag(dims, compare_dimension_flags::WRITE_SEQUENCE))
+        {
+            result.dimensions.write_sequence_match = true;
+        }
+        else
+        {
+            result.dimensions.write_sequence_match =
+                has_flag(common_sync, event_flags::MEM_WRITE) &&
+                cf1.mem_write_hash == cf2.mem_write_hash;
+        }
+        all_match &= result.dimensions.write_sequence_match;
+
+        if (!has_flag(dims, compare_dimension_flags::REG_STATE))
+        {
+            result.dimensions.reg_state_match = true;
+        }
+        else
+        {
+            result.dimensions.reg_state_match = cmp_reg_states(r1, r2, cfg);
+        }
         all_match &= result.dimensions.reg_state_match;
 
         result.status = all_match ? comparison_status::PASS
@@ -432,24 +458,20 @@ namespace lifted::verification
         return out;
     }
 
-    // Narrow which checkpoint_field first diverges at index i.
+    // Narrow which enabled checkpoint component first diverges at index i.
     static checkpoint_field narrow_checkpoint_field(const checkpoint_t &c1,
-                                                    const checkpoint_t &c2)
+                                                    const checkpoint_t &c2,
+                                                    compare_dimension_flags dims)
     {
-        if (c1.state_hash != c2.state_hash)
-            return checkpoint_field::STATE;
-        if (c1.mem_write_hash != c2.mem_write_hash)
-            return checkpoint_field::MEM_WRITE;
-        if (c1.read_hash != c2.read_hash)
-            return checkpoint_field::READ;
-        if (c1.ext_call_hash != c2.ext_call_hash)
-            return checkpoint_field::EXT_CALL;
-        // combined_hash differed but no sub-field does — caller asserts against this
-        return checkpoint_field::STATE;
+        auto field = first_checkpoint_field_mismatch(c1, c2, dims);
+        assert(field.has_value() &&
+               "combined_hash diverged but no enabled checkpoint component differs");
+        return *field;
     }
 
     static checkpoint_diff_t diff_checkpoints(const run_result_t &r1,
-                                              const run_result_t &r2)
+                                              const run_result_t &r2,
+                                              compare_dimension_flags dims)
     {
         checkpoint_diff_t out;
         const auto &cp1 = r1.checkpoint_record.checkpoints;
@@ -457,18 +479,14 @@ namespace lifted::verification
         out.len_r1 = r1.checkpoint_record.event_count();
         out.len_r2 = r2.checkpoint_record.event_count();
 
-        static constexpr checkpoint_t  kZero{};
-        static constexpr size_t        kBBContext = 6;
+        static constexpr checkpoint_t kZero{};
+        static constexpr size_t kBBContext = 6;
 
-        // Returns true when checkpoint event i was produced by push_bb.
         const auto is_bb_event = [](const checkpoint_record_t &rec, size_t i) -> bool {
             const auto &bbc = rec.bb_counts;
             return i > 0 && i < bbc.size() && bbc[i] > bbc[i - 1];
         };
 
-        // Returns the last ≤ kBBContext entries of bb_trace up to and including
-        // event i (i.e. bb_counts[i] BBs have occurred by then).  r1 and r2 are
-        // identical before any divergence, so we always draw from r1.
         const auto preceding_bbs = [&](size_t i) -> std::vector<uint64_t> {
             const auto &bbc = r1.checkpoint_record.bb_counts;
             if (i >= bbc.size())
@@ -479,21 +497,16 @@ namespace lifted::verification
         };
 
         size_t common = std::min(cp1.size(), cp2.size());
-        // Walk shared prefix (skip sentinel at [0]).
         for (size_t i = 1; i < common; ++i)
         {
-            if (cp1[i].combined_hash == cp2[i].combined_hash)
+            const uint64_t h1 = checkpoint_record_t::compose_combined_hash(cp1[i], i, dims);
+            const uint64_t h2 = checkpoint_record_t::compose_combined_hash(cp2[i], i, dims);
+            if (h1 == h2)
                 continue;
-
-            assert((cp1[i].state_hash != cp2[i].state_hash ||
-                    cp1[i].mem_write_hash != cp2[i].mem_write_hash ||
-                    cp1[i].read_hash != cp2[i].read_hash ||
-                    cp1[i].ext_call_hash != cp2[i].ext_call_hash) &&
-                   "combined_hash diverged but no sub-field differs — hash computation bug");
 
             out.entries.push_back({
                 i,
-                narrow_checkpoint_field(cp1[i], cp2[i]),
+                narrow_checkpoint_field(cp1[i], cp2[i], dims),
                 cp1[i],
                 cp2[i],
                 preceding_bbs(i),
@@ -501,19 +514,15 @@ namespace lifted::verification
             });
         }
 
-        // Length divergence: emit one entry for the first beyond-end index.
         if (cp1.size() != cp2.size())
         {
-            const checkpoint_t &longer_cp =
-                cp1.size() > cp2.size() ? cp1[common] : kZero;
-            const checkpoint_t &shorter_cp =
-                cp2.size() > cp1.size() ? cp2[common] : kZero;
-            // Preceding BBs from the shared prefix (last matched event = common-1).
-            const auto &longer_r  = cp1.size() > cp2.size() ? r1 : r2;
+            const checkpoint_t &longer_cp = cp1.size() > cp2.size() ? cp1[common] : kZero;
+            const checkpoint_t &shorter_cp = cp2.size() > cp1.size() ? cp2[common] : kZero;
+            const auto &longer_r = cp1.size() > cp2.size() ? r1 : r2;
             bool div_is_bb = is_bb_event(longer_r.checkpoint_record, common);
             out.entries.push_back({
                 common,
-                checkpoint_field::STATE, // placeholder for length-only divergence
+                checkpoint_field::STATE,
                 cp1.size() > cp2.size() ? longer_cp : kZero,
                 cp2.size() > cp1.size() ? shorter_cp : kZero,
                 preceding_bbs(common > 0 ? common - 1 : 0),
@@ -655,12 +664,16 @@ namespace lifted::verification
                     os << "\n";
                 }
 
-                // ── sub-hash lines ───────────────────────────────────────────
+                // ── component-hash lines ──────────────────────────────────────
                 os << "      r1: state=0x" << std::hex << e.cp_r1.state_hash
+                   << " bb=0x" << e.cp_r1.bb_trace_hash
+                   << " mem=0x" << e.cp_r1.memory_contents_hash
                    << " mem_write=0x" << e.cp_r1.mem_write_hash
                    << " read=0x" << e.cp_r1.read_hash
                    << " ext_call=0x" << e.cp_r1.ext_call_hash << std::dec << "\n";
                 os << "      r2: state=0x" << std::hex << e.cp_r2.state_hash
+                   << " bb=0x" << e.cp_r2.bb_trace_hash
+                   << " mem=0x" << e.cp_r2.memory_contents_hash
                    << " mem_write=0x" << e.cp_r2.mem_write_hash
                    << " read=0x" << e.cp_r2.read_hash
                    << " ext_call=0x" << e.cp_r2.ext_call_hash << std::dec << "\n";
@@ -725,6 +738,7 @@ namespace lifted::verification
             out.exit_type_diff = {r1.exit_reason, r2.exit_reason};
 
         // ── registers ────────────────────────────────────────────────────────
+        if (has_flag(cfg.dimensions, compare_dimension_flags::REG_STATE))
         {
             reg_diff_t rd = cfg.abi
                                 ? diff_regs_abi(*cfg.abi, r1.final_state, r2.final_state)
@@ -735,6 +749,7 @@ namespace lifted::verification
         }
 
         // ── BB trace ─────────────────────────────────────────────────────────
+        if (has_flag(cfg.dimensions, compare_dimension_flags::BB_TRACE))
         {
             auto entries = diff_sequence<bb_trace_diff_entry_t>(
                 r1.bb_trace, r2.bb_trace,
@@ -753,6 +768,7 @@ namespace lifted::verification
         }
 
         // ── external calls ───────────────────────────────────────────────────
+        if (has_flag(cfg.dimensions, compare_dimension_flags::EXT_CALLS))
         {
             auto entries = diff_sequence<ext_call_diff_entry_t>(
                 r1.ext_calls, r2.ext_calls,
@@ -772,12 +788,13 @@ namespace lifted::verification
 
         // ── checkpoints ──────────────────────────────────────────────────────
         {
-            auto cd = diff_checkpoints(r1, r2);
+            auto cd = diff_checkpoints(r1, r2, cfg.dimensions);
             if (!cd.entries.empty())
                 out.checkpoint_diff = std::move(cd);
         }
 
         // ── memory ───────────────────────────────────────────────────────────
+        if (has_flag(cfg.dimensions, compare_dimension_flags::MEM_CONTENTS))
         {
             auto md = r1.mem_snapshot.compare_detailed(r2.mem_snapshot);
             if (!md.equivalent)

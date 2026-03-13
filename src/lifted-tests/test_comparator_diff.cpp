@@ -22,6 +22,8 @@ static run_result_t make_result(exit_type et = exit_type::NATURAL_EXIT)
 {
     run_result_t r{};
     r.exit_reason = et;
+    r.checkpoint_record.sync_on = event_flags::DEFAULT;
+    r.checkpoint_record.compare_dims = compare_dimension_flags::DEFAULT;
     return r;
 }
 
@@ -272,8 +274,8 @@ TEST(diff_checkpoints_identical_no_diff)
     auto r1 = make_result();
     auto r2 = make_result();
 
-    r1.checkpoint_record.push_bb(0x1000, &s);
-    r2.checkpoint_record.push_bb(0x1000, &s);
+    r1.checkpoint_record.push_bb(0x1000, &s, 0);
+    r2.checkpoint_record.push_bb(0x1000, &s, 0);
 
     // Need some other divergence for FAIL_DIVERGED.
     r1.final_state = make_state(0x1);
@@ -290,8 +292,8 @@ TEST(diff_checkpoints_state_hash_diverges_at_index_1)
 
     auto r1 = make_result();
     auto r2 = make_result();
-    r1.checkpoint_record.push_bb(0x1000, &s1);
-    r2.checkpoint_record.push_bb(0x1000, &s2);
+    r1.checkpoint_record.push_bb(0x1000, &s1, 0);
+    r2.checkpoint_record.push_bb(0x1000, &s2, 0);
     r1.final_state = s1;
     r2.final_state = s2;
 
@@ -312,8 +314,8 @@ TEST(diff_checkpoints_mem_write_hash_diverges)
 {
     auto r1 = make_result();
     auto r2 = make_result();
-    r1.checkpoint_record.push_write(0x4000, 0xAA, 8);
-    r2.checkpoint_record.push_write(0x4000, 0xBB, 8);
+    r1.checkpoint_record.push_write(0x4000, 0xAA, 8, 0);
+    r2.checkpoint_record.push_write(0x4000, 0xBB, 8, 0);
 
     // Need reg divergence for FAIL_DIVERGED.
     r1.final_state = make_state(0x1);
@@ -335,9 +337,9 @@ TEST(diff_checkpoints_length_mismatch_captured)
     auto r2 = make_result();
 
     // r1 has 2 events, r2 has 1.
-    r1.checkpoint_record.push_bb(0x1000, &s);
-    r1.checkpoint_record.push_bb(0x1010, &s);
-    r2.checkpoint_record.push_bb(0x1000, &s);
+    r1.checkpoint_record.push_bb(0x1000, &s, 0);
+    r1.checkpoint_record.push_bb(0x1010, &s, 0);
+    r2.checkpoint_record.push_bb(0x1000, &s, 0);
 
     r1.final_state = make_state(0x1);
     r2.final_state = make_state(0x2);
@@ -367,8 +369,8 @@ TEST(diff_checkpoints_all_divergences_captured)
     // Push 3 events, all diverging.
     for (int i = 0; i < 3; ++i)
     {
-        r1.checkpoint_record.push_bb(0x1000 + i * 0x10, &s1);
-        r2.checkpoint_record.push_bb(0x1000 + i * 0x10, &s2);
+        r1.checkpoint_record.push_bb(0x1000 + i * 0x10, &s1, 0);
+        r2.checkpoint_record.push_bb(0x1000 + i * 0x10, &s2, 0);
     }
     r1.final_state = s1;
     r2.final_state = s2;

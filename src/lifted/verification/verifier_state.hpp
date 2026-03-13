@@ -124,6 +124,11 @@ namespace lifted::verification
             return static_cast<verifier_state *>(context);
         }
 
+        uint64_t current_memory_contents_hash() const
+        {
+            return mem_state.memory_contents_digest().combined_hash();
+        }
+
         bool assert_checkpoint(uint64_t curr_combined_hash)
         {
             if (checkpoint_config.prev_record)
@@ -157,8 +162,9 @@ namespace lifted::verification
                 llvm::outs() << "on_read8 " << llvm::format_hex(addr, 16) << " -> " << llvm::format_hex(value, 2) << "\n";
             }
 
-            return has_flag(checkpoint_config.record_on, event_flags::MEM_READ)
-                       ? assert_checkpoint(checkpoint_record.push_read(addr, value, 1))
+            return has_flag(checkpoint_config.sync_on, event_flags::MEM_READ)
+                       ? assert_checkpoint(checkpoint_record.push_read(
+                             addr, value, 1, current_memory_contents_hash()))
                        : true;
         }
 
@@ -171,8 +177,9 @@ namespace lifted::verification
                 llvm::outs() << "on_read16 " << llvm::format_hex(addr, 16) << " -> " << llvm::format_hex(value, 4) << "\n";
             }
 
-            return has_flag(checkpoint_config.record_on, event_flags::MEM_READ)
-                       ? assert_checkpoint(checkpoint_record.push_read(addr, value, 2))
+            return has_flag(checkpoint_config.sync_on, event_flags::MEM_READ)
+                       ? assert_checkpoint(checkpoint_record.push_read(
+                             addr, value, 2, current_memory_contents_hash()))
                        : true;
         }
 
@@ -185,8 +192,9 @@ namespace lifted::verification
                 llvm::outs() << "on_read32 " << llvm::format_hex(addr, 16) << " -> " << llvm::format_hex(value, 8) << "\n";
             }
 
-            return has_flag(checkpoint_config.record_on, event_flags::MEM_READ)
-                       ? assert_checkpoint(checkpoint_record.push_read(addr, value, 4))
+            return has_flag(checkpoint_config.sync_on, event_flags::MEM_READ)
+                       ? assert_checkpoint(checkpoint_record.push_read(
+                             addr, value, 4, current_memory_contents_hash()))
                        : true;
         }
 
@@ -199,8 +207,9 @@ namespace lifted::verification
                 llvm::outs() << "on_read64 " << llvm::format_hex(addr, 16) << " -> " << llvm::format_hex(value, 16) << "\n";
             }
 
-            return has_flag(checkpoint_config.record_on, event_flags::MEM_READ)
-                       ? assert_checkpoint(checkpoint_record.push_read(addr, value, 8))
+            return has_flag(checkpoint_config.sync_on, event_flags::MEM_READ)
+                       ? assert_checkpoint(checkpoint_record.push_read(
+                             addr, value, 8, current_memory_contents_hash()))
                        : true;
         }
 
@@ -213,8 +222,9 @@ namespace lifted::verification
                 llvm::outs() << "on_write8 " << llvm::format_hex(addr, 16) << " <- " << llvm::format_hex(value, 2) << "\n";
             }
 
-            return has_flag(checkpoint_config.record_on, event_flags::MEM_WRITE)
-                       ? assert_checkpoint(checkpoint_record.push_write(addr, value, 1))
+            return has_flag(checkpoint_config.sync_on, event_flags::MEM_WRITE)
+                       ? assert_checkpoint(checkpoint_record.push_write(
+                             addr, value, 1, current_memory_contents_hash()))
                        : true;
         }
 
@@ -227,8 +237,9 @@ namespace lifted::verification
                 llvm::outs() << "on_write16 " << llvm::format_hex(addr, 16) << " <- " << llvm::format_hex(value, 4) << "\n";
             }
 
-            return has_flag(checkpoint_config.record_on, event_flags::MEM_WRITE)
-                       ? assert_checkpoint(checkpoint_record.push_write(addr, value, 2))
+            return has_flag(checkpoint_config.sync_on, event_flags::MEM_WRITE)
+                       ? assert_checkpoint(checkpoint_record.push_write(
+                             addr, value, 2, current_memory_contents_hash()))
                        : true;
         }
 
@@ -241,8 +252,9 @@ namespace lifted::verification
                 llvm::outs() << "on_write32 " << llvm::format_hex(addr, 16) << " <- " << llvm::format_hex(value, 8) << "\n";
             }
 
-            return has_flag(checkpoint_config.record_on, event_flags::MEM_WRITE)
-                       ? assert_checkpoint(checkpoint_record.push_write(addr, value, 4))
+            return has_flag(checkpoint_config.sync_on, event_flags::MEM_WRITE)
+                       ? assert_checkpoint(checkpoint_record.push_write(
+                             addr, value, 4, current_memory_contents_hash()))
                        : true;
         }
 
@@ -255,8 +267,9 @@ namespace lifted::verification
                 llvm::outs() << "on_write64 " << llvm::format_hex(addr, 16) << " <- " << llvm::format_hex(value, 16) << "\n";
             }
 
-            return has_flag(checkpoint_config.record_on, event_flags::MEM_WRITE)
-                       ? assert_checkpoint(checkpoint_record.push_write(addr, value, 8))
+            return has_flag(checkpoint_config.sync_on, event_flags::MEM_WRITE)
+                       ? assert_checkpoint(checkpoint_record.push_write(
+                             addr, value, 8, current_memory_contents_hash()))
                        : true;
         }
 
@@ -331,8 +344,9 @@ namespace lifted::verification
                 return false;
             }
 
-            return has_flag(checkpoint_config.record_on, event_flags::BB)
-                       ? assert_checkpoint(checkpoint_record.push_bb(rva, state))
+            return has_flag(checkpoint_config.sync_on, event_flags::BB)
+                       ? assert_checkpoint(checkpoint_record.push_bb(
+                             rva, state, current_memory_contents_hash()))
                        : true;
         }
 
@@ -345,8 +359,9 @@ namespace lifted::verification
                 llvm::outs() << "on_ext_call " << llvm::format_hex(addr, 16) << "\n";
             }
 
-            return has_flag(checkpoint_config.record_on, event_flags::EXT_CALL)
-                       ? assert_checkpoint(checkpoint_record.push_ext_call(addr, state))
+            return has_flag(checkpoint_config.sync_on, event_flags::EXT_CALL)
+                       ? assert_checkpoint(checkpoint_record.push_ext_call(
+                             addr, state, current_memory_contents_hash()))
                        : true;
         }
 
@@ -501,7 +516,8 @@ namespace lifted::verification
               value_gen_factory_(params.value_gen_factory)
         {
             checkpoint_config = verif_params.checkpoint_config;
-            checkpoint_record.record_on = checkpoint_config.record_on;
+            checkpoint_record.sync_on = checkpoint_config.sync_on;
+            checkpoint_record.compare_dims = checkpoint_config.compare_dims;
             if (checkpoint_config.record_details)
                 checkpoint_record.enable_details();
             bb_limit = verif_params.bb_limit;

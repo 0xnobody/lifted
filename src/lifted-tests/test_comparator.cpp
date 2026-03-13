@@ -20,6 +20,8 @@ static run_result_t make_result(exit_type et)
 {
     run_result_t r{};
     r.exit_reason = et;
+    r.checkpoint_record.sync_on = event_flags::DEFAULT;
+    r.checkpoint_record.compare_dims = compare_dimension_flags::DEFAULT;
     return r;
 }
 
@@ -66,12 +68,12 @@ TEST(comparator_needs_rerun_r2_shallower)
 
     auto r1 = make_result(exit_type::NATURAL_EXIT);
     for (int i = 0; i < 5; ++i)
-        r1.checkpoint_record.push_bb(0x1000 + i * 0x10, &s);
+        r1.checkpoint_record.push_bb(0x1000 + i * 0x10, &s, 0);
 
     auto r2 = make_result(exit_type::CHECKPOINT_MISMATCH);
     r2.failed_checkpoint_idx = 3;
     for (int i = 0; i < 3; ++i)
-        r2.checkpoint_record.push_bb(0x1000 + i * 0x10, &s);
+        r2.checkpoint_record.push_bb(0x1000 + i * 0x10, &s, 0);
 
     auto res = compare_runs(r1, r2);
     CHECK_EQ(static_cast<int>(res.status),
@@ -129,8 +131,8 @@ TEST(comparator_pass_same_mismatch_index)
 
     for (int i = 0; i < 3; ++i)
     {
-        r1.checkpoint_record.push_bb(0x1000 + i * 0x10, &s);
-        r2.checkpoint_record.push_bb(0x1000 + i * 0x10, &s);
+        r1.checkpoint_record.push_bb(0x1000 + i * 0x10, &s, 0);
+        r2.checkpoint_record.push_bb(0x1000 + i * 0x10, &s, 0);
     }
 
     auto res = compare_runs(r1, r2);
@@ -169,8 +171,8 @@ TEST(comparator_fail_checkpoint_state_hash)
 
     auto r1 = make_result(exit_type::NATURAL_EXIT);
     auto r2 = make_result(exit_type::NATURAL_EXIT);
-    r1.checkpoint_record.push_bb(0x1000, &s1);
-    r2.checkpoint_record.push_bb(0x1000, &s2);
+    r1.checkpoint_record.push_bb(0x1000, &s1, 0);
+    r2.checkpoint_record.push_bb(0x1000, &s2, 0);
 
     auto res = compare_runs(r1, r2);
     CHECK_EQ(static_cast<int>(res.status),
@@ -187,8 +189,8 @@ TEST(comparator_fail_checkpoint_mem_write_hash)
 {
     auto r1 = make_result(exit_type::NATURAL_EXIT);
     auto r2 = make_result(exit_type::NATURAL_EXIT);
-    r1.checkpoint_record.push_write(0x4000, 0xAA, 8);
-    r2.checkpoint_record.push_write(0x4000, 0xBB, 8); // different write value
+    r1.checkpoint_record.push_write(0x4000, 0xAA, 8, 0);
+    r2.checkpoint_record.push_write(0x4000, 0xBB, 8, 0); // different write value
 
     auto res = compare_runs(r1, r2);
     CHECK_EQ(static_cast<int>(res.status),
@@ -244,15 +246,15 @@ TEST(comparator_needs_rerun_equal_depth_one_natural_one_mismatch)
 
     // Run 1: free run, 2 BB events, natural exit.
     auto r1 = make_result(exit_type::NATURAL_EXIT);
-    r1.checkpoint_record.push_bb(0x1000, &s1);
-    r1.checkpoint_record.push_bb(0x1010, &s1);
+    r1.checkpoint_record.push_bb(0x1000, &s1, 0);
+    r1.checkpoint_record.push_bb(0x1010, &s1, 0);
 
     // Run 2: assertion mode, fails at event 2.
     // The failing event is pushed before the abort → event_count() == 2.
     auto r2 = make_result(exit_type::CHECKPOINT_MISMATCH);
     r2.failed_checkpoint_idx = 2;
-    r2.checkpoint_record.push_bb(0x1000, &s1);
-    r2.checkpoint_record.push_bb(0x1010, &s2); // diverged
+    r2.checkpoint_record.push_bb(0x1000, &s1, 0);
+    r2.checkpoint_record.push_bb(0x1010, &s2, 0); // diverged
 
     auto res = compare_runs(r1, r2);
     CHECK_EQ(static_cast<int>(res.status),
@@ -269,12 +271,12 @@ TEST(comparator_needs_rerun_equal_depth_one_mismatch_one_natural)
 
     auto r1 = make_result(exit_type::CHECKPOINT_MISMATCH);
     r1.failed_checkpoint_idx = 2;
-    r1.checkpoint_record.push_bb(0x1000, &s2);
-    r1.checkpoint_record.push_bb(0x1010, &s2);
+    r1.checkpoint_record.push_bb(0x1000, &s2, 0);
+    r1.checkpoint_record.push_bb(0x1010, &s2, 0);
 
     auto r2 = make_result(exit_type::NATURAL_EXIT);
-    r2.checkpoint_record.push_bb(0x1000, &s1);
-    r2.checkpoint_record.push_bb(0x1010, &s1);
+    r2.checkpoint_record.push_bb(0x1000, &s1, 0);
+    r2.checkpoint_record.push_bb(0x1010, &s1, 0);
 
     auto res = compare_runs(r1, r2);
     CHECK_EQ(static_cast<int>(res.status),
@@ -289,11 +291,11 @@ TEST(comparator_needs_rerun_loop_limit_plus_mismatch_equal_depth)
     State s = make_state(42);
 
     auto r1 = make_result(exit_type::LOOP_LIMIT);
-    r1.checkpoint_record.push_bb(0x1000, &s);
+    r1.checkpoint_record.push_bb(0x1000, &s, 0);
 
     auto r2 = make_result(exit_type::CHECKPOINT_MISMATCH);
     r2.failed_checkpoint_idx = 1;
-    r2.checkpoint_record.push_bb(0x1000, &s); // even matching hash: still NEEDS_RERUN
+    r2.checkpoint_record.push_bb(0x1000, &s, 0); // even matching hash: still NEEDS_RERUN
 
     auto res = compare_runs(r1, r2);
     CHECK_EQ(static_cast<int>(res.status),
@@ -310,13 +312,13 @@ TEST(comparator_both_mismatch_same_depth_proceeds_to_phase3)
 
     auto r1 = make_result(exit_type::CHECKPOINT_MISMATCH);
     r1.failed_checkpoint_idx = 2;
-    r1.checkpoint_record.push_bb(0x1000, &s1);
-    r1.checkpoint_record.push_bb(0x1010, &s1);
+    r1.checkpoint_record.push_bb(0x1000, &s1, 0);
+    r1.checkpoint_record.push_bb(0x1010, &s1, 0);
 
     auto r2 = make_result(exit_type::CHECKPOINT_MISMATCH);
     r2.failed_checkpoint_idx = 2;
-    r2.checkpoint_record.push_bb(0x1000, &s1);
-    r2.checkpoint_record.push_bb(0x1010, &s2); // diverges at index 2
+    r2.checkpoint_record.push_bb(0x1000, &s1, 0);
+    r2.checkpoint_record.push_bb(0x1010, &s2, 0); // diverges at index 2
 
     auto res = compare_runs(r1, r2);
     CHECK(static_cast<int>(res.status) !=
@@ -337,8 +339,8 @@ TEST(comparator_no_bb_flag_falls_back_to_trace_comparison)
     auto r2 = make_result(exit_type::NATURAL_EXIT);
 
     // r1 records BB events; r2 does not (NONE flags).
-    r1.checkpoint_record.record_on = event_flags::BB;
-    r2.checkpoint_record.record_on = event_flags::NONE;
+    r1.checkpoint_record.sync_on = event_flags::BB;
+    r2.checkpoint_record.sync_on = event_flags::NONE;
 
     // BB traces differ — should be detected via full comparison.
     r1.bb_trace = {0x1000, 0x1010};
@@ -359,8 +361,8 @@ TEST(comparator_no_mem_write_flag_falls_back_to_snapshot_comparison)
     auto r1 = make_result(exit_type::NATURAL_EXIT);
     auto r2 = make_result(exit_type::NATURAL_EXIT);
 
-    r1.checkpoint_record.record_on = event_flags::MEM_WRITE;
-    r2.checkpoint_record.record_on = event_flags::NONE; // no write recording
+    r1.checkpoint_record.sync_on = event_flags::MEM_WRITE;
+    r2.checkpoint_record.sync_on = event_flags::NONE; // no write recording
 
     // Both have zero mem_write_hash (no writes pushed), but we can't use the
     // shortcut.  The actual snapshots are empty (default-constructed) and
@@ -379,12 +381,12 @@ TEST(comparator_bb_state_hash_shortcut_fires)
     auto r1 = make_result(exit_type::NATURAL_EXIT);
     auto r2 = make_result(exit_type::NATURAL_EXIT);
 
-    r1.checkpoint_record.record_on = event_flags::BB;
-    r2.checkpoint_record.record_on = event_flags::BB;
+    r1.checkpoint_record.sync_on = event_flags::BB;
+    r2.checkpoint_record.sync_on = event_flags::BB;
 
     // Push identical BB events to both — state_hashes will match.
-    r1.checkpoint_record.push_bb(0x1000, &s);
-    r2.checkpoint_record.push_bb(0x1000, &s);
+    r1.checkpoint_record.push_bb(0x1000, &s, 0);
+    r2.checkpoint_record.push_bb(0x1000, &s, 0);
 
     // Provide matching bb_trace vectors so the result is PASS overall.
     r1.bb_trace = {0x1000};
@@ -404,11 +406,11 @@ TEST(comparator_ext_call_hash_shortcut_fires)
     auto r1 = make_result(exit_type::NATURAL_EXIT);
     auto r2 = make_result(exit_type::NATURAL_EXIT);
 
-    r1.checkpoint_record.record_on = event_flags::EXT_CALL;
-    r2.checkpoint_record.record_on = event_flags::EXT_CALL;
+    r1.checkpoint_record.sync_on = event_flags::EXT_CALL;
+    r2.checkpoint_record.sync_on = event_flags::EXT_CALL;
 
-    r1.checkpoint_record.push_ext_call(0x4000, &s);
-    r2.checkpoint_record.push_ext_call(0x4000, &s);
+    r1.checkpoint_record.push_ext_call(0x4000, &s, 0);
+    r2.checkpoint_record.push_ext_call(0x4000, &s, 0);
 
     r1.ext_calls = {0x4000};
     r2.ext_calls = {0x4000};
@@ -423,15 +425,81 @@ TEST(comparator_mem_write_hash_shortcut_fires)
     auto r1 = make_result(exit_type::NATURAL_EXIT);
     auto r2 = make_result(exit_type::NATURAL_EXIT);
 
-    r1.checkpoint_record.record_on = event_flags::MEM_WRITE;
-    r2.checkpoint_record.record_on = event_flags::MEM_WRITE;
+    r1.checkpoint_record.sync_on = event_flags::MEM_WRITE;
+    r2.checkpoint_record.sync_on = event_flags::MEM_WRITE;
 
-    r1.checkpoint_record.push_write(0x4000, 0xAB, 8);
-    r2.checkpoint_record.push_write(0x4000, 0xAB, 8);
+    r1.checkpoint_record.push_write(0x4000, 0xAB, 8, 0);
+    r2.checkpoint_record.push_write(0x4000, 0xAB, 8, 0);
 
     auto res = compare_runs(r1, r2);
     CHECK(res.dimensions.mem_snapshot_match);
     // Shortcut fired → no detailed snapshot walk; result should still be correct.
     CHECK_EQ(static_cast<int>(res.status),
              static_cast<int>(comparison_status::PASS));
+}
+
+TEST(comparator_strict_write_sequence_detects_divergence_despite_equal_memory)
+{
+    constexpr uint64_t kAddr = 0x4000;
+    constexpr uint64_t kValue = 0x1122334455667788ULL;
+
+    auto r1 = make_result(exit_type::NATURAL_EXIT);
+    auto r2 = make_result(exit_type::NATURAL_EXIT);
+
+    r1.checkpoint_record.sync_on = event_flags::MEM_WRITE;
+    r2.checkpoint_record.sync_on = event_flags::MEM_WRITE;
+
+    paged_memory_state mem1(0x1234);
+    paged_memory_state mem2(0x1234);
+
+    mem1.write64(kAddr, kValue);
+    r1.checkpoint_record.push_write(
+        kAddr, kValue, 8, mem1.memory_contents_digest().combined_hash());
+    r1.mem_snapshot = paged_memory_state::finalize(std::move(mem1));
+
+    mem2.write32(kAddr + 4, 0x11223344U);
+    r2.checkpoint_record.push_write(
+        kAddr + 4, 0x11223344U, 4, mem2.memory_contents_digest().combined_hash());
+    mem2.write32(kAddr, 0x55667788U);
+    r2.checkpoint_record.push_write(
+        kAddr, 0x55667788U, 4, mem2.memory_contents_digest().combined_hash());
+    r2.mem_snapshot = paged_memory_state::finalize(std::move(mem2));
+
+    auto res = compare_runs(r1, r2);
+    CHECK_EQ(static_cast<int>(res.status),
+             static_cast<int>(comparison_status::FAIL_DIVERGED));
+    CHECK(res.dimensions.mem_snapshot_match);
+    CHECK(!res.dimensions.write_sequence_match);
+    CHECK(!res.dimensions.checkpoint_match);
+}
+
+TEST(comparator_relaxed_profile_accepts_equal_final_memory_without_sync)
+{
+    constexpr uint64_t kAddr = 0x5000;
+    constexpr uint64_t kValue = 0x1122334455667788ULL;
+
+    auto r1 = make_result(exit_type::NATURAL_EXIT);
+    auto r2 = make_result(exit_type::NATURAL_EXIT);
+    r1.checkpoint_record.sync_on = event_flags::NONE;
+    r2.checkpoint_record.sync_on = event_flags::NONE;
+
+    paged_memory_state mem1(0x1234);
+    paged_memory_state mem2(0x1234);
+    mem1.write64(kAddr, kValue);
+    mem2.write32(kAddr + 4, 0x11223344U);
+    mem2.write32(kAddr, 0x55667788U);
+
+    r1.mem_snapshot = paged_memory_state::finalize(std::move(mem1));
+    r2.mem_snapshot = paged_memory_state::finalize(std::move(mem2));
+
+    compare_config_t cfg;
+    cfg.dimensions = compare_dimension_flags::REG_STATE |
+                     compare_dimension_flags::MEM_CONTENTS;
+
+    auto res = compare_runs(r1, r2, cfg);
+    CHECK_EQ(static_cast<int>(res.status),
+             static_cast<int>(comparison_status::PASS));
+    CHECK(res.dimensions.mem_snapshot_match);
+    CHECK(res.dimensions.reg_state_match);
+    CHECK(res.dimensions.checkpoint_match);
 }
