@@ -43,3 +43,11 @@ if(EVAL_INDIRECT_CALL_SO)
     )
     add_dependencies(lifted-tests eval-indirect-call)
 endif()
+
+get_property(EVAL_INSERTIONSORT_SO GLOBAL PROPERTY "_EVAL_TARGET_INSERTIONSORT_SO")
+if(EVAL_INSERTIONSORT_SO)
+    target_compile_definitions(lifted-tests PRIVATE
+        EVAL_INSERTIONSORT_SO="${EVAL_INSERTIONSORT_SO}"
+    )
+    add_dependencies(lifted-tests eval-insertionsort)
+endif()

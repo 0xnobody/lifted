@@ -21,6 +21,7 @@ namespace lifted::verification
         verifier_state *state;
         uint64_t prev_block = 0;
         uint32_t prev_size = 0;
+        uint64_t last_bb_rva = uint64_t(-1); // Last logical lifted BB reported to verifier.
         std::vector<uint64_t> pending_bb_entries;
         size_t pending_bb_index = 0;
         uint64_t pending_from_rva = uint64_t(-1);
@@ -247,9 +248,11 @@ namespace lifted::verification
 
         const uint64_t raw_current_rva = address - LOAD_BASE;
         const auto owning_current_rva = ctx->executor->canonicalize_current_rva(raw_current_rva);
-        const uint64_t from_rva_uc = (prev < LOAD_BASE)
+        const uint64_t tb_prev_rva = (prev < LOAD_BASE)
             ? uint64_t(-1)
             : ctx->executor->canonicalize_prev_rva(prev - LOAD_BASE);
+        const uint64_t logical_prev_rva =
+            (ctx->last_bb_rva != uint64_t(-1)) ? ctx->last_bb_rva : tb_prev_rva;
 
         // EXTERNAL call: block being entered is a known external callee (PLT stub, helper, …).
         const bool is_ext = ctx->executor->ext_rvas_.contains(raw_current_rva);
@@ -257,15 +260,15 @@ namespace lifted::verification
         // RECURSIVE call: a known self-recursive callsite re-entered the function entry.
         const bool is_recursive = !is_ext &&
                                   raw_current_rva == ctx->executor->entry_rva &&
-                                  from_rva_uc != uint64_t(-1) &&
-                                  ctx->executor->recursive_callsite_rvas_.contains(from_rva_uc);
+                                  logical_prev_rva != uint64_t(-1) &&
+                                  ctx->executor->recursive_callsite_rvas_.contains(logical_prev_rva);
 
         // INDIRECT call: the previous real BB was an indirect-call dispatcher.
         // Because a dispatcher BB may ONLY dispatch indirect calls (it cannot mix
         // EXTERNAL or INTERNAL targets), any block it lands on is an opaque callee.
         const bool is_indr = !is_ext && !is_recursive &&
-                             from_rva_uc != uint64_t(-1) &&
-                             ctx->executor->indr_dispatch_rvas_.contains(from_rva_uc);
+                             logical_prev_rva != uint64_t(-1) &&
+                             ctx->executor->indr_dispatch_rvas_.contains(logical_prev_rva);
 
         if (is_ext || is_recursive || is_indr)
         {
@@ -326,7 +329,7 @@ namespace lifted::verification
             raw_current_rva, raw_current_rva + size);
         if (!ctx->pending_bb_entries.empty())
         {
-            ctx->pending_from_rva = from_rva_uc;
+            ctx->pending_from_rva = logical_prev_rva;
             if (ctx->pending_bb_entries.front() != raw_current_rva)
                 ctx->pending_from_rva = *owning_current_rva;
         }
@@ -450,6 +453,7 @@ namespace lifted::verification
             return;
         }
 
+        ctx->last_bb_rva = bb_rva;
         ctx->pending_from_rva = bb_rva;
         ++ctx->pending_bb_index;
     }
@@ -690,10 +694,13 @@ namespace lifted::verification
 
         // Register hooks
         uc_hook block_hook, edge_hook, tlb_fill_hook, mem_read_hook, mem_write_hook, code_hook;
+        std::vector<uc_hook> bb_entry_hooks;
+        bb_entry_hooks.reserve(bb_sync_info_.real_blocks.size());
 
         unicorn_ctx_t ctx = {
             .executor = this,
             .state = &state,
+            .last_bb_rva = uint64_t(-1),
             .pending_bb_entries = {},
             .pending_bb_index = 0,
             .pending_from_rva = uint64_t(-1),
@@ -723,6 +730,7 @@ namespace lifted::verification
                     std::string("Failed to add bb entry hook: ") + uc_strerror(err),
                     llvm::inconvertibleErrorCode());
             }
+            bb_entry_hooks.push_back(bb_entry_hook);
         }
 
 
@@ -793,8 +801,12 @@ namespace lifted::verification
             }
         } while (ctx.resume_rip != 0);
 
-        // Cleanup hooks
+        // Cleanup hooks. bb_entry hooks are per-run because they capture the
+        // stack-local `ctx`; leaking them makes later runs call back with a
+        // dangling user_data pointer.
         uc_hook_del(uc_eng.get(), block_hook);
+        for (uc_hook bb_entry_hook : bb_entry_hooks)
+            uc_hook_del(uc_eng.get(), bb_entry_hook);
         uc_hook_del(uc_eng.get(), edge_hook);
         uc_hook_del(uc_eng.get(), tlb_fill_hook);
         uc_hook_del(uc_eng.get(), mem_read_hook);
