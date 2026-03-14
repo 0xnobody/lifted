@@ -1,9 +1,9 @@
 #pragma once
 
+#include "bb_sync_info.hpp"
 #include "executor.hpp"
 #include "state_conversion.hpp"
 #include "uc_raii.hpp"
-
 #include <llvm/Support/Error.h>
 
 #include "compat/lief_compat.hpp"
@@ -95,18 +95,12 @@ namespace lifted::verification
         /// Persists across run_single_impl calls — binary code is static.
         std::unordered_map<std::pair<uint64_t, uint32_t>, tb_branch_result_t, U64U32PairHash> tb_branch_cache;
 
-        /// Set when any indirect branch (jmp reg/mem, call reg/mem) is observed in hook_edge.
-        /// When true, the TB cache is flushed before each run to prevent stale inline-cache
-        /// targets from directing execution to the wrong block.
-        bool has_indirect_branches_ = false;
-
-        /// Lifter FALLTHROUGH edges as {from_start_rva → to_start_rva}.
-        /// Used to normalise QEMU's TB-start prev_block to the actual logical
-        /// predecessor before counting directed back-edges.
-        std::unordered_map<uint64_t, uint64_t> fallthrough_edges_;
+        /// Canonical lifted REAL-block ranges used to map raw Unicorn TB starts back
+        /// to the shared BB coordinate system used by the verifier.
+        bb_sync_info_t bb_sync_info_;
 
         UnicornExecutor(const lifted::BinaryContext *bin_ctx, ext_call_info_t ext_info, uint64_t entry, Flags flags,
-                        std::unordered_map<uint64_t, uint64_t> fallthrough_edges)
+                        bb_sync_info_t bb_sync_info)
             : bin_ctx_(bin_ctx),
               ext_rvas_(std::move(ext_info.ext_function_rvas)),
               recursive_callsite_rvas_(std::move(ext_info.recursive_callsite_rvas)),
@@ -115,7 +109,7 @@ namespace lifted::verification
               clean_ctx(nullptr, uc_context_free),
               entry_rva(entry),
               flags(flags),
-              fallthrough_edges_(std::move(fallthrough_edges))
+              bb_sync_info_(std::move(bb_sync_info))
         {
         }
 
@@ -128,7 +122,7 @@ namespace lifted::verification
         static llvm::Expected<std::unique_ptr<UnicornExecutor>>
         create(const lifted::BinaryContext &bin_ctx, ext_call_info_t ext_info, uint64_t entry_rva,
                Flags flags = Flags::NONE,
-               std::unordered_map<uint64_t, uint64_t> fallthrough_edges = {});
+               bb_sync_info_t bb_sync_info = {});
     private:
         /// Forward-scan the translation block [pc, pc+size) to determine whether its last
         /// instruction is a branch/call/ret/interrupt, and whether it is an indirect branch.
@@ -140,10 +134,9 @@ namespace lifted::verification
         /// mid-instruction bytes as a valid shorter instruction.
         tb_branch_result_t tb_ends_in_branch(uc_engine *uc, uint64_t pc, uint32_t size);
 
-        /// Normalise a TB-start from_rva to the last block in the FALLTHROUGH
-        /// chain that lies within [from_rva, from_rva + from_tb_size).
-        /// Returns from_rva unchanged if no FALLTHROUGH edges apply.
-        uint64_t normalize_from(uint64_t from_rva, uint32_t from_tb_size) const noexcept;
+        [[nodiscard]] std::optional<uint64_t> canonicalize_current_rva(uint64_t raw_rva) const noexcept;
+
+        [[nodiscard]] uint64_t canonicalize_prev_rva(uint64_t raw_rva) const noexcept;
 
         static void hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
         static void hook_edge(uc_engine *uc, uc_tb *cur_tb, uc_tb *prev_tb, void *user_data);

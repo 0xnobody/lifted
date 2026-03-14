@@ -556,8 +556,8 @@ TEST(loop_limit_rand_string_topology)
 // The revisit criterion counts any edge to a previously-seen destination,
 // so cond->body is correctly counted from its second traversal onward.
 //
-// Modelled as JIT sees it (body->cond is a fallthrough, never passed to
-// on_bb_entered; only cond->body fires on each loop iteration).
+// Minimal edge sequence that reproduces the historical jump-to-condition
+// while-loop bug: cond is seen before body, then cond->body repeats.
 TEST(loop_limit_while_loop_jump_to_condition)
 {
     constexpr uint64_t cond = 0xC000;
@@ -571,7 +571,7 @@ TEST(loop_limit_while_loop_jump_to_condition)
 
     // First loop iteration: cond->body (body not yet seen -> not counted).
     CHECK(h.enter(cond, body));  // body first-seen here; not a back-edge yet.
-    // body->cond is a fallthrough in JIT — never passed to on_bb_entered.
+    // Repeating cond->body must still count as a loop back-edge once body was seen.
 
     // Subsequent iterations: cond->body now counts (body IS in first_seen).
     for (uint64_t i = 0; i < limit - 1; ++i)

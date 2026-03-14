@@ -21,6 +21,9 @@ namespace lifted::verification
         verifier_state *state;
         uint64_t prev_block = 0;
         uint32_t prev_size = 0;
+        std::vector<uint64_t> pending_bb_entries;
+        size_t pending_bb_index = 0;
+        uint64_t pending_from_rva = uint64_t(-1);
         uint64_t resume_rip = 0; // set by hook_block to signal a restart address
         uc_err mem_hook_err = UC_ERR_OK;
         uint64_t mem_hook_err_addr = 0;
@@ -178,39 +181,20 @@ namespace lifted::verification
         }
 
         // Otherwise, treat as genuine boundary / graph edge.
-        // Mark the executor if this edge comes from an indirect branch: the TB
-        // inline target cache must be flushed before future runs to prevent
-        // stale cached targets from redirecting execution.
-        const auto branch_info =
-            ctx->executor->tb_ends_in_branch(uc, prev_tb->pc, prev_tb->size);
-        if (branch_info.is_indirect)
-            ctx->executor->has_indirect_branches_ = true;
         ctx->executor->genuine_edges.insert({prev_start, cur_start});
     }
 
-    uint64_t UnicornExecutor::normalize_from(uint64_t from_rva, uint32_t from_tb_size) const noexcept
+    std::optional<uint64_t> UnicornExecutor::canonicalize_current_rva(uint64_t raw_rva) const noexcept
     {
-        // Walk the lifter's FALLTHROUGH chain starting at from_rva, staying within
-        // [from_rva, from_rva + from_tb_size).  QEMU only splits TBs at branch
-        // instructions, so every FALLTHROUGH edge (physically-adjacent blocks with
-        // no intervening branch) is guaranteed to live inside the same TB.  The
-        // last node in the chain before the TB's branch is the correct logical
-        // predecessor — matching JIT's last_bb_rva at the point bb_entered fires.
-        uint64_t eff = from_rva;
-        const uint64_t tb_end = from_rva + from_tb_size;
-        while (true)
-        {
-            auto it = fallthrough_edges_.find(eff);
-            if (it == fallthrough_edges_.end())
-                break;
-        if (it->second >= tb_end)
-            break; // successor is outside (or at) the TB boundary
-        if (it->second <= eff) // guard: fallthrough must advance; stops any accidental cycle
-            break;
-        eff = it->second;
-        }
-        return eff;
+        return bb_sync_info_.canonicalize_rva(raw_rva);
     }
+
+    uint64_t UnicornExecutor::canonicalize_prev_rva(uint64_t raw_rva) const noexcept
+    {
+        auto mapped = bb_sync_info_.canonicalize_rva(raw_rva);
+        return mapped.value_or(uint64_t(-1));
+    }
+
     void UnicornExecutor::hook_block(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
     {
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
@@ -234,7 +218,6 @@ namespace lifted::verification
 
         if (!is_first && !is_genuine_edge)
         {
-
             if (ctx->prev_size != 0 &&
                 !ctx->executor->rep_artifacts.contains(prev) && // optional extra guard
                 ctx->executor->tb_ends_in_branch(uc, prev, (uint32_t)ctx->prev_size).is_branch)
@@ -244,11 +227,9 @@ namespace lifted::verification
             }
             else
             {
-                // llvm::outs() << "Non-genuine edge detected: 0x" << llvm::format_hex(prev, 16)
-                //              << " -> 0x" << llvm::format_hex(address, 16)
-                //              << " is_fallthrough=" << is_fallthrough
-                //              << " prev_size=" << ctx->prev_size
-                //              << "\n";
+                ctx->pending_bb_entries.clear();
+                ctx->pending_bb_index = 0;
+                ctx->pending_from_rva = uint64_t(-1);
                 ctx->prev_block = address;
                 ctx->prev_size = size;
                 return;
@@ -257,22 +238,24 @@ namespace lifted::verification
 
         ctx->prev_block = address;
         ctx->prev_size = size;
+        ctx->pending_bb_entries.clear();
+        ctx->pending_bb_index = 0;
+        ctx->pending_from_rva = uint64_t(-1);
 
         State state = unicorn_to_state(uc);
 
-        // Compute the normalised predecessor RVA once.
-        // Used for opaque-call detection and the bb_entered call.
-        const uint64_t current_rva = address - LOAD_BASE;
+        const uint64_t raw_current_rva = address - LOAD_BASE;
+        const auto owning_current_rva = ctx->executor->canonicalize_current_rva(raw_current_rva);
         const uint64_t from_rva_uc = (prev < LOAD_BASE)
             ? uint64_t(-1)
-            : ctx->executor->normalize_from(prev - LOAD_BASE, prev_tb_size);
+            : ctx->executor->canonicalize_prev_rva(prev - LOAD_BASE);
 
         // EXTERNAL call: block being entered is a known external callee (PLT stub, helper, …).
-        const bool is_ext = ctx->executor->ext_rvas_.contains(current_rva);
+        const bool is_ext = ctx->executor->ext_rvas_.contains(raw_current_rva);
 
         // RECURSIVE call: a known self-recursive callsite re-entered the function entry.
         const bool is_recursive = !is_ext &&
-                                  current_rva == ctx->executor->entry_rva &&
+                                  raw_current_rva == ctx->executor->entry_rva &&
                                   from_rva_uc != uint64_t(-1) &&
                                   ctx->executor->recursive_callsite_rvas_.contains(from_rva_uc);
 
@@ -318,20 +301,33 @@ namespace lifted::verification
 
             // A summarized callee must not become the logical predecessor of the
             // continuation. Preserve the caller-side TB so the resumed bb_entered
-            // matches JIT last_bb_rva bookkeeping.
+            // canonicalizes from the caller's lifted block, not the opaque callee.
             ctx->prev_block = prev;
             ctx->prev_size = prev_tb_size;
             ctx->resume_rip = retaddr;
             uc_emu_stop(uc);
             return;
         }
-        else
+
+        if (!owning_current_rva)
         {
-            if (!ctx->state->context_ptr()->bb_entered(ctx->state->context_ptr()->context, &state, from_rva_uc, current_rva))
-            {
-                uc_emu_stop(uc);
-                return;
-            }
+            // Native execution reached code the lifted real-block map does not own.
+            // Treat it as a missing-block escape instead of fabricating a phantom BB.
+            ctx->state->set_exit_reason(exit_type::MISSING_BLOCK);
+            uc_emu_stop(uc);
+            return;
+        }
+
+        // One Unicorn TB can cover multiple lifted fallthrough blocks. Queue the
+        // lifted block starts crossed within [raw_current_rva, raw_current_rva + size)
+        // and emit them at the exact instruction address via UC_HOOK_CODE.
+        ctx->pending_bb_entries = ctx->executor->bb_sync_info_.block_starts_in_range(
+            raw_current_rva, raw_current_rva + size);
+        if (!ctx->pending_bb_entries.empty())
+        {
+            ctx->pending_from_rva = from_rva_uc;
+            if (ctx->pending_bb_entries.front() != raw_current_rva)
+                ctx->pending_from_rva = *owning_current_rva;
         }
     }
 
@@ -432,6 +428,31 @@ namespace lifted::verification
             uc_emu_stop(uc);
         }
     }
+
+    static void hook_bb_entry(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
+    {
+        (void)size;
+
+        auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
+        if (ctx->pending_bb_index >= ctx->pending_bb_entries.size() || address < LOAD_BASE)
+            return;
+
+        const uint64_t bb_rva = address - LOAD_BASE;
+        if (bb_rva != ctx->pending_bb_entries[ctx->pending_bb_index])
+            return;
+
+        State state = unicorn_to_state(uc);
+        auto *vctx = ctx->state->context_ptr();
+        if (!vctx->bb_entered(vctx->context, &state, ctx->pending_from_rva, bb_rva))
+        {
+            uc_emu_stop(uc);
+            return;
+        }
+
+        ctx->pending_from_rva = bb_rva;
+        ++ctx->pending_bb_index;
+    }
+
 
     static void hook_code(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
     {
@@ -548,11 +569,11 @@ namespace lifted::verification
 
     llvm::Expected<std::unique_ptr<UnicornExecutor>>
     UnicornExecutor::create(const lifted::BinaryContext &bin_ctx, ext_call_info_t ext_info, uint64_t entry_rva, Flags flags,
-                            std::unordered_map<uint64_t, uint64_t> fallthrough_edges)
+                            bb_sync_info_t bb_sync_info)
     {
         // Create executor (private constructor)
         auto executor = std::unique_ptr<UnicornExecutor>(
-            new UnicornExecutor(&bin_ctx, std::move(ext_info), entry_rva, flags, std::move(fallthrough_edges)));
+            new UnicornExecutor(&bin_ctx, std::move(ext_info), entry_rva, flags, std::move(bb_sync_info)));
 
         // Run setup
         if (auto err = executor->setup_impl())
@@ -672,6 +693,12 @@ namespace lifted::verification
         unicorn_ctx_t ctx = {
             .executor = this,
             .state = &state,
+            .pending_bb_entries = {},
+            .pending_bb_index = 0,
+            .pending_from_rva = uint64_t(-1),
+            .resume_rip = 0,
+            .mem_hook_err = UC_ERR_OK,
+            .mem_hook_err_addr = 0,
         };
 
         err = uc_hook_add(uc_eng.get(), &block_hook, UC_HOOK_BLOCK,
@@ -682,6 +709,21 @@ namespace lifted::verification
                 std::string("Failed to add block hook: ") + uc_strerror(err),
                 llvm::inconvertibleErrorCode());
         }
+
+        for (const auto &range : bb_sync_info_.real_blocks)
+        {
+            uc_hook bb_entry_hook;
+            err = uc_hook_add(uc_eng.get(), &bb_entry_hook, UC_HOOK_CODE,
+                              (void *)hook_bb_entry, &ctx,
+                              LOAD_BASE + range.start, LOAD_BASE + range.start);
+            if (err != UC_ERR_OK)
+            {
+                return llvm::make_error<llvm::StringError>(
+                    std::string("Failed to add bb entry hook: ") + uc_strerror(err),
+                    llvm::inconvertibleErrorCode());
+            }
+        }
+
 
         err = uc_hook_add(uc_eng.get(), &edge_hook, UC_HOOK_EDGE_GENERATED,
                           (void *)hook_edge, &ctx, 1, 0);

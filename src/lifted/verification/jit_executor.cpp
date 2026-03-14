@@ -21,11 +21,11 @@ namespace lifted::verification
 {
 
     llvm::Expected<std::unique_ptr<JITExecutor>>
-    JITExecutor::create(std::unique_ptr<llvm::Module> module, const std::string &fn_name, const std::set<std::pair<uint64_t, uint64_t>> &fallthrough_edges)
+    JITExecutor::create(std::unique_ptr<llvm::Module> module, const std::string &fn_name)
     {
         // Create executor (private constructor)
         auto executor = std::unique_ptr<JITExecutor>(
-            new JITExecutor(std::move(module), fn_name, fallthrough_edges));
+            new JITExecutor(std::move(module), fn_name));
 
         // Run setup
         if (auto err = executor->setup_impl())
@@ -158,19 +158,12 @@ namespace lifted::verification
     {
         jit_executor_context_t executor_ctx = {
             .verifier_context = state.context_ptr(),
-            .is_fallthrough_edge = is_fallthrough_edge,
-            .executor_data = this};
+        };
 
         // Call JIT function with verifier context
         entry_fn(&executor_ctx);
 
         return llvm::Error::success();
-    }
-
-    bool JITExecutor::is_fallthrough_edge(uint64_t from, uint64_t to, void *executor_data)
-    {
-        auto *executor = static_cast<JITExecutor *>(executor_data);
-        return executor->fallthrough_edges.contains({from, to});
     }
 
 } // namespace lifted::verification

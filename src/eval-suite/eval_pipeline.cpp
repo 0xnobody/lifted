@@ -14,6 +14,7 @@
 #include "pipeline/stages/corpus_replay_stage.hpp"
 #include "pipeline/stages/seed_sweep_stage.hpp"
 #include "utils.hpp"
+#include "bb_sync_info_builder.hpp"
 #include "verification/jit_executor.hpp"
 #include "verification/sentinel_oracle.hpp"
 #include "verification/unicorn_executor.hpp"
@@ -22,7 +23,6 @@
 #include <llvm/Support/Error.h>
 
 #include <memory>
-#include <set>
 #include <unordered_map>
 
 namespace lifted::eval
@@ -148,15 +148,7 @@ lift_and_verify_named(llvm::LLVMContext &context,
 
     utils::output_to_file("/home/atlas/lifted/out/lifter_outputs/" + path.filename().string() + "_" + func_name + ".ll", lift_result->module.get());
 
-    // Collect fallthrough edges before the module is moved into the JIT.
-    std::set<std::pair<uint64_t, uint64_t>> fallthrough_edges;
-    for (const auto &edge : lift_result->edges)
-        if (edge.type == lifter::edge_t::Type::FALLTHROUGH)
-            fallthrough_edges.insert({edge.source, edge.dest});
-    std::unordered_map<uint64_t, uint64_t> fallthrough_map;
-    fallthrough_map.reserve(fallthrough_edges.size());
-    for (const auto &[from, to] : fallthrough_edges)
-        fallthrough_map[from] = to;
+    auto bb_sync_info = eval::make_bb_sync_info(lift_result->basic_blocks);
 
     // Capture CFG snapshot before the module is moved into the JIT.
     auto cfg_snapshot = visualization::make_cfg_snapshot(*lift_result, bin_ctx, entry_rva, func_name);
@@ -164,7 +156,7 @@ lift_and_verify_named(llvm::LLVMContext &context,
 
     // Create executors eagerly — no factory indirection.
     auto jit_or = verification::JITExecutor::create(
-        std::move(lift_result->module), fn_name, fallthrough_edges);
+        std::move(lift_result->module), fn_name);
     if (!jit_or)
         return jit_or.takeError();
     auto jit = std::shared_ptr<verification::Executor>(std::move(*jit_or));
@@ -200,7 +192,7 @@ lift_and_verify_named(llvm::LLVMContext &context,
 
     auto uc_or = verification::UnicornExecutor::create(bin_ctx, std::move(ext_info), entry_rva,
                                                        verification::UnicornExecutor::Flags::NONE,
-                                                       std::move(fallthrough_map));
+                                                       std::move(bb_sync_info));
     if (!uc_or)
         return uc_or.takeError();
     auto uc = std::shared_ptr<verification::Executor>(std::move(*uc_or));

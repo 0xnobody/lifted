@@ -25,6 +25,7 @@
 #include "suite.hpp"
 #include "utils.hpp"
 
+#include "bb_sync_info_builder.hpp"
 #include "verification/jit_executor.hpp"
 #include "verification/unicorn_executor.hpp"
 
@@ -171,23 +172,21 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
 
     lift_result->stats.print(std::cout);
 
-    // Collect fallthrough edges.
-    std::set<std::pair<uint64_t, uint64_t>> fallthrough_edges;
-    for (const auto &edge : lift_result->edges)
-        if (edge.type == lifter::edge_t::Type::FALLTHROUGH)
-            fallthrough_edges.insert({edge.source, edge.dest});
+    auto bb_sync_info = eval::make_bb_sync_info(lift_result->basic_blocks);
 
     std::string fn_name = lift_result->lifted_function->getName().str();
 
     // Create executors eagerly — no factory indirection.
     // Clone module so original is still available for optimization later.
     auto jit_or = verification::JITExecutor::create(
-        llvm::CloneModule(*lift_result->module), fn_name, fallthrough_edges);
+        llvm::CloneModule(*lift_result->module), fn_name);
     if (!jit_or)
         return jit_or.takeError();
     auto jit = std::shared_ptr<verification::Executor>(std::move(*jit_or));
 
-    auto uc_or = verification::UnicornExecutor::create(bin_ctx, {}, entry_rva);
+    auto uc_or = verification::UnicornExecutor::create(bin_ctx, {}, entry_rva,
+                                                       verification::UnicornExecutor::Flags::NONE,
+                                                       bb_sync_info);
     if (!uc_or)
         return uc_or.takeError();
     auto uc = std::shared_ptr<verification::Executor>(std::move(*uc_or));
@@ -231,7 +230,7 @@ llvm::Error test_full_pipeline(llvm::LLVMContext &context,
 
     // Create new JIT from optimized module.
     auto opt_jit_or = verification::JITExecutor::create(
-        std::move(clone), (*refolded_or)->getName().str(), fallthrough_edges);
+        std::move(clone), (*refolded_or)->getName().str());
     if (!opt_jit_or)
         return opt_jit_or.takeError();
     auto opt_jit =
@@ -265,8 +264,8 @@ int main(int argc, char **argv)
     // if (auto err = test_full_pipeline(context, "/home/atlas/lifted/build/src/evaluation/tum/libeval-anagram.so", 0x124A))
     //     llvm::errs() << "test_full_pipeline error: " << llvm::toString(std::move(err)) << "\n";
 
-    if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
-        llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
+    // if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
+    //     llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
 
     // if (auto err = lift_suite(context, EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV))
     //     llvm::errs() << "tum-basic-algorithms suite error: "
@@ -275,11 +274,11 @@ int main(int argc, char **argv)
     // if (auto err = lift_suite(context, EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV))
     //     llvm::errs() << "tum-small-programs suite error: " << llvm::toString(std::move(err)) << "\n";
 
-    // if (auto err = lift_suite(context, EVAL_SUITE_GNU_COREUTILS_CSV))
-    //     llvm::errs() << "gnu-coreutils suite error: " << llvm::toString(std::move(err)) << "\n";
+    if (auto err = lift_suite(context, EVAL_SUITE_GNU_COREUTILS_CSV))
+        llvm::errs() << "gnu-coreutils suite error: " << llvm::toString(std::move(err)) << "\n";
 
-    // if (auto err = lift_suite(context, EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV))
-    //     llvm::errs() << "tum-simple-hash-functions suite error: " << llvm::toString(std::move(err)) << "\n";
+    if (auto err = lift_suite(context, EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV))
+        llvm::errs() << "tum-simple-hash-functions suite error: " << llvm::toString(std::move(err)) << "\n";
 
     return EXIT_SUCCESS;
 }

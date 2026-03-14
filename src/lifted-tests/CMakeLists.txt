@@ -14,6 +14,7 @@ add_executable(lifted-tests
     "test_verifier_state_recursive.cpp"
     "test_state_fold.cpp"
     "test_binary_context_annotations.cpp"
+    "test_visualization.cpp"
  )
 
 target_link_libraries(lifted-tests PRIVATE lifted)

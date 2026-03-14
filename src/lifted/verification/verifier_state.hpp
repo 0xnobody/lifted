@@ -315,13 +315,11 @@ namespace lifted::verification
             // The old ordering filter avoided this case but silently missed
             // while-loop back-edges, causing unbounded execution.
             //
-            // UnicornExecutor normalises from_rva via FALLTHROUGH edges
-            // (UnicornExecutor::normalize_from) so both executors report the same
-            // canonical predecessor.  QEMU merges adjacent non-branching blocks into
-            // a single translation block; the TB start is then the raw from_rva,
-            // which diverges from the JIT's last_bb_rva without this normalisation.
-            // This is a structural (block-boundary) dependency on lifted metadata,
-            // not a semantic one — verifying IR correctness remains independent.
+            // Both executors now report canonical lifted REAL-block starts in
+            // the shared verifier trace. Unicorn maps raw QEMU TB starts back
+            // through the lifter's block ranges; JIT instruments each lifted
+            // block directly. This is a structural synchronization aid only —
+            // native execution stays semantically independent from lifted IR.
             if (from_rva != uint64_t(-1))
             {
                 const bool is_back_edge = (bb_first_seen.count(rva) > 0);

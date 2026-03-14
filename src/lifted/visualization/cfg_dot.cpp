@@ -51,6 +51,53 @@ void emit_edge_style(std::ostringstream &os,
     }
 }
 
+bool is_call_terminator(remill::Instruction::Category cat)
+{
+    using C = remill::Instruction::Category;
+    switch (cat) {
+    case C::kCategoryDirectFunctionCall:
+    case C::kCategoryConditionalDirectFunctionCall:
+    case C::kCategoryIndirectFunctionCall:
+    case C::kCategoryConditionalIndirectFunctionCall:
+        return true;
+    default:
+        return false;
+    }
+}
+
+const char *call_kind_suffix(const CfgSnapshot &cfg, lifter::bb_id_t bb_id)
+{
+    using ET = lifter::edge_t::Type;
+    for (const auto &edge : cfg.edges) {
+        if (edge.source != bb_id)
+            continue;
+        switch (edge.type) {
+        case ET::SYNTHETIC_EXTERNAL:
+            return "ext";
+        case ET::SYNTHETIC_RECURSIVE_CALL:
+            return "rec";
+        case ET::SYNTHETIC_INDIRECT:
+            return "ind";
+        default:
+            break;
+        }
+    }
+    return "int";
+}
+
+std::string real_block_term_label(const CfgSnapshot &cfg, const lifter::lifted_bb_t &bb)
+{
+    if (!bb.terminating_category)
+        return {};
+
+    std::string label = term_abbrev(*bb.terminating_category);
+    if (is_call_terminator(*bb.terminating_category)) {
+        label += ':';
+        label += call_kind_suffix(cfg, bb.id);
+    }
+    return label;
+}
+
 } // anonymous namespace
 
 // ── cfg_to_dot ──────────────────────────────────────────────────────────────
@@ -148,7 +195,7 @@ std::string cfg_to_dot(const CfgSnapshot &cfg, const CfgDotOptions &opts)
                 sep(); os << real_block_range(bb);
             }
             if (opts.show_term_cat && bb.terminating_category) {
-                sep(); os << term_abbrev(*bb.terminating_category);
+                sep(); os << real_block_term_label(cfg, bb);
             }
             if (bb.was_truncated_by_stop) {
                 sep(); os << "TRUNC";

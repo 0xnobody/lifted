@@ -4,6 +4,7 @@
 #include "lifter/lifter_types.hpp"
 
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -52,4 +53,33 @@ inline CfgSnapshot make_cfg_snapshot(const lifter::lift_result_t &lr,
     };
 }
 
+
+inline const lifter::lifted_bb_t *find_real_block_containing_rva(const CfgSnapshot &cfg,
+                                                            uint64_t           rva)
+{
+    using BBT = lifter::lifted_bb_t::Type;
+    for (const auto &bb : cfg.basic_blocks) {
+        if (bb.type != BBT::REAL || !bb.rva_range)
+            continue;
+        if (bb.rva_range->start() <= rva && rva < bb.rva_range->end())
+            return &bb;
+    }
+    return nullptr;
+}
+
+inline std::optional<lifter::bb_id_t>
+find_real_block_id_containing_rva(const CfgSnapshot &cfg, uint64_t rva)
+{
+    if (const auto *bb = find_real_block_containing_rva(cfg, rva))
+        return bb->id;
+    return std::nullopt;
+}
+
+inline std::optional<uint64_t>
+find_real_block_start_containing_rva(const CfgSnapshot &cfg, uint64_t rva)
+{
+    if (const auto *bb = find_real_block_containing_rva(cfg, rva))
+        return bb->rva_range->start();
+    return std::nullopt;
+}
 } // namespace lifted::visualization

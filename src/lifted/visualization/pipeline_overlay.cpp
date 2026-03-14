@@ -44,40 +44,81 @@ std::string overlay_to_dot(const CfgSnapshot    &cfg,
     // ── Resolve divergence information ────────────────────────────────────────
     //
     // divergence_idx : 0-based index into src bb_trace where traces first diverge
-    // divergence_rva : RVA of the block at that index (0 if unknown)
+    // divergence_rva : source-side block start when known (0 if unknown)
     static constexpr size_t kNoIdx = SIZE_MAX;
 
-    size_t   divergence_idx = kNoIdx;
-    uint64_t divergence_rva = 0;
+    size_t                            divergence_idx = kNoIdx;
+    uint64_t                          divergence_rva = 0;
+    std::optional<lifter::bb_id_t>    divergence_block_id;
 
     const auto *div = data.divergence;
+    auto resolve_block_id_from_rva = [&](uint64_t rva) -> std::optional<lifter::bb_id_t> {
+        if (rva == 0)
+            return std::nullopt;
+        if (auto it = rva_to_id.find(rva); it != rva_to_id.end())
+            return it->second;
+        return find_real_block_id_containing_rva(cfg, rva);
+    };
 
     if (div) {
         if (div->diff && div->diff->bb_trace_diff) {
             const auto &bdt = *div->diff->bb_trace_diff;
             if (!bdt.entries.empty()) {
-                divergence_idx = bdt.entries[0].index;
-                if (bdt.entries[0].rva_r1)
-                    divergence_rva = *bdt.entries[0].rva_r1;
+                const auto &entry = bdt.entries[0];
+                divergence_idx = entry.index;
+
+                if (entry.rva_r1) {
+                    divergence_rva = *entry.rva_r1;
+                    divergence_block_id = resolve_block_id_from_rva(*entry.rva_r1);
+                }
+                if (!divergence_block_id && entry.rva_r2) {
+                    divergence_block_id = resolve_block_id_from_rva(*entry.rva_r2);
+                    if (divergence_block_id) {
+                        if (auto start = find_real_block_start_containing_rva(cfg, *entry.rva_r2))
+                            divergence_rva = *start;
+                    }
+                }
             }
         }
+
         if (divergence_idx == kNoIdx && div->comparison.first_trace_divergence) {
             divergence_idx = *div->comparison.first_trace_divergence;
             const auto &trace = div->src_result.bb_trace;
-            if (divergence_idx < trace.size())
+            if (divergence_idx < trace.size()) {
                 divergence_rva = trace[divergence_idx];
+                divergence_block_id = resolve_block_id_from_rva(divergence_rva);
+            }
+        }
+
+        if (!divergence_block_id && div->comparison.first_checkpoint_divergence &&
+            div->diff && div->diff->checkpoint_diff) {
+            const auto &checkpoint_diff = *div->diff->checkpoint_diff;
+            const auto  cp_index = div->comparison.first_checkpoint_divergence->index;
+            auto cp_it = std::find_if(
+                checkpoint_diff.entries.begin(), checkpoint_diff.entries.end(),
+                [&](const verification::checkpoint_diff_entry_t &entry) {
+                    return entry.index == cp_index;
+                });
+            if (cp_it != checkpoint_diff.entries.end()) {
+                for (auto it = cp_it->preceding_bbs.rbegin();
+                     it != cp_it->preceding_bbs.rend(); ++it) {
+                    divergence_block_id = resolve_block_id_from_rva(*it);
+                    if (divergence_block_id) {
+                        if (auto start = find_real_block_start_containing_rva(cfg, *it))
+                            divergence_rva = *start;
+                        break;
+                    }
+                }
+            }
         }
     }
 
     // ── Find divergence block ID ──────────────────────────────────────────────
-    lifter::bb_id_t divergence_block_id  = 0;
-    bool            has_divergence_block = false;
-    if (divergence_rva != 0) {
-        auto it = rva_to_id.find(divergence_rva);
-        if (it != rva_to_id.end()) {
-            divergence_block_id  = it->second;
-            has_divergence_block = true;
-        }
+    lifter::bb_id_t resolved_divergence_block_id = 0;
+    bool            has_divergence_block         = false;
+    if (divergence_block_id) {
+        resolved_divergence_block_id = *divergence_block_id;
+        has_divergence_block         = true;
     }
 
     // ── Build trace edge set ──────────────────────────────────────────────────
@@ -250,7 +291,7 @@ std::string overlay_to_dot(const CfgSnapshot    &cfg,
 
         // Divergence highlight.
         if (opts.show_divergence && has_divergence_block &&
-            bb.id == divergence_block_id) {
+            bb.id == resolved_divergence_block_id) {
             border_color = "red";
             pen_width    = 3.0;
             extra_label += " | DIVERGED";
