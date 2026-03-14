@@ -14,10 +14,11 @@ add_executable(lifted-tests
     "test_verifier_state_recursive.cpp"
     "test_state_fold.cpp"
     "test_binary_context_annotations.cpp"
+    "test_indirect_call_divergence.cpp"
     "test_visualization.cpp"
  )
 
-target_link_libraries(lifted-tests PRIVATE lifted)
+target_link_libraries(lifted-tests PRIVATE lifted eval-suite)
 
 # Provide the binary path for the multi-function lift test.
 if(DEFINED EVAL_TWO_FUNCS_SO)
@@ -33,4 +34,12 @@ if(EVAL_IOFILE_SO)
         EVAL_IOFILE_SO="${EVAL_IOFILE_SO}"
     )
     add_dependencies(lifted-tests eval-iofile)
+endif()
+
+get_property(EVAL_INDIRECT_CALL_SO GLOBAL PROPERTY "_EVAL_TARGET_INDIRECT_CALL_SO")
+if(EVAL_INDIRECT_CALL_SO)
+    target_compile_definitions(lifted-tests PRIVATE
+        EVAL_INDIRECT_CALL_SO="${EVAL_INDIRECT_CALL_SO}"
+    )
+    add_dependencies(lifted-tests eval-indirect-call)
 endif()

@@ -200,13 +200,14 @@ namespace lifted::verification
         auto *ctx = static_cast<unicorn_ctx_t *>(user_data);
 
         // Any address below LOAD_BASE is outside the binary's text segment.
-        // This covers FINISH_SENTINEL (the uc_emu_start 'until' address,
-        // 0x0000600000000000) and oracle-injected values that the function
-        // jumped to via an unbalanced stack — both are non-code addresses.
-        // Stop emulation without recording a bb_entered so the verifier never
-        // sees a phantom event.
+        // FINISH_SENTINEL is the one legitimate non-code destination: the entry
+        // function returned to the harness-installed sentinel. Any other low
+        // target is an escape into non-lifted space and must count as
+        // MISSING_BLOCK, not a clean natural exit.
         if (address < LOAD_BASE)
         {
+            if (address != verifier_state::FINISH_SENTINEL)
+                ctx->state->set_exit_reason(exit_type::MISSING_BLOCK);
             uc_emu_stop(uc);
             return;
         }
