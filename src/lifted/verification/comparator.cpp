@@ -11,10 +11,11 @@ namespace lifted::verification
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     // Returns true for exit types where executor synchronisation is not
-    // guaranteed.  Change this predicate to enable Fault×Fault comparisons.
+    // guaranteed. Guest CPU traps are incomparable; missing-block escapes
+    // still carry enough structure to compare as divergences.
     static bool is_fault(exit_type e) noexcept
     {
-        return e == exit_type::EXCEPTION || e == exit_type::MISSING_BLOCK;
+        return e == exit_type::EXCEPTION;
     }
 
     // Effective checkpoint depth of a run: how far into the event stream it got.
@@ -240,10 +241,11 @@ namespace lifted::verification
         comparison_result_t result;
 
         // ── Phase 1: FAIL_INCOMPARABLE ────────────────────────────────────────
-        // Any fault exit makes the pair incomparable in the current
-        // implementation; synchronisation between executors at fault sites is
-        // not guaranteed.  To relax this (e.g. allow EXCEPTION×EXCEPTION),
-        // adjust is_fault() above.
+        // Guest exceptions remain incomparable in the current implementation;
+        // synchronisation between executors at trap sites is not guaranteed.
+        // Missing-block escapes are handled below as ordinary divergences.
+        // To relax this further (e.g. allow EXCEPTION×EXCEPTION), adjust
+        // is_fault() above.
         if (is_fault(r1.exit_reason) || is_fault(r2.exit_reason))
         {
             result.status = comparison_status::FAIL_INCOMPARABLE;

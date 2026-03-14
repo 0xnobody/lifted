@@ -122,7 +122,7 @@ namespace lifted::verification
     // Compare two run_result_t objects and return a structured verdict.
     //
     // Classification precedence (checked in order):
-    //   1. FAIL_INCOMPARABLE — either run ended in a fault condition whose
+    //   1. FAIL_INCOMPARABLE — either run ended in a guest exception whose
     //      synchronisation with the other executor is not guaranteed.
     //   2. NEEDS_RERUN — checkpoint depths differ; re-run needed before a
     //      meaningful final-state comparison is possible.

@@ -27,7 +27,7 @@ static run_result_t make_result(exit_type et)
 
 // ── Phase 1: FAIL_INCOMPARABLE ────────────────────────────────────────────────
 
-// Any run that ended in a fault makes the pair incomparable.
+// Guest exceptions are incomparable because executor synchronisation is not guaranteed.
 TEST(comparator_natural_exit_vs_exception_incomparable)
 {
     auto r1 = make_result(exit_type::NATURAL_EXIT);
@@ -40,16 +40,19 @@ TEST(comparator_natural_exit_vs_exception_incomparable)
     CHECK(!res.dimensions.checkpoint_match);
 }
 
-TEST(comparator_loop_limit_vs_missing_block_incomparable)
+// Missing lifted coverage is a real divergence, not an incomparable fault.
+TEST(comparator_natural_exit_vs_missing_block_diverged)
 {
-    auto r1 = make_result(exit_type::LOOP_LIMIT);
+    auto r1 = make_result(exit_type::NATURAL_EXIT);
     auto r2 = make_result(exit_type::MISSING_BLOCK);
     auto res = compare_runs(r1, r2);
     CHECK_EQ(static_cast<int>(res.status),
-             static_cast<int>(comparison_status::FAIL_INCOMPARABLE));
+             static_cast<int>(comparison_status::FAIL_DIVERGED));
+    CHECK(!res.dimensions.exit_type_match);
+    CHECK(res.dimensions.checkpoint_match);
 }
 
-// Both fault: still incomparable (current policy — easy to change via is_fault()).
+// Both guest exceptions are still incomparable (current policy — easy to change via is_fault()).
 TEST(comparator_both_exception_incomparable)
 {
     auto r1 = make_result(exit_type::EXCEPTION);
