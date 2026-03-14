@@ -29,7 +29,7 @@ namespace lifted
 // ── annotation_id_t ──────────────────────────────────────────────────────────
 
 /// Strongly typed annotation identifier — cannot be accidentally passed as a
-/// dest/dispatcher RVA.
+/// dest/site RVA.
 struct annotation_id_t
 {
     uint64_t value = UINT64_MAX;
@@ -76,6 +76,27 @@ struct ret_ptr_t
     std::optional<uint32_t> derived_from_param_idx;
 };
 
+// ── fnc_annotation_fields_t ──────────────────────────────────────────────────
+
+/// Sparse authoring surface shared by canonical annotation definitions and
+/// binding-local overrides. Missing fields inherit pessimistic defaults during
+/// canonical materialization or preserve the base value during override
+/// materialization.
+struct fnc_annotation_fields_t
+{
+    std::optional<const abi::CallingConvention *> cc;
+    std::optional<bool> reads_global_memory;
+    std::optional<bool> writes_global_memory;
+    std::optional<uint32_t> frees_param_idx;
+    std::optional<std::unordered_map<uint32_t, ptr_param_t>> ptr_params;
+    std::optional<ret_ptr_t> ret_ptr;
+    std::optional<uint8_t> ret_size_bytes;
+    std::optional<bool> volatile_call;
+    std::optional<bool> no_return;
+    std::optional<bool> is_variadic;
+    std::optional<uint8_t> arg_count;
+};
+
 // ── fnc_annotation_t ─────────────────────────────────────────────────────────
 
 struct fnc_annotation_t
@@ -83,14 +104,16 @@ struct fnc_annotation_t
     annotation_id_t id; ///< Set by BinaryContext on insertion; never changed after.
     std::string name;
     const abi::CallingConvention *cc = nullptr; ///< Required invariant: non-null before BinaryContext insertion.
-    bool reads_global_memory = false;
-    bool writes_global_memory = false;
+    bool reads_global_memory = true;
+    bool writes_global_memory = true;
     std::optional<uint32_t> frees_param_idx;
     std::unordered_map<uint32_t, ptr_param_t> ptr_params;
     std::optional<ret_ptr_t> ret_ptr;
     uint8_t ret_size_bytes = 0;
-    bool volatile_call = false;
+    bool volatile_call = true;
     bool no_return = false;
+    bool is_variadic = false;
+    std::optional<uint8_t> arg_count;
 };
 
 enum class builtin_annotation_kind_t
@@ -132,8 +155,8 @@ class BinaryContext
     /// aliases when needed. Returns nullopt if the slot is not tied to an import.
     std::optional<std::string> import_name_for_slot(uint64_t slot_rva) const;
 
-    /// Import function annotations from a JSON array on disk.
-    /// Rejects ambiguous matchers (duplicate name/normalized-name/RVA/dispatcher).
+    /// Import function annotations from a JSON object with `annotations` and/or
+    /// `bindings` arrays. Rejects ambiguous names, RVAs, and site RVAs.
     llvm::Error import_annotations_from_json(std::filesystem::path path);
 
     // ── Lookups — const; no mutation after insertion ──────────────────────────
@@ -145,7 +168,22 @@ class BinaryContext
     annotation_id_t get_by_name(const std::string &name) const;
 
     annotation_id_t get_ext_call(uint64_t dest_rva) const;
-    annotation_id_t get_indr_call(uint64_t dispatcher_rva) const;
+    annotation_id_t get_site_call(uint64_t site_rva) const;
+
+    // ── Resolution helpers ────────────────────────────────────────────────────
+
+    /// Precedence: site binding → callee binding → canonical-name lookup →
+    /// pessimistic auto-created fallback bound at `dest_rva`.
+    annotation_id_t resolve_direct_call_annotation(uint64_t                        caller_site_rva,
+                                                   uint64_t                        dest_rva,
+                                                   std::optional<std::string_view> resolved_name,
+                                                   const abi::CallingConvention    &fallback_cc);
+
+    /// Precedence: site binding → canonical-name lookup → pessimistic
+    /// auto-created fallback bound at `caller_site_rva`.
+    annotation_id_t resolve_indirect_call_annotation(uint64_t                        caller_site_rva,
+                                                     std::optional<std::string_view> import_name,
+                                                     const abi::CallingConvention    &fallback_cc);
 
     // ── Creation ──────────────────────────────────────────────────────────────
 
@@ -157,9 +195,10 @@ class BinaryContext
     annotation_id_t create_ext_call(uint64_t dest_rva,
                                     std::unique_ptr<fnc_annotation_t> ann);
 
-    /// Register an annotation for an indirect-call dispatcher block.
+    /// Register an annotation for a call site. Used for indirect-call dispatchers
+    /// and direct-call site-specific specializations.
     /// The annotation must carry a non-null calling convention.
-    annotation_id_t create_indr_call(uint64_t dispatcher_rva,
+    annotation_id_t create_site_call(uint64_t site_rva,
                                      std::unique_ptr<fnc_annotation_t> ann);
 
     /// Insert an annotation with no RVA binding. The annotation must carry a non-null CC.
@@ -167,13 +206,14 @@ class BinaryContext
 
   private:
 
-    /// Assigns id, inserts into annotations_, updates primary-name index.
-    /// Called by all three public creation helpers and JSON import.
-    annotation_id_t insert(std::unique_ptr<fnc_annotation_t> ann);
+    /// Assigns id, inserts into annotations_, and optionally updates the public
+    /// name index. Called by all public creation helpers and JSON import.
+    annotation_id_t insert(std::unique_ptr<fnc_annotation_t> ann,
+                           bool                              index_name = true);
 
     void bind_name_alias(const fnc_annotation_t &ann, std::string_view name);
     void bind_ext_call_alias(const fnc_annotation_t &ann, uint64_t dest_rva);
-    void bind_indr_call_alias(const fnc_annotation_t &ann, uint64_t dispatcher_rva);
+    void bind_site_alias(const fnc_annotation_t &ann, uint64_t site_rva);
 
     std::vector<uint64_t> address_aliases(uint64_t addr) const;
     static std::optional<std::string> strip_elf_symbol_version(std::string_view name);
@@ -188,7 +228,7 @@ class BinaryContext
     std::unordered_map<annotation_id_t, std::unique_ptr<fnc_annotation_t>> annotations_;
     std::unordered_map<std::string, const fnc_annotation_t *> annotations_by_name_;
     std::unordered_map<uint64_t, const fnc_annotation_t *> ext_call_annotations_;
-    std::unordered_map<uint64_t, const fnc_annotation_t *> indr_call_annotations_;
+    std::unordered_map<uint64_t, const fnc_annotation_t *> site_annotations_;
     std::map<builtin_annotation_kind_t, annotation_id_t> builtin_annotation_ids_;
 
     std::unordered_map<uint64_t, std::string> direct_target_names_;

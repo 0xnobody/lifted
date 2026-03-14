@@ -16,6 +16,7 @@ class SystemVx64CC final : public CallingConvention
         return instance;
     }
 
+    using CallingConvention::getArgRegisters;
     llvm::ArrayRef<ABIRegister> getArgRegisters() const override
     {
         static constexpr std::array<ABIRegister, 6> Regs = {

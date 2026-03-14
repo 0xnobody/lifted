@@ -58,18 +58,12 @@ resolved_targets_result_t StandardLifterCallbacks::heuristically_extract_targets
 
     auto ensure_external_annotation = [&](uint64_t dest) -> annotation_id_t
     {
-        if (auto anno_id = ctx.bin_ctx.get_ext_call(dest); anno_id != INVALID_ANNOTATION_ID)
-            return anno_id;
-
         std::optional<std::string> name_opt = ctx.bin_ctx.symbol_name_at_rva(dest);
+        std::optional<std::string_view> resolved_name;
         if (name_opt)
-            if (auto anno_id = ctx.bin_ctx.get_by_name(*name_opt); anno_id != INVALID_ANNOTATION_ID)
-                return anno_id;
-
-        auto ann = std::make_unique<fnc_annotation_t>();
-        ann->name = name_opt.value_or("ext_auto_" + llvm::utohexstr(dest));
-        ann->cc = entry_anno->cc;
-        return ctx.bin_ctx.create_ext_call(dest, std::move(ann));
+            resolved_name = *name_opt;
+        return ctx.bin_ctx.resolve_direct_call_annotation(
+            ctx.bb.id, dest, resolved_name, *entry_anno->cc);
     };
 
     auto classify_address = [&](uint64_t addr) -> resolved_target_t::Type
@@ -103,21 +97,14 @@ resolved_targets_result_t StandardLifterCallbacks::heuristically_extract_targets
 
     auto ensure_indirect_annotation = [&](std::optional<uint64_t> slot_addr) -> annotation_id_t
     {
-        if (auto anno_id = ctx.bin_ctx.get_indr_call(ctx.bb.id); anno_id != INVALID_ANNOTATION_ID)
-            return anno_id;
-
         std::optional<std::string> name_opt;
         if (slot_addr)
             name_opt = ctx.bin_ctx.import_name_for_slot(*slot_addr);
-
+        std::optional<std::string_view> import_name;
         if (name_opt)
-            if (auto anno_id = ctx.bin_ctx.get_by_name(*name_opt); anno_id != INVALID_ANNOTATION_ID)
-                return anno_id;
-
-        auto ann = std::make_unique<fnc_annotation_t>();
-        ann->name = name_opt.value_or("indr_dispatch_" + llvm::utohexstr(ctx.bb.id));
-        ann->cc = entry_anno->cc;
-        return ctx.bin_ctx.create_indr_call(ctx.bb.id, std::move(ann));
+            import_name = *name_opt;
+        return ctx.bin_ctx.resolve_indirect_call_annotation(
+            ctx.bb.id, import_name, *entry_anno->cc);
     };
 
     // Match:

@@ -117,8 +117,8 @@ class Lifter
 
     // ── Callee stubs ───────────────────────────────────────────────────
     /// Get or create a per-callee ABI stub in `M`.  The stub saves
-    /// non-volatile registers, calls either __lifted_ext_call_<name> or
-    /// __lifted_recursive_call, restores non-volatile registers, and pops
+    /// non-volatile registers, calls either __lifted_ext_call_<annotation-name>
+    /// or __lifted_recursive_call, restores non-volatile registers, and pops
     /// the return address.
     llvm::Expected<llvm::Function *> get_or_create_callee_stub(llvm::Module *M,
                                                                annotation_id_t annotation_id,

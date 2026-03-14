@@ -184,6 +184,10 @@ struct CallingConvention
     virtual ~CallingConvention() = default;
 
     virtual llvm::ArrayRef<ABIRegister> getArgRegisters() const = 0;
+    llvm::ArrayRef<ABIRegister> getArgRegisters(unsigned max_count) const
+    {
+        return getArgRegisters().take_front(max_count);
+    }
     virtual llvm::ArrayRef<ABIRegister> getReturnRegisters() const = 0;
     virtual llvm::ArrayRef<ABIRegister> getVolatileRegisters() const = 0;
     virtual llvm::ArrayRef<ABIRegister> getNonVolatileRegisters() const = 0;

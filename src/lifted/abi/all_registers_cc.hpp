@@ -12,6 +12,7 @@ namespace lifted::abi
       public:
         static const AllRegistersCC &get();
 
+        using CallingConvention::getArgRegisters;
         llvm::ArrayRef<ABIRegister> getArgRegisters() const override;
         llvm::ArrayRef<ABIRegister> getReturnRegisters() const override;
         llvm::ArrayRef<ABIRegister> getVolatileRegisters() const override;
