@@ -26,9 +26,6 @@ standard_lifter_config_t standard_lifter_config_t::from_standard_linux_binary(
     if (auto got_range = utils::get_section_bounds(binary, ".got"))
         config.got_table_rva_ranges.insert(*got_range);
 
-    if (auto plt_range = utils::get_section_bounds(binary, ".plt.sec"))
-        config.ext_func_rva_ranges.insert(*plt_range);
-
     config.artifact_dir = std::move(artifact_dir);
     return config;
 }
@@ -50,53 +47,171 @@ void StandardLifterCallbacks::maybe_write_artifact(std::string_view artifact_dir
     utils::output_to_file(path, &const_cast<llvm::Module &>(module));
 }
 
+namespace
+{
+std::optional<resolved_target_t> resolve_direct_call_target(resolve_context_t &ctx,
+                                                            uint64_t dest)
+{
+    if (dest == ctx.entry_rva)
+    {
+        return resolved_target_t{
+            .type = resolved_target_t::Type::RECURSIVE,
+            .dest = dest,
+            .annotation_id = std::nullopt,
+        };
+    }
+
+    const auto *entry_anno = ctx.bin_ctx.get_by_id(ctx.lift_ctx.entry_annotation_id);
+    if (!entry_anno || !entry_anno->cc)
+        return std::nullopt;
+
+    std::optional<std::string> name_opt = ctx.bin_ctx.symbol_name_at_rva(dest);
+    std::optional<std::string_view> resolved_name;
+    if (name_opt)
+        resolved_name = *name_opt;
+
+    return resolved_target_t{
+        .type = resolved_target_t::Type::EXTERNAL,
+        .dest = dest,
+        .annotation_id = ctx.bin_ctx.resolve_direct_call_annotation(
+            ctx.bb.id, dest, resolved_name, *entry_anno->cc),
+    };
+}
+} // namespace
+
+std::optional<resolved_targets_result_t> StandardLifterCallbacks::hint_resolve_targets(
+    resolve_context_t &ctx)
+{
+    resolved_targets_result_t result;
+
+    // Fast path for normal calls:
+    // CALL ext_fnc
+    // <-- Edge to here from synthetic block
+    if (ctx.synthetic_info && ctx.synthetic_predecessor_bb)
+    {
+        if (ctx.synthetic_info->type == synthetic_block_info_t::Type::INDIRECT)
+            return std::nullopt;
+
+        const lifted_bb_t &pred = *ctx.synthetic_predecessor_bb;
+        if (*pred.terminating_category != remill::Instruction::kCategoryDirectFunctionCall || !pred.static_continuation_rva)
+        {
+            return std::nullopt;
+        }
+
+        result.targets.push_back({
+            .type = resolved_target_t::Type::INTERNAL,
+            .dest = *pred.static_continuation_rva,
+            .annotation_id = std::nullopt,
+        });
+        return result;
+    }
+
+    if (ctx.bb.type != lifted_bb_t::Type::REAL)
+    {
+        return std::nullopt;
+    }
+
+    switch (*ctx.bb.terminating_category)
+    {
+    case remill::Instruction::kCategoryNormal:
+        // Fallthrough
+        result.targets.push_back({
+            .type = resolved_target_t::Type::INTERNAL,
+            .dest = *ctx.bb.static_target_rva,
+            .annotation_id = std::nullopt,
+        });
+        return result;
+    case remill::Instruction::kCategoryDirectJump:
+        if (!ctx.bb.static_target_rva)
+            return std::nullopt;
+        result.targets.push_back({
+            .type = resolved_target_t::Type::INTERNAL,
+            .dest = *ctx.bb.static_target_rva,
+            .annotation_id = std::nullopt,
+        });
+        return result;
+    case remill::Instruction::kCategoryConditionalBranch:
+        if (!ctx.bb.static_target_rva || !ctx.bb.static_continuation_rva)
+            return std::nullopt;
+        result.targets.push_back({
+            .type = resolved_target_t::Type::INTERNAL,
+            .dest = *ctx.bb.static_target_rva,
+            .annotation_id = std::nullopt,
+        });
+        result.targets.push_back({
+            .type = resolved_target_t::Type::INTERNAL,
+            .dest = *ctx.bb.static_continuation_rva,
+            .annotation_id = std::nullopt,
+        });
+        return result;
+    case remill::Instruction::kCategoryDirectFunctionCall:
+        if (!ctx.bb.static_target_rva)
+            return std::nullopt;
+        if (auto target = resolve_direct_call_target(ctx, *ctx.bb.static_target_rva))
+        {
+            result.targets.push_back(*target);
+            return result;
+        }
+        return std::nullopt;
+    case remill::Instruction::kCategoryFunctionReturn:
+        result.targets.push_back({
+            .type = resolved_target_t::Type::RETURN_TO_CALLER,
+            .dest = 0,
+            .annotation_id = std::nullopt,
+        });
+        return result;
+    default:
+        return std::nullopt;
+    }
+}
+
 resolved_targets_result_t StandardLifterCallbacks::heuristically_extract_targets(llvm::Function &F, resolve_context_t &ctx)
 {
     resolved_targets_result_t result;
 
-    auto entry_anno = ctx.bin_ctx.get_by_id(ctx.lift_ctx.entry_annotation_id);
-
-    auto ensure_external_annotation = [&](uint64_t dest) -> annotation_id_t
-    {
-        std::optional<std::string> name_opt = ctx.bin_ctx.symbol_name_at_rva(dest);
-        std::optional<std::string_view> resolved_name;
-        if (name_opt)
-            resolved_name = *name_opt;
-        return ctx.bin_ctx.resolve_direct_call_annotation(
-            ctx.bb.id, dest, resolved_name, *entry_anno->cc);
-    };
-
-    auto classify_address = [&](uint64_t addr) -> resolved_target_t::Type
-    {
-        if (ctx.bb.terminating_category.has_value() &&
-            *ctx.bb.terminating_category ==
-                remill::Instruction::kCategoryDirectFunctionCall)
-        {
-            if (addr == ctx.entry_rva)
-                return resolved_target_t::Type::RECURSIVE;
-        }
-
-        for (const auto &r : config_.ext_func_rva_ranges)
-            if (r.contains(addr))
-                return resolved_target_t::Type::EXTERNAL;
-        return resolved_target_t::Type::INTERNAL;
-    };
-
     auto dests = extract_constant_returns(F);
     if (!dests.empty())
     {
+        if (!ctx.bb.terminating_category)
+            return result;
+
         for (auto dest : dests)
         {
-            result.targets.push_back(resolved_target_t{
-                .type = classify_address(dest),
-                .dest = dest,
-                .annotation_id = ensure_external_annotation(dest)});
+            switch (*ctx.bb.terminating_category)
+            {
+            case remill::Instruction::kCategoryDirectFunctionCall:
+                if (auto target = resolve_direct_call_target(ctx, dest))
+                {
+                    result.targets.push_back(*target);
+                    break;
+                }
+                return resolved_targets_result_t{};
+            case remill::Instruction::kCategoryFunctionReturn:
+                result.targets.push_back({
+                    .type = resolved_target_t::Type::RETURN_TO_CALLER,
+                    .dest = 0,
+                    .annotation_id = std::nullopt,
+                });
+                break;
+            default:
+                result.targets.push_back({
+                    .type = resolved_target_t::Type::INTERNAL,
+                    .dest = dest,
+                    .annotation_id = std::nullopt,
+                });
+                break;
+            }
         }
         return result;
     }
 
-    auto ensure_indirect_annotation = [&](std::optional<uint64_t> slot_addr) -> annotation_id_t
+    const auto *entry_anno = ctx.bin_ctx.get_by_id(ctx.lift_ctx.entry_annotation_id);
+    auto ensure_indirect_annotation = [&](std::optional<uint64_t> slot_addr)
+        -> std::optional<annotation_id_t>
     {
+        if (!entry_anno || !entry_anno->cc)
+            return std::nullopt;
+
         std::optional<std::string> name_opt;
         if (slot_addr)
             name_opt = ctx.bin_ctx.import_name_for_slot(*slot_addr);
@@ -125,7 +240,8 @@ resolved_targets_result_t StandardLifterCallbacks::heuristically_extract_targets
                         DLOG(INFO) << "Resolved indirect target via GOT at offset 0x"
                                    << std::hex << slot_addr;
 
-                        result.indirect_annotation_id = ensure_indirect_annotation(slot_addr);
+                        result.indirect_annotation_id =
+                            ensure_indirect_annotation(slot_addr);
                     }
                 }
             }

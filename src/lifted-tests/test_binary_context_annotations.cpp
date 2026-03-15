@@ -10,9 +10,6 @@
 #include "lifter/lifter_types.hpp"
 #include "lifter/standard_lifter_callbacks.hpp"
 
-#include <remill/Arch/Arch.h>
-#include <remill/Arch/Name.h>
-#include <remill/OS/OS.h>
 #include <llvm/ADT/AddressRanges.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
@@ -21,9 +18,12 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/Support/Error.h>
+#include <remill/Arch/Arch.h>
+#include <remill/Arch/Name.h>
+#include <remill/OS/OS.h>
 
-#include <fstream>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -31,29 +31,30 @@
 #include <vector>
 
 #ifndef EVAL_IOFILE_SO
-#  error "EVAL_IOFILE_SO must be defined at compile time (path to libeval-iofile.so)"
+#error "EVAL_IOFILE_SO must be defined at compile time (path to libeval-iofile.so)"
 #endif
 
 namespace
 {
-using lifted::BinaryContext;
-using lifted::INVALID_ANNOTATION_ID;
 using lifted::annotation_id_t;
+using lifted::BinaryContext;
 using lifted::fnc_annotation_t;
-using lifted::lifter::Lifter;
-using lifted::lifter::StandardLifterCallbacks;
+using lifted::INVALID_ANNOTATION_ID;
 using lifted::lifter::edge_t;
 using lifted::lifter::lift_context_t;
 using lifted::lifter::lift_result_t;
 using lifted::lifter::lifted_bb_t;
+using lifted::lifter::Lifter;
 using lifted::lifter::resolve_context_t;
+using lifted::lifter::synthetic_block_info_t;
 using lifted::lifter::resolved_target_t;
 using lifted::lifter::standard_lifter_config_t;
+using lifted::lifter::StandardLifterCallbacks;
 
 struct ImportedFunctionInfo
 {
-    uint64_t    direct_addr = 0;
-    uint64_t    slot_addr = 0;
+    uint64_t direct_addr = 0;
+    uint64_t slot_addr = 0;
     std::string raw_name;
     std::string base_name;
 };
@@ -61,8 +62,9 @@ struct ImportedFunctionInfo
 class ExposedCallbacks final : public StandardLifterCallbacks
 {
   public:
-    using StandardLifterCallbacks::StandardLifterCallbacks;
     using StandardLifterCallbacks::heuristically_extract_targets;
+    using StandardLifterCallbacks::hint_resolve_targets;
+    using StandardLifterCallbacks::StandardLifterCallbacks;
 };
 
 std::string error_to_string(llvm::Error err)
@@ -88,7 +90,7 @@ std::filesystem::path write_temp_json(std::string_view stem,
     return path;
 }
 
-llvm::Error import_json(BinaryContext   &bin_ctx,
+llvm::Error import_json(BinaryContext &bin_ctx,
                         std::string_view stem,
                         std::string_view json)
 {
@@ -184,7 +186,7 @@ std::optional<uint64_t> find_export_va(LIEF::Binary &binary,
 
 llvm::Function *create_const_return_function(llvm::Module &module,
                                              llvm::StringRef name,
-                                             uint64_t        value)
+                                             uint64_t value)
 {
     auto &ctx = module.getContext();
     auto *fn = llvm::Function::Create(
@@ -200,7 +202,7 @@ llvm::Function *create_const_return_function(llvm::Module &module,
 
 llvm::Function *create_indirect_return_function(llvm::Module &module,
                                                 llvm::StringRef name,
-                                                uint64_t        slot_addr)
+                                                uint64_t slot_addr)
 {
     auto &ctx = module.getContext();
     auto *ram_ty = llvm::ArrayType::get(llvm::Type::getInt8Ty(ctx), slot_addr + 8);
@@ -225,18 +227,20 @@ llvm::Function *create_indirect_return_function(llvm::Module &module,
 }
 
 resolve_context_t make_resolve_context(const lifted_bb_t &bb,
-                                       uint64_t           entry_rva,
-                                       lift_context_t    &lift_ctx,
-                                       BinaryContext     &bin_ctx)
+                                       uint64_t entry_rva,
+                                       lift_context_t &lift_ctx,
+                                       BinaryContext &bin_ctx)
 {
     return resolve_context_t{
-        bb,
-        entry_rva,
-        lift_ctx,
-        std::unique_ptr<llvm::Module>{},
-        nullptr,
-        nullptr,
-        bin_ctx,
+        .bb = bb,
+        .entry_rva = entry_rva,
+        .lift_ctx = lift_ctx,
+        .synthetic_info = nullptr,
+        .synthetic_predecessor_bb = nullptr,
+        .slice_module = std::unique_ptr<llvm::Module>{},
+        .slice_cfg = nullptr,
+        .concretized_slice = nullptr,
+        .bin_ctx = bin_ctx,
     };
 }
 
@@ -246,6 +250,18 @@ resolved_target_t only_target(const lifted::lifter::resolved_targets_result_t &r
     if (result.targets.empty())
         return resolved_target_t{.type = resolved_target_t::Type::INTERNAL, .dest = 0, .annotation_id = std::nullopt};
     return result.targets.front();
+}
+
+const resolved_target_t *find_target(const lifted::lifter::resolved_targets_result_t &result,
+                                     resolved_target_t::Type type,
+                                     uint64_t dest)
+{
+    for (const auto &target : result.targets)
+    {
+        if (target.type == type && target.dest == dest)
+            return &target;
+    }
+    return nullptr;
 }
 
 std::vector<uint64_t> collect_external_call_site_rvas(const lift_result_t &result)
@@ -326,7 +342,8 @@ TEST(binary_context_imports_canonical_annotations_and_bindings)
     std::string binding_json =
         std::string(R"json({
   "bindings": [
-    {"annotation": "printf", "rva": )json") + quoted_hex_string(*direct_addr) +
+    {"annotation": "printf", "rva": )json") +
+        quoted_hex_string(*direct_addr) +
         std::string(R"json(},
     {"annotation": "puts", "site_rva": "0x401234"}
   ]
@@ -583,6 +600,316 @@ TEST(binary_context_import_slot_lookup_and_version_alias)
     CHECK_EQ(unversioned_id, bin_ctx.get_by_name(info->raw_name));
 }
 
+TEST(callbacks_hint_direct_external_site_binding_beats_callee_binding)
+{
+    auto binary = parse_binary(EVAL_IOFILE_SO);
+    CHECK(binary != nullptr);
+    if (!binary)
+        return;
+
+    auto info = find_printf_info(*binary);
+    CHECK(info.has_value());
+    if (!info)
+        return;
+
+    BinaryContext bin_ctx(std::move(binary));
+    auto direct_addr = find_direct_addr_for_name(bin_ctx, info->base_name);
+    CHECK(direct_addr.has_value());
+    if (!direct_addr)
+        return;
+
+    auto standard_err = import_json(
+        bin_ctx,
+        "direct-hint-standard",
+        R"json({
+  "annotations": [
+    {"name": "printf", "cc": "systemv_x64", "is_variadic": true, "arg_count": 6}
+  ]
+})json");
+    CHECK(!standard_err);
+    if (standard_err)
+        return;
+
+    std::string binding_json =
+        std::string(R"json({
+  "bindings": [
+    {"annotation": "printf", "rva": )json") +
+        quoted_hex_string(*direct_addr) +
+        std::string(R"json(},
+    {"annotation": "printf", "site_rva": "0x5000", "override": {"arg_count": 2}}
+  ]
+})json");
+    auto binding_err = import_json(bin_ctx, "direct-hint-bindings", binding_json);
+    CHECK(!binding_err);
+    if (binding_err)
+        return;
+
+    auto callee_id = bin_ctx.get_ext_call(*direct_addr);
+    auto site_id = bin_ctx.get_site_call(0x5000);
+    CHECK_NE(callee_id, INVALID_ANNOTATION_ID);
+    CHECK_NE(site_id, INVALID_ANNOTATION_ID);
+    CHECK_NE(site_id, callee_id);
+
+    lift_context_t lift_ctx{};
+    lift_ctx.entry_annotation_id = add_entry_annotation(bin_ctx);
+
+    standard_lifter_config_t config{};
+    ExposedCallbacks callbacks(config);
+    lifted_bb_t bb{
+        .type = lifted_bb_t::Type::REAL,
+        .id = 0x5000,
+        .func_name = "bb_direct_hint",
+        .rva_range = std::nullopt,
+        .terminating_category = remill::Instruction::kCategoryDirectFunctionCall,
+        .static_target_rva = *direct_addr,
+        .static_continuation_rva = 0x5005,
+        .was_truncated_by_stop = false,
+    };
+
+    auto ctx = make_resolve_context(bb, /*entry_rva=*/0x1234, lift_ctx, bin_ctx);
+    auto hinted = callbacks.hint_resolve_targets(ctx);
+    CHECK(hinted.has_value());
+    if (!hinted)
+        return;
+
+    CHECK_EQ(hinted->targets.size(), static_cast<size_t>(1));
+    auto *external_target = find_target(*hinted, resolved_target_t::Type::EXTERNAL, *direct_addr);
+    CHECK(external_target != nullptr);
+    if (external_target)
+    {
+        CHECK(external_target->annotation_id.has_value());
+        if (external_target->annotation_id)
+            CHECK_EQ(*external_target->annotation_id, site_id);
+    }
+
+    auto *site_ann = bin_ctx.get_by_id(site_id);
+    CHECK(site_ann != nullptr);
+    if (site_ann)
+    {
+        CHECK(site_ann->arg_count.has_value());
+        if (site_ann->arg_count)
+            CHECK_EQ(*site_ann->arg_count, static_cast<uint8_t>(2));
+    }
+}
+
+TEST(callbacks_hint_conditional_branch_returns_internal_targets)
+{
+    auto binary = parse_binary(EVAL_IOFILE_SO);
+    CHECK(binary != nullptr);
+    if (!binary)
+        return;
+
+    BinaryContext bin_ctx(std::move(binary));
+    lift_context_t lift_ctx{};
+    lift_ctx.entry_annotation_id = add_entry_annotation(bin_ctx);
+
+    standard_lifter_config_t config{};
+    ExposedCallbacks callbacks(config);
+    lifted_bb_t bb{
+        .type = lifted_bb_t::Type::REAL,
+        .id = 0x6100,
+        .func_name = "bb_branch_hint",
+        .rva_range = std::nullopt,
+        .terminating_category = remill::Instruction::kCategoryConditionalBranch,
+        .static_target_rva = 0x6200,
+        .static_continuation_rva = 0x6300,
+        .was_truncated_by_stop = false,
+    };
+
+    auto ctx = make_resolve_context(bb, /*entry_rva=*/0x1234, lift_ctx, bin_ctx);
+    auto hinted = callbacks.hint_resolve_targets(ctx);
+    CHECK(hinted.has_value());
+    if (!hinted)
+        return;
+
+    CHECK_EQ(hinted->targets.size(), static_cast<size_t>(2));
+    auto *taken_target = find_target(*hinted, resolved_target_t::Type::INTERNAL, 0x6200);
+    auto *fallthrough_target = find_target(*hinted, resolved_target_t::Type::INTERNAL, 0x6300);
+    CHECK(taken_target != nullptr);
+    CHECK(fallthrough_target != nullptr);
+    if (taken_target)
+        CHECK(!taken_target->annotation_id.has_value());
+    if (fallthrough_target)
+        CHECK(!fallthrough_target->annotation_id.has_value());
+}
+
+TEST(callbacks_hint_function_return_returns_to_caller)
+{
+    auto binary = parse_binary(EVAL_IOFILE_SO);
+    CHECK(binary != nullptr);
+    if (!binary)
+        return;
+
+    BinaryContext bin_ctx(std::move(binary));
+    lift_context_t lift_ctx{};
+    lift_ctx.entry_annotation_id = add_entry_annotation(bin_ctx);
+
+    standard_lifter_config_t config{};
+    ExposedCallbacks callbacks(config);
+    lifted_bb_t bb{
+        .type = lifted_bb_t::Type::REAL,
+        .id = 0x7100,
+        .func_name = "bb_return_hint",
+        .rva_range = std::nullopt,
+        .terminating_category = remill::Instruction::kCategoryFunctionReturn,
+        .static_target_rva = std::nullopt,
+        .static_continuation_rva = std::nullopt,
+        .was_truncated_by_stop = false,
+    };
+
+    auto ctx = make_resolve_context(bb, /*entry_rva=*/0x1234, lift_ctx, bin_ctx);
+    auto hinted = callbacks.hint_resolve_targets(ctx);
+    CHECK(hinted.has_value());
+    if (!hinted)
+        return;
+
+    auto target = only_target(*hinted);
+    CHECK_EQ(target.type, resolved_target_t::Type::RETURN_TO_CALLER);
+    CHECK_EQ(target.dest, 0);
+    CHECK(!target.annotation_id.has_value());
+}
+
+TEST(callbacks_hint_synthetic_external_and_recursive_use_predecessor_continuation)
+{
+    auto binary = parse_binary(EVAL_IOFILE_SO);
+    CHECK(binary != nullptr);
+    if (!binary)
+        return;
+
+    BinaryContext bin_ctx(std::move(binary));
+    lift_context_t lift_ctx{};
+    lift_ctx.entry_annotation_id = add_entry_annotation(bin_ctx);
+
+    standard_lifter_config_t config{};
+    ExposedCallbacks callbacks(config);
+    lifted_bb_t synthetic_bb{
+        .type = lifted_bb_t::Type::SYNTHETIC,
+        .id = 0xFFFF000000000010ULL,
+        .func_name = "bb_synthetic_hint",
+        .rva_range = std::nullopt,
+        .terminating_category = std::nullopt,
+        .static_target_rva = std::nullopt,
+        .static_continuation_rva = std::nullopt,
+        .was_truncated_by_stop = false,
+    };
+    lifted_bb_t predecessor_bb{
+        .type = lifted_bb_t::Type::REAL,
+        .id = 0x7200,
+        .func_name = "bb_direct_predecessor",
+        .rva_range = std::nullopt,
+        .terminating_category = remill::Instruction::kCategoryDirectFunctionCall,
+        .static_target_rva = 0x7300,
+        .static_continuation_rva = 0x7205,
+        .was_truncated_by_stop = false,
+    };
+
+    synthetic_block_info_t external_info{
+        .type = synthetic_block_info_t::Type::EXTERNAL,
+        .dest_addr = 0x7300,
+        .annotation_id = lift_ctx.entry_annotation_id,
+        .predecessor = predecessor_bb.id,
+    };
+    auto external_ctx = make_resolve_context(synthetic_bb, /*entry_rva=*/0x1234, lift_ctx, bin_ctx);
+    external_ctx.synthetic_info = &external_info;
+    external_ctx.synthetic_predecessor_bb = &predecessor_bb;
+    auto external_hint = callbacks.hint_resolve_targets(external_ctx);
+    CHECK(external_hint.has_value());
+    if (external_hint)
+    {
+        auto target = only_target(*external_hint);
+        CHECK_EQ(target.type, resolved_target_t::Type::INTERNAL);
+        CHECK_EQ(target.dest, 0x7205);
+        CHECK(!target.annotation_id.has_value());
+    }
+
+    synthetic_block_info_t recursive_info{
+        .type = synthetic_block_info_t::Type::RECURSIVE,
+        .dest_addr = 0x1234,
+        .annotation_id = lift_ctx.entry_annotation_id,
+        .predecessor = predecessor_bb.id,
+    };
+    auto recursive_ctx = make_resolve_context(synthetic_bb, /*entry_rva=*/0x1234, lift_ctx, bin_ctx);
+    recursive_ctx.synthetic_info = &recursive_info;
+    recursive_ctx.synthetic_predecessor_bb = &predecessor_bb;
+    auto recursive_hint = callbacks.hint_resolve_targets(recursive_ctx);
+    CHECK(recursive_hint.has_value());
+    if (recursive_hint)
+    {
+        auto target = only_target(*recursive_hint);
+        CHECK_EQ(target.type, resolved_target_t::Type::INTERNAL);
+        CHECK_EQ(target.dest, 0x7205);
+        CHECK(!target.annotation_id.has_value());
+    }
+}
+
+TEST(callbacks_hint_synthetic_indirect_or_missing_predecessor_continuation_returns_nullopt)
+{
+    auto binary = parse_binary(EVAL_IOFILE_SO);
+    CHECK(binary != nullptr);
+    if (!binary)
+        return;
+
+    BinaryContext bin_ctx(std::move(binary));
+    lift_context_t lift_ctx{};
+    lift_ctx.entry_annotation_id = add_entry_annotation(bin_ctx);
+
+    standard_lifter_config_t config{};
+    ExposedCallbacks callbacks(config);
+    lifted_bb_t synthetic_bb{
+        .type = lifted_bb_t::Type::SYNTHETIC,
+        .id = 0xFFFF000000000011ULL,
+        .func_name = "bb_synthetic_hint_negative",
+        .rva_range = std::nullopt,
+        .terminating_category = std::nullopt,
+        .static_target_rva = std::nullopt,
+        .static_continuation_rva = std::nullopt,
+        .was_truncated_by_stop = false,
+    };
+    lifted_bb_t predecessor_with_continuation{
+        .type = lifted_bb_t::Type::REAL,
+        .id = 0x7400,
+        .func_name = "bb_indirect_predecessor",
+        .rva_range = std::nullopt,
+        .terminating_category = remill::Instruction::kCategoryDirectFunctionCall,
+        .static_target_rva = 0x7500,
+        .static_continuation_rva = 0x7405,
+        .was_truncated_by_stop = false,
+    };
+    synthetic_block_info_t indirect_info{
+        .type = synthetic_block_info_t::Type::INDIRECT,
+        .dest_addr = std::nullopt,
+        .annotation_id = lift_ctx.entry_annotation_id,
+        .predecessor = predecessor_with_continuation.id,
+    };
+    auto indirect_ctx = make_resolve_context(synthetic_bb, /*entry_rva=*/0x1234, lift_ctx, bin_ctx);
+    indirect_ctx.synthetic_info = &indirect_info;
+    indirect_ctx.synthetic_predecessor_bb = &predecessor_with_continuation;
+    auto indirect_hint = callbacks.hint_resolve_targets(indirect_ctx);
+    CHECK(!indirect_hint.has_value());
+
+    lifted_bb_t predecessor_without_continuation{
+        .type = lifted_bb_t::Type::REAL,
+        .id = 0x7600,
+        .func_name = "bb_missing_continuation",
+        .rva_range = std::nullopt,
+        .terminating_category = remill::Instruction::kCategoryDirectFunctionCall,
+        .static_target_rva = 0x7700,
+        .static_continuation_rva = std::nullopt,
+        .was_truncated_by_stop = false,
+    };
+    synthetic_block_info_t external_info{
+        .type = synthetic_block_info_t::Type::EXTERNAL,
+        .dest_addr = 0x7700,
+        .annotation_id = lift_ctx.entry_annotation_id,
+        .predecessor = predecessor_without_continuation.id,
+    };
+    auto missing_ctx = make_resolve_context(synthetic_bb, /*entry_rva=*/0x1234, lift_ctx, bin_ctx);
+    missing_ctx.synthetic_info = &external_info;
+    missing_ctx.synthetic_predecessor_bb = &predecessor_without_continuation;
+    auto missing_hint = callbacks.hint_resolve_targets(missing_ctx);
+    CHECK(!missing_hint.has_value());
+}
+
 TEST(callbacks_direct_external_site_binding_beats_callee_binding)
 {
     auto binary = parse_binary(EVAL_IOFILE_SO);
@@ -616,7 +943,8 @@ TEST(callbacks_direct_external_site_binding_beats_callee_binding)
     std::string binding_json =
         std::string(R"json({
   "bindings": [
-    {"annotation": "printf", "rva": )json") + quoted_hex_string(*direct_addr) +
+    {"annotation": "printf", "rva": )json") +
+        quoted_hex_string(*direct_addr) +
         std::string(R"json(},
     {"annotation": "printf", "site_rva": "0x5000", "override": {"arg_count": 2}}
   ]
@@ -637,7 +965,6 @@ TEST(callbacks_direct_external_site_binding_beats_callee_binding)
     lift_ctx.entry_annotation_id = entry_id;
 
     standard_lifter_config_t config{};
-    config.ext_func_rva_ranges.insert(llvm::AddressRange{*direct_addr, *direct_addr + 1});
     ExposedCallbacks callbacks(config);
 
     llvm::LLVMContext llvm_ctx;
@@ -928,9 +1255,11 @@ TEST(lifter_callee_stub_names_distinguish_derived_annotations)
     std::string binding_json =
         std::string(R"json({
   "bindings": [
-    {"annotation": "printf", "rva": )json") + quoted_hex_string(*direct_addr) +
+    {"annotation": "printf", "rva": )json") +
+        quoted_hex_string(*direct_addr) +
         std::string(R"json(},
-    {"annotation": "printf", "site_rva": )json") + quoted_hex_string(override_site) +
+    {"annotation": "printf", "site_rva": )json") +
+        quoted_hex_string(override_site) +
         std::string(R"json(, "override": {"arg_count": 2}}
   ]
 })json");

@@ -277,8 +277,8 @@ int main(int argc, char **argv)
         llvm::errs() << "tum-basic-algorithms suite error: "
                      << llvm::toString(std::move(err)) << "\n";
 
-    // if (auto err = lift_suite(context, EVAL_SUITE_GNU_COREUTILS_CSV))
-    //     llvm::errs() << "gnu-coreutils suite error: " << llvm::toString(std::move(err)) << "\n";
+    if (auto err = lift_suite(context, EVAL_SUITE_GNU_COREUTILS_CSV))
+        llvm::errs() << "gnu-coreutils suite error: " << llvm::toString(std::move(err)) << "\n";
 
     return EXIT_SUCCESS;
 }

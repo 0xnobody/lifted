@@ -55,6 +55,17 @@ struct lifted_bb_t
     std::string func_name;
     std::optional<llvm::AddressRange> rva_range;                       ///< Only for REAL blocks.
     std::optional<remill::Instruction::Category> terminating_category; ///< Only for REAL blocks.
+    /// Statically-known direct or taken successor RVA for a real terminator.
+    ///
+    /// Used only for conservative pre-resolve hints. For direct calls this is the
+    /// callee RVA; for conditional branches this is the taken edge; for direct
+    /// jumps this is the destination. Indirect and truncated blocks leave it empty.
+    std::optional<uint64_t> static_target_rva;
+    /// Statically-known continuation RVA for a real terminator.
+    ///
+    /// For conditional branches this is the not-taken edge, and for direct calls
+    /// this is the return-site RVA. Other terminator shapes leave it empty.
+    std::optional<uint64_t> static_continuation_rva;
     /// True when lift_bb was given a stop_at address that actually fired
     /// (i.e. the block was truncated before its natural terminator).
     bool was_truncated_by_stop = false;
@@ -110,6 +121,7 @@ struct synthetic_block_info_t
     Type type;
     std::optional<uint64_t> dest_addr; ///< Valid for EXTERNAL/RECURSIVE – address used as the dispatch key.
     annotation_id_t annotation_id;     ///< Required for every synthetic call dispatcher.
+    bb_id_t predecessor;               ///< Unique real predecessor that created this synthetic block.
 };
 
 // ── edge_t ────────────────────────────────────────────────────────────────

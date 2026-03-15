@@ -23,7 +23,6 @@ struct standard_lifter_config_t
 {
     std::set<llvm::AddressRange> const_rva_ranges;
     std::set<llvm::AddressRange> got_table_rva_ranges;
-    std::set<llvm::AddressRange> ext_func_rva_ranges;
 
     /// When non-empty, intermediate IR artifacts are written here at key
     /// points during resolve_targets (slice_pre_inline, slice_pre_opt,
@@ -40,6 +39,7 @@ class StandardLifterCallbacks : public LifterCallbacks
   public:
     explicit StandardLifterCallbacks(standard_lifter_config_t config);
 
+    std::optional<resolved_targets_result_t> hint_resolve_targets(resolve_context_t &ctx) override;
     resolved_targets_result_t resolve_targets(resolve_context_t &ctx) override;
     const standard_lifter_config_t &config() const { return config_; }
 

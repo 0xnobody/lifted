@@ -14,19 +14,23 @@ namespace lifted::lifter
 
 // ── resolve_context_t ─────────────────────────────────────────────────────
 
-/// Prepared by the Lifter before calling LifterCallbacks::resolve_targets().
-/// Contains the backward slice already built so the callback only needs to
-/// optimize and extract targets.
+/// Prepared by the Lifter before calling LifterCallbacks target resolution.
+///
+/// `hint_resolve_targets` sees only the lightweight block/binary metadata in this
+/// struct. If it returns std::nullopt, the Lifter fills in the slice fields below
+/// before calling resolve_targets().
 struct resolve_context_t
 {
     const lifted_bb_t &bb;
     uint64_t entry_rva;
     lift_context_t &lift_ctx;
+    const synthetic_block_info_t *synthetic_info = nullptr;
+    const lifted_bb_t *synthetic_predecessor_bb = nullptr;
 
-    // Pre-built by Lifter:
+    // Prepared by Lifter only for full resolve_targets():
     std::unique_ptr<llvm::Module> slice_module; ///< Clone of bb_cache_module_ with helpers linked.
-    llvm::Function *slice_cfg;                  ///< Backward-slice CFG, 4-param (state,rva,mem,base).
-    llvm::Function *concretized_slice;          ///< Base-concretized, 3-param (state,rva,mem).
+    llvm::Function *slice_cfg = nullptr;        ///< Backward-slice CFG, 4-param (state,rva,mem,base).
+    llvm::Function *concretized_slice = nullptr; ///< Base-concretized, 3-param (state,rva,mem).
     BinaryContext &bin_ctx;                     ///< For ConstantMemoryFoldingPass and name resolution.
 };
 
@@ -41,9 +45,14 @@ struct LifterCallbacks
 
     // ── Target resolution ─────────────────────────────────────────────
 
+    /// Advisory fast path for inexpensive, already-known target facts.
+    ///
+    /// Return std::nullopt to fall back to the full slice-building resolve path.
+    virtual std::optional<resolved_targets_result_t> hint_resolve_targets(
+        resolve_context_t &ctx);
+
     /// Full target resolution for a basic block.
     ///
-    /// The Lifter prepares `ctx` with the backward slice already built.
     /// The Lifter prepares `ctx` with the backward slice already built.
     /// Override to use pre-extracted targets or a custom strategy
     /// (e.g. symbolic execution).  See StandardLifterCallbacks for the

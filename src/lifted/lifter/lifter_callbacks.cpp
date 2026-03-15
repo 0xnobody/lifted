@@ -11,6 +11,13 @@ namespace lifted::lifter
 
 // ── LifterCallbacks default implementations ─────────────────────────────────
 
+std::optional<resolved_targets_result_t> LifterCallbacks::hint_resolve_targets(
+    resolve_context_t & /*ctx*/)
+{
+    return std::nullopt;
+}
+
+
 void LifterCallbacks::process_bb(const lifted_bb_t &bb, llvm::Function *func)
 {
     // Default: always-inline to collapse Remill semantics into the BB function.

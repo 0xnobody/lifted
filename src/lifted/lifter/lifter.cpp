@@ -327,7 +327,9 @@ llvm::Expected<lifted_bb_t> Lifter::create_synthetic_bb(
         .id = id,
         .func_name = F->getName().str(),
         .rva_range = std::nullopt,
-        .terminating_category = std::nullopt};
+        .terminating_category = std::nullopt,
+        .static_target_rva = std::nullopt,
+        .static_continuation_rva = std::nullopt};
 }
 
 // ── lift_bb ─────────────────────────────────────────────────────────────────
@@ -385,6 +387,8 @@ llvm::Expected<lifted_bb_t> Lifter::lift_bb(uintptr_t addr,
 
     remill::Instruction inst;
     uint64_t block_end = addr;
+    std::optional<uint64_t> static_target_rva;
+    std::optional<uint64_t> static_continuation_rva;
 
     while (!inst_worklist.empty())
     {
@@ -414,7 +418,9 @@ llvm::Expected<lifted_bb_t> Lifter::lift_bb(uintptr_t addr,
                 .id = addr,
                 .func_name = F->getName().str(),
                 .rva_range = llvm::AddressRange{addr, inst_addr},
-                .terminating_category = std::nullopt,
+                .terminating_category = inst.category,
+                .static_target_rva = inst.next_pc,
+                .static_continuation_rva = std::nullopt,
                 .was_truncated_by_stop = true};
         }
 
@@ -479,12 +485,36 @@ llvm::Expected<lifted_bb_t> Lifter::lift_bb(uintptr_t addr,
         }
     }
 
+    switch (inst.category)
+    {
+    case remill::Instruction::kCategoryNormal:
+        static_target_rva = inst.next_pc;
+        break;
+    case remill::Instruction::kCategoryDirectJump:
+        static_target_rva = inst.branch_taken_pc;
+        break;
+    case remill::Instruction::kCategoryConditionalBranch:
+        static_target_rva = inst.branch_taken_pc;
+        static_continuation_rva =
+            inst.branch_not_taken_pc ? inst.branch_not_taken_pc : inst.next_pc;
+        break;
+    case remill::Instruction::kCategoryDirectFunctionCall:
+        static_target_rva = inst.branch_taken_pc;
+        static_continuation_rva =
+            inst.branch_not_taken_pc ? inst.branch_not_taken_pc : inst.next_pc;
+        break;
+    default:
+        break;
+    }
+
     return lifted_bb_t{
         .type = lifted_bb_t::Type::REAL,
         .id = addr,
         .func_name = F->getName().str(),
         .rva_range = llvm::AddressRange{addr, block_end},
-        .terminating_category = inst.category};
+        .terminating_category = inst.category,
+        .static_target_rva = static_target_rva,
+        .static_continuation_rva = static_continuation_rva};
 }
 
 // ── lift() ──────────────────────────────────────────────────────────────────
@@ -600,7 +630,7 @@ llvm::Expected<lift_result_t> Lifter::lift(uint64_t entry_rva,
                     callbacks_->on_block_split(orig_id, bb_start.id, bb_end.id);
 
                     // bb_start has a new outgoing edge → reprove.
-                    ctx.reprove.insert(bb_start.id);
+                    // ctx.reprove.insert(bb_start.id);
                 }
             }
         }
@@ -661,52 +691,81 @@ llvm::Expected<lift_result_t> Lifter::lift(uint64_t entry_rva,
 
         auto resolve_start = Clock::now();
 
-        // Prepare resolve_context_t.
-        auto clone = llvm::CloneModule(*bb_cache_module_);
-        // Link helpers needed by the optimizer.
-        if (auto err = helpers::link_deobfuscation_intrinsics(clone.get()))
-            return std::move(err);
-        if (auto err = helpers::link_ram_helpers(clone.get()))
-            return std::move(err);
-        if (auto err = helpers::link_state_utils(clone.get()))
-            return std::move(err);
-        if (auto err = helpers::link_lifting_helpers(clone.get()))
-            return std::move(err);
-        if (auto err = annotate_linked_state_helpers(*clone, *bin_ctx_, core_annotation_id_))
-            return std::move(err);
-
-        auto slice_cfg_or = build_backward_slice_cfg(
-            clone.get(), bb.id,
-            "__lifted_partial_cfg_" + llvm::utohexstr(bb.id), ctx);
-        if (!slice_cfg_or)
-            return slice_cfg_or.takeError();
-        llvm::Function *slice_cfg = *slice_cfg_or;
-
-        llvm::Function *concretized_slice = nullptr;
-        if (slice_cfg)
+        const synthetic_block_info_t *synthetic_info = nullptr;
+        const lifted_bb_t *synthetic_predecessor_bb = nullptr;
+        if (is_synthetic(curr_id))
         {
-            auto concretized_or = concretize_cfg_base(
-                slice_cfg, 0, slice_cfg->getName().str() + "_rva_based");
-            if (!concretized_or)
-                return concretized_or.takeError();
-            concretized_slice = *concretized_or;
+            auto synth_it = ctx.synthetic_blocks.find(curr_id);
+            if (synth_it != ctx.synthetic_blocks.end())
+            {
+                synthetic_info = &synth_it->second;
+                auto pred_it = explored_.find(synth_it->second.predecessor);
+                if (pred_it != explored_.end())
+                    synthetic_predecessor_bb = &pred_it->second;
+            }
         }
 
         resolve_context_t rctx{
             .bb = bb,
             .entry_rva = entry_rva,
             .lift_ctx = ctx,
-            .slice_module = std::move(clone),
-            .slice_cfg = slice_cfg,
-            .concretized_slice = concretized_slice,
+            .synthetic_info = synthetic_info,
+            .synthetic_predecessor_bb = synthetic_predecessor_bb,
+            .slice_module = {},
+            .slice_cfg = nullptr,
+            .concretized_slice = nullptr,
             .bin_ctx = *bin_ctx_};
 
-        auto targets_result = callbacks_->resolve_targets(rctx);
+        resolved_targets_result_t targets_result;
+        if (auto hinted_targets = callbacks_->hint_resolve_targets(rctx))
+        {
+            targets_result = std::move(*hinted_targets);
+
+            DLOG(INFO) << "lift: (fast-path) resolved " << targets_result.targets.size()
+                       << " targets for 0x" << std::hex << curr_id;
+        }
+        else
+        {
+            auto clone = llvm::CloneModule(*bb_cache_module_);
+            // Link helpers needed by the optimizer.
+            if (auto err = helpers::link_deobfuscation_intrinsics(clone.get()))
+                return std::move(err);
+            if (auto err = helpers::link_ram_helpers(clone.get()))
+                return std::move(err);
+            if (auto err = helpers::link_state_utils(clone.get()))
+                return std::move(err);
+            if (auto err = helpers::link_lifting_helpers(clone.get()))
+                return std::move(err);
+            if (auto err = annotate_linked_state_helpers(*clone, *bin_ctx_, core_annotation_id_))
+                return std::move(err);
+
+            auto slice_cfg_or = build_backward_slice_cfg(
+                clone.get(), bb.id,
+                "__lifted_partial_cfg_" + llvm::utohexstr(bb.id), ctx);
+            if (!slice_cfg_or)
+                return slice_cfg_or.takeError();
+            llvm::Function *slice_cfg = *slice_cfg_or;
+
+            llvm::Function *concretized_slice = nullptr;
+            if (slice_cfg)
+            {
+                auto concretized_or = concretize_cfg_base(
+                    slice_cfg, 0, slice_cfg->getName().str() + "_rva_based");
+                if (!concretized_or)
+                    return concretized_or.takeError();
+                concretized_slice = *concretized_or;
+            }
+
+            rctx.slice_module = std::move(clone);
+            rctx.slice_cfg = slice_cfg;
+            rctx.concretized_slice = concretized_slice;
+            targets_result = callbacks_->resolve_targets(rctx);
+
+            DLOG(INFO) << "lift: resolved " << targets_result.targets.size()
+                       << " targets for 0x" << std::hex << curr_id;
+        }
 
         stats.resolve_time_ms += elapsed_ms(resolve_start);
-
-        DLOG(INFO) << "lift: resolved " << targets_result.targets.size()
-                   << " targets for 0x" << std::hex << curr_id;
 
         // ── Handle resolved targets ─────────────────────────────────────
 
@@ -739,7 +798,8 @@ llvm::Expected<lift_result_t> Lifter::lift(uint64_t entry_rva,
                 ctx.synthetic_blocks[disp_id] = synthetic_block_info_t{
                     .type = synthetic_block_info_t::Type::RECURSIVE,
                     .dest_addr = ctx.entry_rva,
-                    .annotation_id = ctx.entry_annotation_id};
+                    .annotation_id = ctx.entry_annotation_id,
+                    .predecessor = curr_id};
                 ctx.recursive_synthetic_index[curr_id] = disp_id;
                 ctx.edges.insert(edge_t{curr_id, disp_id,
                                         edge_t::Type::SYNTHETIC_RECURSIVE_CALL});
@@ -762,7 +822,8 @@ llvm::Expected<lift_result_t> Lifter::lift(uint64_t entry_rva,
                 ctx.synthetic_blocks[disp_id] = synthetic_block_info_t{
                     .type = synthetic_block_info_t::Type::EXTERNAL,
                     .dest_addr = target.dest,
-                    .annotation_id = *target.annotation_id};
+                    .annotation_id = *target.annotation_id,
+                    .predecessor = curr_id};
                 ctx.external_synthetic_index[ext_key] = disp_id;
                 ctx.edges.insert(edge_t{curr_id, disp_id,
                                         edge_t::Type::SYNTHETIC_EXTERNAL});
@@ -786,7 +847,8 @@ llvm::Expected<lift_result_t> Lifter::lift(uint64_t entry_rva,
                 ctx.synthetic_blocks[disp_id] = synthetic_block_info_t{
                     .type = synthetic_block_info_t::Type::INDIRECT,
                     .dest_addr = std::nullopt,
-                    .annotation_id = *targets_result.indirect_annotation_id};
+                    .annotation_id = *targets_result.indirect_annotation_id,
+                    .predecessor = curr_id};
                 ctx.indirect_synthetic_index[curr_id] = disp_id;
                 ctx.edges.insert(edge_t{curr_id, disp_id,
                                         edge_t::Type::SYNTHETIC_INDIRECT});

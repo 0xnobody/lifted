@@ -90,6 +90,13 @@ struct lift_context_t
 
         remap_single_source_index(indirect_synthetic_index);
         remap_single_source_index(recursive_synthetic_index);
+
+        for (auto &[synth_id, synth_info] : synthetic_blocks)
+        {
+            (void)synth_id;
+            if (synth_info.predecessor == old_source)
+                synth_info.predecessor = new_source;
+        }
     }
 
     /// Returns true when any edge exists between src and dst (ignoring type).

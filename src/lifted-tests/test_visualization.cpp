@@ -34,8 +34,11 @@ lifter::lifted_bb_t real_block(lifter::bb_id_t                    id,
         .func_name = "fn",
         .rva_range = llvm::AddressRange(start, end),
         .terminating_category = term,
+        .static_target_rva = std::nullopt,
+        .static_continuation_rva = std::nullopt,
         .was_truncated_by_stop = false,
     };
+
 }
 
 lifter::lifted_bb_t synthetic_block(lifter::bb_id_t id)
@@ -46,6 +49,8 @@ lifter::lifted_bb_t synthetic_block(lifter::bb_id_t id)
         .func_name = "fn",
         .rva_range = std::nullopt,
         .terminating_category = std::nullopt,
+        .static_target_rva = std::nullopt,
+        .static_continuation_rva = std::nullopt,
         .was_truncated_by_stop = false,
     };
 }
