@@ -41,7 +41,7 @@ endforeach()
 define_eval_suite(
     NAME      synthetic
     TARGETS   ${EVAL_SYNTHETIC_LIBS}
-    #OBFUSCATORS polaris
+    OBFUSCATORS polaris
 )
 
 # ── Backward-compat cache variables ───────────────────────────────────────────

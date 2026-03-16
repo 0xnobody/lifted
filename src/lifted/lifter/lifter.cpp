@@ -503,6 +503,9 @@ llvm::Expected<lifted_bb_t> Lifter::lift_bb(uintptr_t addr,
         static_continuation_rva =
             inst.branch_not_taken_pc ? inst.branch_not_taken_pc : inst.next_pc;
         break;
+    case remill::Instruction::kCategoryIndirectFunctionCall:
+        static_continuation_rva = inst.next_pc;
+        break;
     default:
         break;
     }

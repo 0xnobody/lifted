@@ -17,6 +17,7 @@ namespace lifted::eval
     {
         std::filesystem::path so_path;
         std::filesystem::path targets_csv_path;
+        std::string obfuscator; // empty = no obfuscator; "polaris" = Polaris, etc.
     };
 
     std::vector<TargetEntry> parse_targets_csv(const std::filesystem::path &csv_path);

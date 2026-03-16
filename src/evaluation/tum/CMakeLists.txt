@@ -16,8 +16,8 @@ include(FetchContent)
 # download the sources without trying to add_subdirectory() them.
 FetchContent_Declare(
     tum_benchmarks
-    GIT_REPOSITORY https://github.com/tum-i4/obfuscation-benchmarks.git
-    GIT_TAG        d11452ffb3ec7418a462f65d4034f9f1474136c8
+    GIT_REPOSITORY https://github.com/0xnobody/obfuscation-benchmarks.git
+    GIT_TAG        f129319903875021bbab51d3328929d64017a7c8
     GIT_SHALLOW    TRUE
 )
 FetchContent_GetProperties(tum_benchmarks)

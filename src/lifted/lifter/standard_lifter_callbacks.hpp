@@ -21,7 +21,6 @@ namespace lifted::lifter
 
 struct standard_lifter_config_t
 {
-    std::set<llvm::AddressRange> const_rva_ranges;
     std::set<llvm::AddressRange> got_table_rva_ranges;
 
     /// When non-empty, intermediate IR artifacts are written here at key
@@ -44,7 +43,7 @@ class StandardLifterCallbacks : public LifterCallbacks
     const standard_lifter_config_t &config() const { return config_; }
 
   protected:
-    resolved_targets_result_t heuristically_extract_targets(llvm::Function &F, resolve_context_t &ctx);
+    resolved_targets_result_t extract_indirect_targets(llvm::Function &F, resolve_context_t &ctx);
 
     bool is_got_entry(uint64_t addr);
 

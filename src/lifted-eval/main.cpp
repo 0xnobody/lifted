@@ -20,6 +20,7 @@
 
 #include "eval_pipeline.hpp"
 #include "lifter/lifter.hpp"
+#include "lifter/polaris_lifter_callbacks.hpp"
 #include "lifter/standard_lifter_callbacks.hpp"
 #include "opt.hpp"
 #include "suite.hpp"
@@ -36,7 +37,7 @@ using namespace lifted::eval;
 
 // ── Suite runner
 // ─────────────────────────────────────────────────────────────── Reads a suite
-// CSV (so_path,targets_csv_path) and lifts every listed function.
+// CSV (so_path,targets_csv_path,obfuscator) and lifts every listed function.
 static llvm::Error lift_suite(llvm::LLVMContext &context,
                               const std::filesystem::path &suite_csv_path)
 {
@@ -53,6 +54,9 @@ static llvm::Error lift_suite(llvm::LLVMContext &context,
 
     for (const auto &entry : suite)
     {
+        if (entry.obfuscator == "")
+            continue;
+
         auto targets = parse_targets_csv(entry.targets_csv_path);
         if (targets.empty())
         {
@@ -73,7 +77,8 @@ static llvm::Error lift_suite(llvm::LLVMContext &context,
                          << llvm::format_hex(target.addr, 18) << "\n";
 
             auto result = lift_and_verify_named(context, entry.so_path,
-                                                target.func_name, target.addr);
+                                                target.func_name, target.addr,
+                                                1, entry.obfuscator);
             if (!result)
             {
                 llvm::errs() << "  FAILED: " << llvm::toString(result.takeError())

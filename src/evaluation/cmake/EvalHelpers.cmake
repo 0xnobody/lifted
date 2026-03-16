@@ -17,7 +17,7 @@
 #                    [OBFUSCATORS <obfuscator-id> ...])
 #
 # Outputs per target  : lib<id>.so  +  <id>.targets.csv
-# Outputs per suite   : <suite-id>.targets.csv  (so_path,targets_csv_path)
+# Outputs per suite   : <suite-id>.targets.csv  (so_path,targets_csv_path,obfuscator)
 # ─────────────────────────────────────────────────────────────────────────────
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -192,8 +192,8 @@ endfunction()
 # obfuscated variants, and writes a suite-level CSV.
 #
 # Suite CSV format:
-#   so_path,targets_csv_path
-#   /abs/path/libeval-foo.so,/abs/path/foo.targets.csv
+#   so_path,targets_csv_path,obfuscator
+#   /abs/path/libeval-foo.so,/abs/path/foo.targets.csv,  (empty obfuscator for plain targets)
 #   ...
 #
 # Creates CMake target:
@@ -229,7 +229,7 @@ function(define_eval_suite)
 
         list(APPEND _all_dep_targets "eval-${_target}-csv")
         list(APPEND _all_dep_files   "${_csv}")
-        list(APPEND _entry_args "--entry" "${_so}:::${_csv}")
+        list(APPEND _entry_args "--entry" "${_so}:::${_csv}:::")
 
         # Obfuscated variants
         foreach(_obf IN LISTS ES_OBFUSCATORS)
@@ -270,7 +270,7 @@ function(define_eval_suite)
 
             list(APPEND _all_dep_targets "${_obf_so}")
             list(APPEND _all_dep_files   "${_obf_so}" "${_obf_csv}")
-            list(APPEND _entry_args "--entry" "${_obf_so}:::${_obf_csv}")
+            list(APPEND _entry_args "--entry" "${_obf_so}:::${_obf_csv}:::${_obf}")
         endforeach()
     endforeach()
 

@@ -68,10 +68,14 @@ namespace lifted::eval
             }
             if (line.empty())
                 continue;
-            auto comma = line.find(',');
-            if (comma == std::string::npos)
+            auto comma1 = line.find(',');
+            if (comma1 == std::string::npos)
                 continue;
-            result.push_back({line.substr(0, comma), line.substr(comma + 1)});
+            std::string_view rest = std::string_view{line}.substr(comma1 + 1);
+            auto comma2 = rest.find(',');
+            std::string csv_path{comma2 == std::string_view::npos ? rest : rest.substr(0, comma2)};
+            std::string obfuscator{comma2 == std::string_view::npos ? std::string_view{} : rest.substr(comma2 + 1)};
+            result.push_back({line.substr(0, comma1), csv_path, obfuscator});
         }
         return result;
     }

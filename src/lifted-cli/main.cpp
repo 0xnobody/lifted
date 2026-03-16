@@ -34,6 +34,7 @@
 
 #include "lifter/lifter.hpp"
 #include "lifter/standard_lifter_callbacks.hpp"
+#include "lifter/polaris_lifter_callbacks.hpp"
 #include <remill/Arch/Arch.h>
 #include <remill/Arch/Name.h>
 #include <remill/OS/OS.h>
@@ -399,7 +400,7 @@ static int run_suite_cmd(LLVMContext &ctx)
             ++idx;
             print_function_header(idx, total, entry.so_path, t.func_name, t.addr);
 
-            auto result = lift_and_verify_named(ctx, entry.so_path, t.func_name, t.addr, deep_count);
+            auto result = lift_and_verify_named(ctx, entry.so_path, t.func_name, t.addr, deep_count, entry.obfuscator);
             if (!result)
             {
                 errs() << "  [FATAL] " << toString(result.takeError()) << "\n";
@@ -477,7 +478,7 @@ static int run_target_cmd(LLVMContext &ctx)
         ++idx;
         print_function_header(idx, total, found->so_path, t.func_name, t.addr);
 
-        auto result = lift_and_verify_named(ctx, found->so_path, t.func_name, t.addr, deep_count);
+        auto result = lift_and_verify_named(ctx, found->so_path, t.func_name, t.addr, deep_count, found->obfuscator);
         if (!result)
         {
             errs() << "  [FATAL] " << toString(result.takeError()) << "\n";
@@ -510,6 +511,7 @@ static int run_fn_cmd(LLVMContext &ctx)
     fs::path binary_path;
     uint64_t rva = 0;
     std::string func_name;
+    std::string fn_obfuscator;
 
     if (has_binary && has_rva && !has_export && !has_suite)
     {
@@ -595,6 +597,7 @@ static int run_fn_cmd(LLVMContext &ctx)
 
         binary_path = found_entry->so_path;
         rva = found_fn->addr;
+        fn_obfuscator = found_entry->obfuscator;
         func_name = FnDisplayName.empty() ? std::string(FnFunc) : std::string(FnDisplayName);
     }
     else
@@ -608,7 +611,7 @@ static int run_fn_cmd(LLVMContext &ctx)
 
     print_function_header(1, 1, binary_path, func_name, rva);
 
-    auto result = lift_and_verify_named(ctx, binary_path, func_name, rva, deep_count);
+    auto result = lift_and_verify_named(ctx, binary_path, func_name, rva, deep_count, fn_obfuscator);
     if (!result)
     {
         errs() << "  [FATAL] " << toString(result.takeError()) << "\n";
@@ -685,6 +688,7 @@ static int run_graph_cmd(LLVMContext &ctx)
     fs::path binary_path;
     uint64_t rva = 0;
     std::string func_name;
+    std::string graph_obfuscator;
 
     if (has_binary && has_rva && !has_export && !has_suite)
     {
@@ -765,6 +769,7 @@ static int run_graph_cmd(LLVMContext &ctx)
         }
         binary_path = found_entry->so_path;
         rva = found_fn->addr;
+        graph_obfuscator = found_entry->obfuscator;
         func_name = GraphDisplayName.empty() ? std::string(GraphFunc) : std::string(GraphDisplayName);
     }
     else
@@ -788,7 +793,7 @@ static int run_graph_cmd(LLVMContext &ctx)
     {
         // Overlay mode: run the full pipeline, then overlay execution data.
         size_t deep_count = static_cast<size_t>(GraphMaxDeepDives < 0 ? 0 : GraphMaxDeepDives);
-        auto result = lift_and_verify_named(ctx, binary_path, func_name, rva, deep_count);
+        auto result = lift_and_verify_named(ctx, binary_path, func_name, rva, deep_count, graph_obfuscator);
         if (!result)
         {
             errs() << "  [FATAL] " << toString(result.takeError()) << "\n";
@@ -852,9 +857,18 @@ static int run_graph_cmd(LLVMContext &ctx)
             return 2;
         }
         lifted::BinaryContext bin_ctx(std::move(binary));
-        auto cb_cfg = lifted::lifter::standard_lifter_config_t::from_standard_linux_binary(bin_ctx.binary());
-        lifted::lifter::StandardLifterCallbacks callbacks(std::move(cb_cfg));
-        auto lifter_or = lifted::lifter::Lifter::create(arch.get(), bin_ctx, &callbacks);
+        std::unique_ptr<lifted::lifter::LifterCallbacks> graph_cbs;
+        if (graph_obfuscator == "polaris")
+        {
+            auto cb_cfg = lifted::lifter::polaris_lifter_config_t::from_polaris_linux_binary(bin_ctx.binary());
+            graph_cbs = std::make_unique<lifted::lifter::PolarisLifterCallbacks>(std::move(cb_cfg));
+        }
+        else
+        {
+            auto cb_cfg = lifted::lifter::standard_lifter_config_t::from_standard_linux_binary(bin_ctx.binary());
+            graph_cbs = std::make_unique<lifted::lifter::StandardLifterCallbacks>(std::move(cb_cfg));
+        }
+        auto lifter_or = lifted::lifter::Lifter::create(arch.get(), bin_ctx, graph_cbs.get());
         if (!lifter_or)
         {
             errs() << "graph error: " << toString(lifter_or.takeError()) << "\n";

@@ -24,6 +24,8 @@ add_library(lifted STATIC
     "lifter/lifter_callbacks.cpp"
     "lifter/standard_lifter_callbacks.hpp"
     "lifter/standard_lifter_callbacks.cpp"
+    "lifter/polaris_lifter_callbacks.hpp"
+    "lifter/polaris_lifter_callbacks.cpp"
     "lifter/lifter.hpp"
     "lifter/lifter.cpp"
     "lifter/cfg.cpp"

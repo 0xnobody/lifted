@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <llvm/IR/LLVMContext.h>
@@ -57,7 +58,8 @@ namespace lifted::eval
                           const std::filesystem::path &path,
                           const std::string &func_name,
                           uint64_t entry_rva,
-                          size_t deep_dive_count = 1);
+                          size_t deep_dive_count = 1,
+                          std::string_view obfuscator = "");
 
     // Suite name -> compile-time CSV path.  Returns nullopt when the name is
     // unknown (i.e. no compile definition was injected for it).

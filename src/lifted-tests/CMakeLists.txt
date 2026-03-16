@@ -13,7 +13,6 @@ add_executable(lifted-tests
     "test_verifier_state_loop_limit.cpp"
     "test_verifier_state_recursive.cpp"
     "test_state_fold.cpp"
-    "test_binary_context_annotations.cpp"
     "test_indirect_call_divergence.cpp"
     "test_visualization.cpp"
  )

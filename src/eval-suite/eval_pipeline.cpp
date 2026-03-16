@@ -10,6 +10,7 @@
 #include "lifter/lifter.hpp"
 #include "lifter/lifter_types.hpp"
 #include "lifter/standard_lifter_callbacks.hpp"
+#include "lifter/polaris_lifter_callbacks.hpp"
 #include "pipeline/pipeline.hpp"
 #include "pipeline/stages/corpus_replay_stage.hpp"
 #include "pipeline/stages/seed_sweep_stage.hpp"
@@ -110,7 +111,8 @@ lift_and_verify_named(llvm::LLVMContext &context,
                       const std::filesystem::path &path,
                       const std::string &func_name,
                       uint64_t entry_rva,
-                      size_t deep_dive_count)
+                      size_t deep_dive_count,
+                      std::string_view obfuscator)
 {
     auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
 
@@ -123,12 +125,23 @@ lift_and_verify_named(llvm::LLVMContext &context,
     // BinaryContext takes ownership of the parsed binary.
     BinaryContext bin_ctx(std::move(binary));
 
-    lifter::standard_lifter_config_t cb_config =
-        lifter::standard_lifter_config_t::from_standard_linux_binary(bin_ctx.binary());
-    cb_config.artifact_dir = "/home/atlas/lifted/out/eval_artifacts/" + path.filename().string() + "_" + func_name;
+    std::string artifact_dir =
+        "/home/atlas/lifted/out/eval_artifacts/" + path.filename().string() + "_" + func_name;
 
-    lifter::StandardLifterCallbacks callbacks(std::move(cb_config));
-    auto the_lifter_or = lifter::Lifter::create(arch.get(), bin_ctx, &callbacks);
+    std::unique_ptr<lifter::LifterCallbacks> callbacks;
+    if (obfuscator == "polaris")
+    {
+        auto cfg = lifter::polaris_lifter_config_t::from_polaris_linux_binary(
+            bin_ctx.binary(), artifact_dir);
+        callbacks = std::make_unique<lifter::PolarisLifterCallbacks>(std::move(cfg));
+    }
+    else
+    {
+        auto cfg = lifter::standard_lifter_config_t::from_standard_linux_binary(
+            bin_ctx.binary(), artifact_dir);
+        callbacks = std::make_unique<lifter::StandardLifterCallbacks>(std::move(cfg));
+    }
+    auto the_lifter_or = lifter::Lifter::create(arch.get(), bin_ctx, callbacks.get());
     if (!the_lifter_or)
         return the_lifter_or.takeError();
     auto &the_lifter = *the_lifter_or;

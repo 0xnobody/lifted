@@ -89,14 +89,11 @@ std::optional<resolved_targets_result_t> StandardLifterCallbacks::hint_resolve_t
     // <-- Edge to here from synthetic block
     if (ctx.synthetic_info && ctx.synthetic_predecessor_bb)
     {
-        if (ctx.synthetic_info->type == synthetic_block_info_t::Type::INDIRECT)
-            return std::nullopt;
-
         const lifted_bb_t &pred = *ctx.synthetic_predecessor_bb;
-        if (*pred.terminating_category != remill::Instruction::kCategoryDirectFunctionCall || !pred.static_continuation_rva)
-        {
+        if (*pred.terminating_category != remill::Instruction::kCategoryDirectFunctionCall && *pred.terminating_category != remill::Instruction::kCategoryIndirectFunctionCall)
             return std::nullopt;
-        }
+        if (!pred.static_continuation_rva)
+            return std::nullopt;
 
         result.targets.push_back({
             .type = resolved_target_t::Type::INTERNAL,
@@ -165,45 +162,9 @@ std::optional<resolved_targets_result_t> StandardLifterCallbacks::hint_resolve_t
     }
 }
 
-resolved_targets_result_t StandardLifterCallbacks::heuristically_extract_targets(llvm::Function &F, resolve_context_t &ctx)
+resolved_targets_result_t StandardLifterCallbacks::extract_indirect_targets(llvm::Function &F, resolve_context_t &ctx)
 {
     resolved_targets_result_t result;
-
-    auto dests = extract_constant_returns(F);
-    if (!dests.empty())
-    {
-        if (!ctx.bb.terminating_category)
-            return result;
-
-        for (auto dest : dests)
-        {
-            switch (*ctx.bb.terminating_category)
-            {
-            case remill::Instruction::kCategoryDirectFunctionCall:
-                if (auto target = resolve_direct_call_target(ctx, dest))
-                {
-                    result.targets.push_back(*target);
-                    break;
-                }
-                return resolved_targets_result_t{};
-            case remill::Instruction::kCategoryFunctionReturn:
-                result.targets.push_back({
-                    .type = resolved_target_t::Type::RETURN_TO_CALLER,
-                    .dest = 0,
-                    .annotation_id = std::nullopt,
-                });
-                break;
-            default:
-                result.targets.push_back({
-                    .type = resolved_target_t::Type::INTERNAL,
-                    .dest = dest,
-                    .annotation_id = std::nullopt,
-                });
-                break;
-            }
-        }
-        return result;
-    }
 
     const auto *entry_anno = ctx.bin_ctx.get_by_id(ctx.lift_ctx.entry_annotation_id);
     auto ensure_indirect_annotation = [&](std::optional<uint64_t> slot_addr)
@@ -242,11 +203,17 @@ resolved_targets_result_t StandardLifterCallbacks::heuristically_extract_targets
 
                         result.indirect_annotation_id =
                             ensure_indirect_annotation(slot_addr);
+
+                        return result;
                     }
                 }
             }
         }
     }
+
+    // Assume indirect anyway if we didn't resolve with hints/GOT table
+    // result.indirect_annotation_id =
+    //    ensure_indirect_annotation({});
 
     return result;
 }
@@ -313,27 +280,17 @@ resolved_targets_result_t StandardLifterCallbacks::resolve_targets(resolve_conte
 
     opt::always_inline(M);
 
-    run_default_resolve_pipeline(*analysis_func, ctx.bin_ctx.binary(), config_.const_rva_ranges);
+    std::set<llvm::AddressRange> const_ranges;
+    run_default_resolve_pipeline(*analysis_func, ctx.bin_ctx.binary(), const_ranges);
     opt::always_inline(M);
     opt::default_opt(M, llvm::OptimizationLevel::O2);
 
     maybe_write_artifact(config_.artifact_dir, artifact_prefix + "post_opt", *M);
 
-    auto result = heuristically_extract_targets(*analysis_func, ctx);
+    auto result = extract_indirect_targets(*analysis_func, ctx);
     if (!result)
         DLOG(WARNING) << "resolve_targets: failed to resolve targets for BB 0x"
                       << std::hex << ctx.bb.id;
-
-    if (ctx.bb.terminating_category.has_value() &&
-        *ctx.bb.terminating_category ==
-            remill::Instruction::kCategoryFunctionReturn)
-    {
-        result.targets.push_back({
-            .type = resolved_target_t::Type::RETURN_TO_CALLER,
-            .dest = 0,
-            .annotation_id = std::nullopt,
-        });
-    }
 
     return result;
 }
