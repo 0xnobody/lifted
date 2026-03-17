@@ -52,6 +52,8 @@ static llvm::Error lift_suite(llvm::LLVMContext &context,
         return llvm::Error::success();
     }
 
+    int num_diverged = 0;
+    int num_total = 0;
     for (const auto &entry : suite)
     {
         if (entry.obfuscator == "")
@@ -133,9 +135,13 @@ static llvm::Error lift_suite(llvm::LLVMContext &context,
             if (div_ptr)
             {
                 llvm::outs() << "[DIVERGED]\n";
+                num_diverged++;
             }
+            num_total++;
         }
     }
+
+    llvm::outs() << "Total: " << num_total << ", Diverged: " << num_diverged << "\n";
 
     return llvm::Error::success();
 }
@@ -269,12 +275,12 @@ int main(int argc, char **argv)
     // if (auto err = test_full_pipeline(context, "/home/atlas/lifted/build/src/evaluation/tum/libeval-anagram.so", 0x124A))
     //     llvm::errs() << "test_full_pipeline error: " << llvm::toString(std::move(err)) << "\n";
 
-    if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
-        llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
+    // if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
+    //     llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
 
-    if (auto err = lift_suite(context, EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV))
-        llvm::errs() << "tum-simple-hash-functions suite error: " << llvm::toString(std::move(err)) << "\n";
-
+    // if (auto err = lift_suite(context, EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV))
+    //     llvm::errs() << "tum-simple-hash-functions suite error: " << llvm::toString(std::move(err)) << "\n";
+    //
     if (auto err = lift_suite(context, EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV))
         llvm::errs() << "tum-small-programs suite error: " << llvm::toString(std::move(err)) << "\n";
 
@@ -282,8 +288,8 @@ int main(int argc, char **argv)
         llvm::errs() << "tum-basic-algorithms suite error: "
                      << llvm::toString(std::move(err)) << "\n";
 
-    if (auto err = lift_suite(context, EVAL_SUITE_GNU_COREUTILS_CSV))
-        llvm::errs() << "gnu-coreutils suite error: " << llvm::toString(std::move(err)) << "\n";
+    // if (auto err = lift_suite(context, EVAL_SUITE_GNU_COREUTILS_CSV))
+    //    llvm::errs() << "gnu-coreutils suite error: " << llvm::toString(std::move(err)) << "\n";
 
     return EXIT_SUCCESS;
 }

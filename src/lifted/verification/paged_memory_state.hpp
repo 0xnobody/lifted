@@ -211,6 +211,12 @@ namespace lifted::verification
         void try_inject_sentinel(page_t &page, uint64_t offset, uint64_t addr)
         {
             static_assert(N == 1 || N == 2 || N == 4 || N == 8);
+            // IMAGE pages hold known binary content (code, data, relocated slots).
+            // Injecting sentinel values here would override e.g. relocation-patched
+            // jump-table entries that the JIT has already folded away via CMFP.
+            // The oracle is only meaningful for DYNAMIC (uninitialised) memory.
+            if (page.type == page_t::Type::IMAGE)
+                return;
             // Check: if ANY byte in [offset, offset+N) is already sentinel_filled OR written
             // by the program, skip injection. Sentinel never overwrites program writes.
             bool any_filled = false;
@@ -293,7 +299,9 @@ namespace lifted::verification
             uint64_t offset = addr & 0xFFFULL;
             page_t &page = get_or_create_page(page_addr);
 
-            if (oracle_ && !page.sentinel_filled.test(offset) && !page.written.test(offset))
+            // Same guard as try_inject_sentinel: skip IMAGE pages.
+            if (oracle_ && page.type != page_t::Type::IMAGE &&
+                !page.sentinel_filled.test(offset) && !page.written.test(offset))
             {
                 uint64_t slot_seed = compute_oracle_slot_seed(master_seed, addr);
                 if (auto s = oracle_->query(slot_seed, 1))
@@ -301,7 +309,7 @@ namespace lifted::verification
                     page.raw_write8(offset, (uint8_t)s->value);
                     page.sentinel_filled.set(offset);
                 }
-            }
+}
 
             return page.read8(offset);
         }

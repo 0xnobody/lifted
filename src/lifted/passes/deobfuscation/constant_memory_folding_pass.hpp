@@ -25,6 +25,9 @@ private:
     const LIEF::Binary &Binary;
     const std::set<llvm::AddressRange> &ConstMemoryRvaRanges;
 
+    bool isInConstMemoryRange(uint64_t RVA) const;
+    bool isElfGotAddress(uint64_t RVA) const;
+    bool isFoldableAddress(uint64_t RVA) const;
     std::optional<uint64_t> tryGetConstantAddress(llvm::GEPOperator *GEP, llvm::Module *M) const;
 
     struct SelectInfo

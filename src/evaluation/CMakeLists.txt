@@ -11,7 +11,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EvalHelpers.cmake")
 if(POLARIS_CLANG_PATH AND EXISTS "${POLARIS_CLANG_PATH}")
     register_obfuscator(NAME polaris
         COMPILER "${POLARIS_CLANG_PATH}"
-        FLAGS    "-mllvm -passes=${POLARIS_PASSES}"
+        FLAGS    "-mllvm -passes=${POLARIS_PASSES} -O1"
     )
 endif()
 

@@ -24,9 +24,18 @@ polaris_lifter_config_t polaris_lifter_config_t::from_polaris_linux_binary(
     polaris_lifter_config_t config;
 
     if (auto got_range = utils::get_section_bounds(binary, ".got"))
+    {
         config.got_table_rva_ranges.insert(*got_range);
+        config.const_rva_ranges.insert(*got_range);
+    }
+    // BSS holds zero-initialized globals; its VAs are the targets that GOT
+    // GLOB_DAT relocations resolve to.  Treat it as constant memory so the
+    // CMFP can follow the two-level chain: RAM[GOT] -> BSS addr -> value.
     if (auto bss_range = utils::get_section_bounds(binary, ".bss"))
         config.const_rva_ranges.insert(*bss_range);
+
+    if (auto data_range = utils::get_section_bounds(binary, ".data"))
+        config.const_rva_ranges.insert(*data_range);
 
     config.artifact_dir = std::move(artifact_dir);
     return config;
@@ -95,10 +104,14 @@ std::optional<resolved_targets_result_t> PolarisLifterCallbacks::hint_resolve_ta
             return std::nullopt;
 
         const lifted_bb_t &pred = *ctx.synthetic_predecessor_bb;
-        if (*pred.terminating_category != remill::Instruction::kCategoryDirectFunctionCall || !pred.static_continuation_rva)
+        if (*pred.terminating_category != remill::Instruction::kCategoryDirectFunctionCall &&
+            *pred.terminating_category != remill::Instruction::kCategoryIndirectFunctionCall)
         {
             return std::nullopt;
         }
+
+        if (!pred.static_continuation_rva)
+            return std::nullopt;
 
         result.targets.push_back({
             .type = resolved_target_t::Type::INTERNAL,
@@ -168,6 +181,7 @@ resolved_targets_result_t PolarisLifterCallbacks::heuristically_extract_targets(
             switch (*ctx.bb.terminating_category)
             {
             case remill::Instruction::kCategoryDirectFunctionCall:
+            case remill::Instruction::kCategoryIndirectFunctionCall:
                 if (auto target = resolve_direct_call_target(ctx, dest))
                 {
                     result.targets.push_back(*target);
@@ -304,6 +318,7 @@ resolved_targets_result_t PolarisLifterCallbacks::resolve_targets(resolve_contex
     run_default_resolve_pipeline(*analysis_func, ctx.bin_ctx.binary(), config_.const_rva_ranges);
     opt::always_inline(M);
     opt::default_opt(M, llvm::OptimizationLevel::O2);
+    run_default_resolve_pipeline(*analysis_func, ctx.bin_ctx.binary(), config_.const_rva_ranges);
 
     maybe_write_artifact(config_.artifact_dir, artifact_prefix + "post_opt", *M);
 

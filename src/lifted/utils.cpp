@@ -158,6 +158,67 @@ llvm::Expected<uint64_t> rva_from_export(const LIEF::Binary &binary, const std::
     return llvm::createStringError(llvm::inconvertibleErrorCode(), "Export not found: " + export_name);
 }
 
+std::optional<uint64_t> resolve_elf_relocation_word64(const LIEF::ELF::Relocation &reloc,
+                                                      uint64_t                     load_base)
+{
+    const uint32_t type = reloc.type();
+    const uint64_t addend = static_cast<uint64_t>(reloc.addend());
+
+    switch (type)
+    {
+    case static_cast<uint32_t>(LIEF::ELF::RELOC_x86_64::R_X86_64_RELATIVE):
+        return load_base + addend;
+    case static_cast<uint32_t>(LIEF::ELF::RELOC_x86_64::R_X86_64_GLOB_DAT):
+    case static_cast<uint32_t>(LIEF::ELF::RELOC_x86_64::R_X86_64_JUMP_SLOT):
+    case static_cast<uint32_t>(LIEF::ELF::RELOC_x86_64::R_X86_64_64):
+        break;
+    default:
+        return std::nullopt;
+    }
+
+    if (!reloc.has_symbol() || !reloc.symbol() || reloc.symbol()->shndx() == 0)
+        return std::nullopt;
+
+    return load_base + reloc.symbol()->value() + addend;
+}
+
+bool has_elf_relocation_at(const LIEF::Binary &binary, uint64_t slot_rva)
+{
+    if (binary.format() != LIEF::EXE_FORMATS::FORMAT_ELF)
+        return false;
+
+    const auto *elf = dynamic_cast<const LIEF::ELF::Binary *>(&binary);
+    if (!elf)
+        return false;
+
+    for (const auto &reloc : elf->relocations())
+        if (reloc.address() == slot_rva)
+            return true;
+
+    return false;
+}
+
+std::optional<uint64_t> read_elf_relocated_word64(const LIEF::Binary &binary,
+                                                  uint64_t            slot_rva,
+                                                  uint64_t            load_base)
+{
+    if (binary.format() != LIEF::EXE_FORMATS::FORMAT_ELF)
+        return std::nullopt;
+
+    const auto *elf = dynamic_cast<const LIEF::ELF::Binary *>(&binary);
+    if (!elf)
+        return std::nullopt;
+
+    for (const auto &reloc : elf->relocations())
+    {
+        if (reloc.address() != slot_rva)
+            continue;
+        return resolve_elf_relocation_word64(reloc, load_base);
+    }
+
+    return std::nullopt;
+}
+
 std::optional<llvm::AddressRange> get_section_bounds(const LIEF::Binary &binary, std::string name)
 {
     auto format = binary.format();

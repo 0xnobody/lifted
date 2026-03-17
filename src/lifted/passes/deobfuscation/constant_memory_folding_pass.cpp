@@ -3,6 +3,8 @@
 
 #include "../pass_utils.hpp"
 
+#include "../../utils.hpp"
+
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Constants.h>
@@ -24,26 +26,49 @@
 using namespace llvm;
 using namespace lifted;
 
+bool ConstantMemoryFoldingPass::isInConstMemoryRange(uint64_t RVA) const
+{
+    for (const auto &range : ConstMemoryRvaRanges)
+        if (range.contains(RVA))
+            return true;
+    return false;
+}
+
+bool ConstantMemoryFoldingPass::isElfGotAddress(uint64_t RVA) const
+{
+    if (Binary.format() != LIEF::EXE_FORMATS::FORMAT_ELF)
+        return false;
+
+    if (auto got_range = utils::get_section_bounds(Binary, ".got"); got_range && got_range->contains(RVA))
+        return true;
+    if (auto got_plt_range = utils::get_section_bounds(Binary, ".got.plt");
+        got_plt_range && got_plt_range->contains(RVA))
+    {
+        return true;
+    }
+    return false;
+}
+
+bool ConstantMemoryFoldingPass::isFoldableAddress(uint64_t RVA) const
+{
+    // GOT slots must resolve to a concrete no-relocation value before we fold them.
+    if (isElfGotAddress(RVA))
+        return utils::read_elf_relocated_word64(Binary, RVA, /*load_base=*/0).has_value();
+
+    return isInConstMemoryRange(RVA);
+}
+
 std::optional<uint64_t> ConstantMemoryFoldingPass::tryGetConstantAddress(GEPOperator *GEP, Module *M) const
 {
-    // Extract constant offset
     APInt Offset(64, 0);
-    if (GEP->accumulateConstantOffset(M->getDataLayout(), Offset))
-    {
-        uint64_t addr = Offset.getZExtValue();
+    if (!GEP->accumulateConstantOffset(M->getDataLayout(), Offset))
+        return std::nullopt;
 
-        // Check if address is in a constant range
-        // TODO: optimize with interval tree
-        for (const auto &range : ConstMemoryRvaRanges)
-        {
-            if (range.contains(addr))
-            {
-                return addr;
-            }
-        }
-    }
+    uint64_t addr = Offset.getZExtValue();
+    if (!isFoldableAddress(addr))
+        return std::nullopt;
 
-    return std::nullopt;
+    return addr;
 }
 
 std::optional<ConstantMemoryFoldingPass::SelectInfo> ConstantMemoryFoldingPass::tryGetConstantAddressSelect(GEPOperator *GEP) const
@@ -60,25 +85,8 @@ std::optional<ConstantMemoryFoldingPass::SelectInfo> ConstantMemoryFoldingPass::
         uint64_t TrueRVA = TrueVal->getZExtValue();
         uint64_t FalseRVA = FalseVal->getZExtValue();
 
-        bool TrueInRange = false;
-        bool FalseInRange = false;
-
-        for (const auto &range : ConstMemoryRvaRanges)
-        {
-            if (range.contains(TrueRVA))
-            {
-                TrueInRange = true;
-            }
-            if (range.contains(FalseRVA))
-            {
-                FalseInRange = true;
-            }
-        }
-
-        if (TrueInRange && FalseInRange)
-        {
+        if (isFoldableAddress(TrueRVA) && isFoldableAddress(FalseRVA))
             return SelectInfo{SI, GEP, TrueRVA, FalseRVA};
-        }
     }
     return std::nullopt;
 }
@@ -273,57 +281,81 @@ ConstantMemoryFoldingPass::analyzeSelectBasedIndex(GEPOperator *GEP, Module *M) 
 
     CMFP_LOG("  Successfully folded: True=" << *TrueRVA << ", False=" << *FalseRVA);
 
-    // Check if both RVAs are in constant memory ranges
-    bool TrueInRange = false;
-    bool FalseInRange = false;
-
-    for (const auto &range : ConstMemoryRvaRanges)
+    if (!isFoldableAddress(*TrueRVA) || !isFoldableAddress(*FalseRVA))
     {
-        if (range.contains(*TrueRVA))
-        {
-            TrueInRange = true;
-        }
-        if (range.contains(*FalseRVA))
-        {
-            FalseInRange = true;
-        }
-    }
-
-    if (!TrueInRange || !FalseInRange)
-    {
-        CMFP_LOG("  One or both RVAs not in constant memory range");
+        CMFP_LOG("  One or both RVAs not in foldable memory");
         return std::nullopt;
     }
 
-    CMFP_LOG("  Both RVAs in constant memory - optimization applicable");
+    CMFP_LOG("  Both RVAs are foldable - optimization applicable");
 
     return SelectBasedIndexInfo{RootSelect, GEP, Chain, *TrueRVA, *FalseRVA};
 }
 
 Constant *ConstantMemoryFoldingPass::extractConstantFromRVA(uint64_t RVA, Type *Ty)
 {
-    unsigned NumBits = Ty->getPrimitiveSizeInBits(); // TODO: What if not multiple of 8?
-    unsigned NumBytes = NumBits / 8;
+    unsigned NumBits = 0;
+    if (Ty->isPointerTy())
+        NumBits = 64;
+    else if (Ty->isIntegerTy())
+        NumBits = Ty->getIntegerBitWidth();
+    else if (Ty->isFloatTy())
+        NumBits = 32;
+    else if (Ty->isDoubleTy())
+        NumBits = 64;
+    else
+        return nullptr;
 
-    // Read constant bytes from your binary data
-    const uint8_t *RVAData = Binary.get_content_from_virtual_address(RVA, NumBytes).data();
+    if ((NumBits % 8) != 0 || NumBits > 64)
+        return nullptr;
+
+    const unsigned NumBytes = NumBits / 8;
+
+    uint64_t relocated_word = 0;
+    bool use_relocated_word = false;
+    if (NumBytes == 8)
+    {
+        if (auto resolved = utils::read_elf_relocated_word64(Binary, RVA, /*load_base=*/0))
+        {
+            relocated_word = *resolved;
+            use_relocated_word = true;
+        }
+        else if (utils::has_elf_relocation_at(Binary, RVA))
+        {
+            // This slot is relocation-backed, but its no-relocation value is not
+            // statically knowable (for example an imported external symbol).
+            return nullptr;
+        }
+    }
+
+    llvm::SmallVector<uint8_t, 8> bytes;
+    bytes.reserve(NumBytes);
+    if (use_relocated_word)
+    {
+        for (unsigned i = 0; i < NumBytes; ++i)
+            bytes.push_back(static_cast<uint8_t>(relocated_word >> (i * 8)));
+    }
+    else
+    {
+        auto content = Binary.get_content_from_virtual_address(RVA, NumBytes);
+        if (content.size() < NumBytes)
+            return nullptr;
+        for (unsigned i = 0; i < NumBytes; ++i)
+            bytes.push_back(content[i]);
+    }
 
     APInt Value(NumBits, 0);
     for (unsigned i = 0; i < NumBytes; ++i)
-    {
-        Value |= APInt(NumBits, RVAData[i]) << (i * 8);
-    }
+        Value |= APInt(NumBits, bytes[i]) << (i * 8);
 
     if (Ty->isIntegerTy())
-    {
         return ConstantInt::get(Ty, Value);
-    }
-    else if (Ty->isFloatTy() || Ty->isDoubleTy())
+    if (Ty->isFloatTy() || Ty->isDoubleTy())
     {
         return ConstantFP::get(Ty->getContext(),
                                APFloat(Ty->getFltSemantics(), Value));
     }
-    else if (Ty->isPointerTy())
+    if (Ty->isPointerTy())
     {
         return ConstantExpr::getIntToPtr(
             ConstantInt::get(Type::getInt64Ty(Ty->getContext()), Value.getZExtValue()),

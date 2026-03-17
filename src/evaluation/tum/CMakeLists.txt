@@ -17,7 +17,7 @@ include(FetchContent)
 FetchContent_Declare(
     tum_benchmarks
     GIT_REPOSITORY https://github.com/0xnobody/obfuscation-benchmarks.git
-    GIT_TAG        f129319903875021bbab51d3328929d64017a7c8
+    GIT_TAG        d364a35dd74815b06271e962532238effeddf41f
     GIT_SHALLOW    TRUE
 )
 FetchContent_GetProperties(tum_benchmarks)
@@ -47,6 +47,7 @@ macro(_tum_define_suite SUITE_NAME SUBDIR)
     define_eval_suite(
         NAME    "${SUITE_NAME}"
         TARGETS ${_tum_targets}
+        OBFUSCATORS polaris
     )
 endmacro()
 
