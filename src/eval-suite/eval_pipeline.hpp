@@ -13,7 +13,7 @@
 #include "pipeline/deep_dive.hpp"
 #include "visualization/cfg_data.hpp"
 #include "lifter/lifter_types.hpp"
-
+#include "mutation_campaign.hpp"
 namespace lifted::eval
 {
 
@@ -69,4 +69,24 @@ namespace lifted::eval
     // compile time).
     std::vector<std::string> known_suite_names();
 
+
+    // ── Mutation campaign ─────────────────────────────────────────────────────
+    //
+    // Result of a lift + mutation campaign run.
+    struct LiftAndMutateResult
+    {
+        bool lift_failed = false;
+        std::string lift_error;  // populated when lift_failed or baseline fails
+        std::optional<fault_injection::MutationReport> report;  // populated on success
+    };
+
+    // Lift the function, run always_inline, check baseline, then run the full
+    // mutation campaign.  Returns a LiftAndMutateResult on success, or an
+    // llvm::Error if a fatal infrastructure failure occurred.
+    llvm::Expected<LiftAndMutateResult>
+    lift_and_mutate_named(llvm::LLVMContext &context,
+                          const std::filesystem::path &path,
+                          const std::string &func_name,
+                          uint64_t entry_rva,
+                          fault_injection::MutationCampaign::Config cfg = fault_injection::MutationCampaign::Config());
 } // namespace lifted::eval

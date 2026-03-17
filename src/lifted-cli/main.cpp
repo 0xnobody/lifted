@@ -18,6 +18,7 @@
 #include "abi/all_registers_cc.hpp"
 #include "abi/systemv_x64.hpp"
 #include "eval_pipeline.hpp"
+#include "mutation_campaign.hpp"
 #include "suite.hpp"
 #include "utils.hpp"
 
@@ -42,6 +43,7 @@
 namespace fs = std::filesystem;
 using namespace llvm;
 using namespace lifted::eval;
+using namespace lifted::fault_injection;
 
 // ── Subcommands ────────────────────────────────────────────────────────────────
 
@@ -53,6 +55,7 @@ static cl::SubCommand SuiteCmd("suite", "Run all targets in a named suite");
 static cl::SubCommand TargetCmd("target", "Run all functions in one suite target");
 static cl::SubCommand FnCmd("fn", "Run a single function");
 static cl::SubCommand GraphCmd("graph", "Generate CFG DOT output for a single function");
+static cl::SubCommand MutateCmd("mutate", "Run fault-injection mutation campaign on a single function");
 // ── list options ───────────────────────────────────────────────────────────────
 
 static cl::opt<std::string> ListSuite(
@@ -201,6 +204,52 @@ static cl::opt<int> GraphDivergenceIdx(
     cl::sub(GraphCmd),
     cl::init(0));
 
+// ── mutate options ────────────────────────────────────────────────────────────
+//
+// Three mutually exclusive input modes (same as fn subcommand):
+//   Mode A: --binary + --rva
+//   Mode B: --binary + --export
+//   Mode C: --suite  + --target + --func
+
+static cl::opt<std::string> MutateBinary(
+    "binary",
+    cl::desc("Path to ELF/PE/MachO binary"),
+    cl::sub(MutateCmd));
+static cl::opt<std::string> MutateRva(
+    "rva",
+    cl::desc("Entry RVA in hex (e.g. 0x1234) — Mode A"),
+    cl::sub(MutateCmd));
+static cl::opt<std::string> MutateExport(
+    "export",
+    cl::desc("Export symbol name; RVA resolved at runtime — Mode B"),
+    cl::sub(MutateCmd));
+static cl::opt<std::string> MutateSuite(
+    "suite",
+    cl::desc("Suite name or CSV path — Mode C"),
+    cl::sub(MutateCmd));
+static cl::opt<std::string> MutateTarget(
+    "target",
+    cl::desc("Target stem to locate in suite — Mode C"),
+    cl::sub(MutateCmd));
+static cl::opt<std::string> MutateFunc(
+    "func",
+    cl::desc("Function name to locate in target CSV — Mode C"),
+    cl::sub(MutateCmd));
+static cl::opt<int> MutateBudget(
+    "budget",
+    cl::desc("Max mutation points to test (default: 200)"),
+    cl::sub(MutateCmd),
+    cl::init(200));
+static cl::opt<std::string> MutateSeed(
+    "seed",
+    cl::desc("RNG seed in hex (default: 0x1337)"),
+    cl::sub(MutateCmd),
+    cl::init("0x1337"));
+static cl::list<std::string> MutateCategories(
+    "categories",
+    cl::desc("Comma-separated category filter (e.g. arithmetic,comparison_bdry); default: all"),
+    cl::sub(MutateCmd),
+    cl::CommaSeparated);
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 // Derive a short identifying stem from a .so path.
@@ -945,6 +994,136 @@ static int run_graph_cmd(LLVMContext &ctx)
     return 0;
 }
 
+// ── Subcommand: mutate ───────────────────────────────────────────────────────
+
+// Parse a category name string to MutationCategory.  Returns nullopt for unknown.
+static std::optional<MutationCategory> parse_category(const std::string &s)
+{
+    if (s == "arithmetic"       || s == "ARITHMETIC")       return MutationCategory::ARITHMETIC;
+    if (s == "bitwise"          || s == "BITWISE")          return MutationCategory::BITWISE;
+    if (s == "comparison_neg"   || s == "COMPARISON_NEG")   return MutationCategory::COMPARISON_NEG;
+    if (s == "comparison_bdry"  || s == "COMPARISON_BDRY")  return MutationCategory::COMPARISON_BDRY;
+    if (s == "operand_swap"     || s == "OPERAND_SWAP")     return MutationCategory::OPERAND_SWAP;
+    if (s == "drop_computation" || s == "DROP_COMPUTATION") return MutationCategory::DROP_COMPUTATION;
+    if (s == "constant_repl"    || s == "CONSTANT_REPL")    return MutationCategory::CONSTANT_REPL;
+    if (s == "negate_trunc"     || s == "NEGATE_TRUNC")     return MutationCategory::NEGATE_TRUNC;
+    return std::nullopt;
+}
+
+static int run_mutate_cmd(LLVMContext &ctx)
+{
+    bool has_binary = !MutateBinary.empty();
+    bool has_rva    = !MutateRva.empty();
+    bool has_export = !MutateExport.empty();
+    bool has_suite  = !MutateSuite.empty();
+    bool has_target = !MutateTarget.empty();
+    bool has_func   = !MutateFunc.empty();
+
+    fs::path   binary_path;
+    uint64_t   rva = 0;
+    std::string func_name;
+
+    if (has_binary && has_rva && !has_export && !has_suite)
+    {
+        // Mode A: --binary + --rva
+        binary_path = fs::path(std::string(MutateBinary));
+        try { rva = std::stoull(MutateRva, nullptr, 16); }
+        catch (...) { errs() << "mutate error: invalid RVA '" << MutateRva << "'\n"; return 2; }
+        func_name = "sub_" + llvm::utohexstr(rva);
+    }
+    else if (has_binary && has_export && !has_rva && !has_suite)
+    {
+        // Mode B: --binary + --export
+        binary_path = fs::path(std::string(MutateBinary));
+        auto binary = LIEF::Parser::parse(binary_path.string());
+        if (!binary) { errs() << "mutate error: failed to parse binary\n"; return 2; }
+        auto rva_result = lifted::utils::rva_from_export(*binary, MutateExport);
+        if (!rva_result) { errs() << "mutate error: " << toString(rva_result.takeError()) << "\n"; return 2; }
+        rva = *rva_result;
+        func_name = std::string(MutateExport);
+    }
+    else if (has_suite && has_target && has_func && !has_binary && !has_rva && !has_export)
+    {
+        // Mode C: --suite + --target + --func
+        auto csv_path = resolve_suite_arg(MutateSuite);
+        if (!csv_path) { errs() << "mutate error: " << toString(csv_path.takeError()) << "\n"; return 2; }
+        auto suite = parse_suite_csv(*csv_path);
+        std::optional<SuiteEntry> found_entry;
+        for (const auto &entry : suite)
+            if (target_stem(entry.so_path) == std::string(MutateTarget))
+                { found_entry = entry; break; }
+        if (!found_entry)
+        {
+            errs() << "mutate error: no target '" << MutateTarget << "' in suite '" << MutateSuite << "'\n";
+            return 2;
+        }
+        auto targets = parse_targets_csv(found_entry->targets_csv_path);
+        std::optional<TargetEntry> found_fn;
+        for (const auto &t : targets)
+            if (t.func_name == std::string(MutateFunc))
+                { found_fn = t; break; }
+        if (!found_fn)
+        {
+            errs() << "mutate error: no function '" << MutateFunc << "' in target '" << MutateTarget << "'\n";
+            return 2;
+        }
+        binary_path = found_entry->so_path;
+        rva         = found_fn->addr;
+        func_name   = std::string(MutateFunc);
+    }
+    else
+    {
+        errs() << "mutate error: specify one of:\n"
+               << "  Mode A: --binary <path> --rva <hex>\n"
+               << "  Mode B: --binary <path> --export <name>\n"
+               << "  Mode C: --suite <name> --target <stem> --func <name>\n";
+        return 2;
+    }
+
+    // Build campaign config.
+    MutationCampaign::Config cfg;
+    cfg.budget = static_cast<size_t>(MutateBudget < 0 ? 200 : MutateBudget);
+    try { cfg.seed = std::stoull(MutateSeed, nullptr, 16); }
+    catch (...) { errs() << "mutate error: invalid seed '" << MutateSeed << "'\n"; return 2; }
+
+    // Parse category filter.
+    for (const auto &cat_str : MutateCategories)
+    {
+        auto cat = parse_category(cat_str);
+        if (!cat)
+        {
+            errs() << "mutate error: unknown category '" << cat_str
+                   << "'; valid: arithmetic, bitwise, comparison_neg, comparison_bdry,"
+                   << " operand_swap, drop_computation, constant_repl, negate_trunc\n";
+            return 2;
+        }
+        cfg.filter_categories.push_back(*cat);
+    }
+
+    outs() << "\n--- [MUTATE] " << binary_path.filename().string()
+           << " :: " << func_name
+           << " @ " << llvm::format_hex(rva, 18) << " ---\n";
+    outs() << "Budget: " << cfg.budget << "  Seed: 0x" << llvm::utohexstr(cfg.seed) << "\n";
+
+    auto result = lift_and_mutate_named(ctx, binary_path, func_name, rva, cfg);
+    if (!result)
+    {
+        errs() << "  [FATAL] " << toString(result.takeError()) << "\n";
+        return 2;
+    }
+
+    if (result->lift_failed)
+    {
+        errs() << "  [ERROR] " << result->lift_error << "\n";
+        return 2;
+    }
+
+    if (result->report)
+        result->report->print(std::cout);
+
+    return 0;
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv)
@@ -965,6 +1144,8 @@ int main(int argc, char **argv)
         return run_fn_cmd(ctx);
     if (GraphCmd)
         return run_graph_cmd(ctx);
+    if (MutateCmd)
+        return run_mutate_cmd(ctx);
 
     cl::PrintHelpMessage();
     return 2;

@@ -289,4 +289,30 @@ std::vector<std::string> known_suite_names()
     return names;
 }
 
+
+// ── lift_and_mutate_named ─────────────────────────────────────────────────────
+
+llvm::Expected<LiftAndMutateResult>
+lift_and_mutate_named(llvm::LLVMContext &context,
+                      const std::filesystem::path &path,
+                      const std::string &func_name,
+                      uint64_t entry_rva,
+                      fault_injection::MutationCampaign::Config cfg)
+{
+    auto report_or = fault_injection::MutationCampaign::run(
+        context, path, func_name, entry_rva, cfg);
+    if (!report_or)
+    {
+        // A fatal infrastructure error (binary parse, lift failure, baseline
+        // failure): surface it as a LiftAndMutateResult with lift_failed=true
+        // so the caller can display it without crashing.
+        LiftAndMutateResult r;
+        r.lift_failed  = true;
+        r.lift_error   = llvm::toString(report_or.takeError());
+        return r;
+    }
+    LiftAndMutateResult r;
+    r.report = std::move(*report_or);
+    return r;
+}
 } // namespace lifted::eval

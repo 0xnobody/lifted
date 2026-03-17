@@ -9,7 +9,7 @@ add_library(eval-suite STATIC
 
 target_include_directories(eval-suite PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-target_link_libraries(eval-suite PUBLIC lifted)
+target_link_libraries(eval-suite PUBLIC lifted fault-injection)
 
 # Inject compile-time CSV paths so resolve_suite_name() / known_suite_names()
 # can map names to paths.  Each definition is conditional in the source via
