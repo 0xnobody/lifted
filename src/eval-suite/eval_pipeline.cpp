@@ -4,24 +4,27 @@
 #include <remill/Arch/Name.h>
 #include <remill/OS/OS.h>
 
-#include "abi/systemv_x64.hpp"
 #include "abi/all_registers_cc.hpp"
+#include "abi/state_fold.hpp"
+#include "abi/systemv_x64.hpp"
+#include "bb_sync_info_builder.hpp"
 #include "binary_context.hpp"
 #include "lifter/lifter.hpp"
 #include "lifter/lifter_types.hpp"
-#include "lifter/standard_lifter_callbacks.hpp"
 #include "lifter/polaris_lifter_callbacks.hpp"
+#include "lifter/standard_lifter_callbacks.hpp"
+#include "opt.hpp"
 #include "pipeline/pipeline.hpp"
 #include "pipeline/stages/corpus_replay_stage.hpp"
 #include "pipeline/stages/seed_sweep_stage.hpp"
 #include "utils.hpp"
-#include "bb_sync_info_builder.hpp"
 #include "verification/jit_executor.hpp"
 #include "verification/sentinel_oracle.hpp"
 #include "verification/unicorn_executor.hpp"
 
 #include <llvm/IR/Module.h>
 #include <llvm/Support/Error.h>
+#include <llvm/Transforms/Utils/Cloning.h>
 
 #include <memory>
 #include <unordered_map>
@@ -34,7 +37,8 @@ pipeline::PipelineSpec make_default_pipeline(
     std::shared_ptr<verification::Executor> tgt,
     PipelineCheckpointProfile profile)
 {
-    const auto apply_profile = [profile](pipeline::RunConfig &cfg) {
+    const auto apply_profile = [profile](pipeline::RunConfig &cfg)
+    {
         using EF = verification::event_flags;
         using DF = verification::compare_dimension_flags;
         switch (profile)
@@ -238,6 +242,225 @@ lift_and_verify_named(llvm::LLVMContext &context,
     return result;
 }
 
+// ── FullPipelineResult helpers ────────────────────────────────────────────────
+
+bool FullPipelineResult::raw_pass() const
+{
+    // Lift must succeed, and Stage 1 must produce no failures.
+    return !lift_failed && raw_vs_native && raw_vs_native->total_failures() == 0;
+}
+
+bool FullPipelineResult::opt_pass() const
+{
+    // A transform error counts as a Stage 2 failure.
+    if (!opt_transform_error.empty())
+        return false;
+    // Stage 2 was not run (Stage 1 failed) — N/A is not a failure.
+    if (!opt_vs_raw)
+        return true;
+    return opt_vs_raw->total_failures() == 0;
+}
+
+bool FullPipelineResult::full_pass() const
+{
+    return raw_pass() && opt_pass();
+}
+
+// ── lift_and_verify_full_named ────────────────────────────────────────────────
+
+llvm::Expected<FullPipelineResult>
+lift_and_verify_full_named(llvm::LLVMContext &context,
+                           const std::filesystem::path &path,
+                           const std::string &func_name,
+                           uint64_t entry_rva,
+                           size_t deep_dive_count,
+                           std::string_view obfuscator)
+{
+    // ── Lift (identical setup to lift_and_verify_named) ────────────────────────
+    auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux, remill::ArchName::kArchAMD64);
+
+    std::unique_ptr<LIEF::Binary> binary = LIEF::Parser::parse(path);
+    if (!binary)
+        return llvm::make_error<llvm::StringError>(
+            "Failed to parse binary: " + path.string(),
+            llvm::inconvertibleErrorCode());
+
+    BinaryContext bin_ctx(std::move(binary));
+
+    std::string artifact_dir =
+        "/home/atlas/lifted/out/eval_artifacts/" + path.filename().string() + "_" + func_name;
+
+    std::unique_ptr<lifter::LifterCallbacks> callbacks;
+    if (obfuscator == "polaris")
+    {
+        auto cfg = lifter::polaris_lifter_config_t::from_polaris_linux_binary(
+            bin_ctx.binary(), artifact_dir);
+        callbacks = std::make_unique<lifter::PolarisLifterCallbacks>(std::move(cfg));
+    }
+    else
+    {
+        auto cfg = lifter::standard_lifter_config_t::from_standard_linux_binary(
+            bin_ctx.binary(), artifact_dir);
+        callbacks = std::make_unique<lifter::StandardLifterCallbacks>(std::move(cfg));
+    }
+
+    auto the_lifter_or = lifter::Lifter::create(arch.get(), bin_ctx, callbacks.get());
+    if (!the_lifter_or)
+        return the_lifter_or.takeError();
+    auto &the_lifter = *the_lifter_or;
+
+    auto entry_ann = std::make_unique<fnc_annotation_t>();
+    entry_ann->cc = &abi::AllRegistersCC::get();
+    annotation_id_t entry_annotation_id = bin_ctx.add_annotation(std::move(entry_ann));
+
+    auto lift_result = the_lifter.lift(entry_rva, entry_annotation_id, {.instrument_bb_entry = true});
+    if (!lift_result)
+    {
+        FullPipelineResult r;
+        r.lift_failed = true;
+        r.lift_error = llvm::toString(lift_result.takeError());
+        return r;
+    }
+
+    auto bb_sync_info = eval::make_bb_sync_info(lift_result->basic_blocks);
+    auto cfg_snapshot = visualization::make_cfg_snapshot(*lift_result, bin_ctx, entry_rva, func_name);
+    std::string fn_name = lift_result->lifted_function->getName().str();
+
+    // ── Raw JIT — clone the module so the original survives for the O2 branch ──
+    auto raw_jit_or = verification::JITExecutor::create(
+        llvm::CloneModule(*lift_result->module), fn_name);
+    if (!raw_jit_or)
+        return raw_jit_or.takeError();
+    auto raw_jit = std::shared_ptr<verification::Executor>(std::move(*raw_jit_or));
+
+    // ── Unicorn — same ext_call_info construction as lift_and_verify_named ─────
+    verification::UnicornExecutor::ext_call_info_t ext_info;
+    {
+        std::unordered_map<lifter::bb_id_t, uint64_t> bb_id_to_rva;
+        for (const auto &bb : lift_result->basic_blocks)
+            if (bb.rva_range.has_value())
+                bb_id_to_rva[bb.id] = bb.rva_range->start();
+
+        for (const auto &[id, synth] : lift_result->synthetic_blocks)
+            if (synth.type == lifter::synthetic_block_info_t::Type::EXTERNAL &&
+                synth.dest_addr.has_value())
+                ext_info.ext_function_rvas.insert(*synth.dest_addr);
+
+        for (const auto &edge : lift_result->edges)
+        {
+            auto it = bb_id_to_rva.find(edge.source);
+            if (it == bb_id_to_rva.end())
+                continue;
+            if (edge.type == lifter::edge_t::Type::SYNTHETIC_RECURSIVE_CALL)
+                ext_info.recursive_callsite_rvas.insert(it->second);
+            else if (edge.type == lifter::edge_t::Type::SYNTHETIC_INDIRECT)
+                ext_info.indr_dispatch_block_rvas.insert(it->second);
+        }
+    }
+
+    auto uc_or = verification::UnicornExecutor::create(bin_ctx, std::move(ext_info), entry_rva,
+                                                       verification::UnicornExecutor::Flags::NONE,
+                                                       std::move(bb_sync_info));
+    if (!uc_or)
+        return uc_or.takeError();
+    auto uc = std::shared_ptr<verification::Executor>(std::move(*uc_or));
+
+    // ── Stage 1: raw JIT vs Unicorn, RAW_STRICT ────────────────────────────────
+    pipeline::Pipeline p1(make_default_pipeline(func_name, raw_jit, uc));
+    auto report1 = p1.run(bin_ctx, entry_rva);
+    if (!report1)
+        return report1.takeError();
+
+    FullPipelineResult result;
+    result.raw_vs_native = std::move(*report1);
+    result.cfg = std::move(cfg_snapshot);
+    result.lift_stats = std::move(lift_result->stats);
+
+    if (deep_dive_count > 0)
+    {
+        for (const auto &stage : result.raw_vs_native->stages)
+        {
+            if (!stage.divergences.empty())
+            {
+                auto dd = p1.deep_dive(stage.divergences[0], bin_ctx, entry_rva);
+                if (dd)
+                    result.raw_vs_native_dive = std::move(*dd);
+                break; // first stage with a divergence only
+            }
+        }
+    }
+
+    // Do not run O2 against a known-bad lift — the comparison would be misleading.
+    if (result.raw_vs_native->total_failures() > 0)
+        return result;
+
+    // ── Stage 2: O2 transform → opt JIT vs raw JIT, OPTIMIZED_RELAXED ─────────
+    auto opt_clone = llvm::CloneModule(*lift_result->module);
+
+    opt::always_inline(opt_clone.get());
+
+    utils::output_to_file("/home/atlas/lifted/out/opt_outputs/" + path.filename().string() + "_" + func_name + "_pre_opt.ll", opt_clone.get());
+
+    opt::default_opt(opt_clone.get(), llvm::OptimizationLevel::O2);
+
+    utils::output_to_file("/home/atlas/lifted/out/opt_outputs/" + path.filename().string() + "_" + func_name + "_post_opt.ll", opt_clone.get());
+
+    // auto unfolded_or = abi::unfold_function_state_recursive(opt_clone->getFunction(fn_name), bin_ctx);
+    // if (!unfolded_or)
+    //{
+    //     result.opt_transform_error = llvm::toString(unfolded_or.takeError());
+    //     return result;
+    // }
+    //(*unfolded_or)->setLinkage(llvm::GlobalValue::ExternalLinkage);
+    //
+    // opt::always_inline(opt_clone.get());
+    // opt::default_opt(opt_clone.get(), llvm::OptimizationLevel::O2);
+    //
+    // auto refolded_or = abi::fold_function_state_recursive(*unfolded_or, bin_ctx);
+    // if (!refolded_or)
+    //{
+    //    result.opt_transform_error = llvm::toString(refolded_or.takeError());
+    //    return result;
+    //}
+    //(*refolded_or)->setLinkage(llvm::GlobalValue::ExternalLinkage);
+    //
+    // opt::always_inline(opt_clone.get());
+
+    std::string opt_fn_name = fn_name; //(*refolded_or)->getName().str();
+    auto opt_jit_or = verification::JITExecutor::create(std::move(opt_clone), opt_fn_name);
+    if (!opt_jit_or)
+    {
+        result.opt_transform_error = llvm::toString(opt_jit_or.takeError());
+        return result;
+    }
+    auto opt_jit = std::shared_ptr<verification::Executor>(std::move(*opt_jit_or));
+
+    // Pipeline 2: raw JIT (src, reused) vs opt JIT (tgt), OPTIMIZED_RELAXED.
+    pipeline::Pipeline p2(make_default_pipeline(
+        func_name, raw_jit, opt_jit, PipelineCheckpointProfile::OPTIMIZED_RELAXED));
+    auto report2 = p2.run(bin_ctx, entry_rva);
+    if (!report2)
+        return report2.takeError();
+
+    result.opt_vs_raw = std::move(*report2);
+
+    if (deep_dive_count > 0)
+    {
+        for (const auto &stage : result.opt_vs_raw->stages)
+        {
+            if (!stage.divergences.empty())
+            {
+                auto dd = p2.deep_dive(stage.divergences[0], bin_ctx, entry_rva);
+                if (dd)
+                    result.opt_vs_raw_dive = std::move(*dd);
+                break;
+            }
+        }
+    }
+
+    return result;
+}
+
 // ── Suite name resolution ──────────────────────────────────────────────────────
 //
 // Each branch is guarded by #ifdef so the library compiles even when no CSV
@@ -289,7 +512,6 @@ std::vector<std::string> known_suite_names()
     return names;
 }
 
-
 // ── lift_and_mutate_named ─────────────────────────────────────────────────────
 
 llvm::Expected<LiftAndMutateResult>
@@ -307,8 +529,8 @@ lift_and_mutate_named(llvm::LLVMContext &context,
         // failure): surface it as a LiftAndMutateResult with lift_failed=true
         // so the caller can display it without crashing.
         LiftAndMutateResult r;
-        r.lift_failed  = true;
-        r.lift_error   = llvm::toString(report_or.takeError());
+        r.lift_failed = true;
+        r.lift_error = llvm::toString(report_or.takeError());
         return r;
     }
     LiftAndMutateResult r;

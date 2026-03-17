@@ -24,6 +24,8 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Transforms/Utils/Cloning.h>
 
+#include <chrono>
+
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
@@ -191,6 +193,14 @@ void MutationReport::print(std::ostream &os) const
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+// Wall-clock duration between two steady_clock time points, in milliseconds.
+static double duration_ms(std::chrono::steady_clock::time_point start,
+                          std::chrono::steady_clock::time_point end)
+{
+    using namespace std::chrono;
+    return static_cast<double>(duration_cast<nanoseconds>(end - start).count()) * 1e-6;
+}
+
 // Build the same 3-stage pipeline used by eval_pipeline.cpp (RAW_STRICT profile).
 static pipeline::PipelineSpec make_campaign_pipeline(
     const std::string &func_name,
@@ -285,11 +295,17 @@ llvm::Expected<MutationReport> MutationCampaign::run(
     entry_ann->cc = &abi::AllRegistersCC::get();
     auto entry_ann_id = bin_ctx.add_annotation(std::move(entry_ann));
 
+    // Timing: campaign covers lift + inlining + baseline + all mutants.
+    auto t0_campaign = std::chrono::steady_clock::now();
+    auto t0_lift     = t0_campaign;
+
     auto lift_result = the_lifter.lift(entry_rva, entry_ann_id, {.instrument_bb_entry = true});
     if (!lift_result)
         return llvm::make_error<llvm::StringError>(
             "Lift failed: " + llvm::toString(lift_result.takeError()),
             llvm::inconvertibleErrorCode());
+    // Record lift duration locally; will be stored in report once report is built.
+    double lift_ms = duration_ms(t0_lift, std::chrono::steady_clock::now());
 
     // 4. Build bb_sync_info and ext_call_info.
     // Replicate eval::make_bb_sync_info inline (avoids eval-suite dependency).
@@ -401,6 +417,7 @@ llvm::Expected<MutationReport> MutationCampaign::run(
     report.total_enumerated = total_enumerated;
     report.total_mutants = points.size();
     report.budget_requested = cfg.budget;
+    report.lift_duration_ms = lift_ms;
 
     // 11. Run each mutant
     for (auto &point : points)
@@ -513,6 +530,9 @@ llvm::Expected<MutationReport> MutationCampaign::run(
 
         report.results.push_back(std::move(r));
     }
+
+    // Capture total campaign duration (lift + inlining + baseline + all mutants).
+    report.campaign_duration_ms = duration_ms(t0_campaign, std::chrono::steady_clock::now());
 
     // 12. Build per-category, per-difficulty, and per-width breakdowns.
     for (const auto &r : report.results)

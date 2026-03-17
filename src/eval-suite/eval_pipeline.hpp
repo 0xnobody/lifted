@@ -28,6 +28,38 @@ namespace lifted::eval
         std::string lift_error; // populated when lift_failed
     };
 
+    // Result of the full two-stage lift+verify run.
+    // Stage 1: raw lifted IR vs. native binary (Unicorn), RAW_STRICT profile.
+    // Stage 2: O2-optimized IR vs. raw lifted IR, OPTIMIZED_RELAXED profile.
+    //          Only run when Stage 1 produces no failures.
+    struct FullPipelineResult
+    {
+        std::optional<lifter::lift_stats_t>     lift_stats; // populated on successful lift
+        std::optional<visualization::CfgSnapshot> cfg;      // populated on successful lift
+        bool        lift_failed = false;
+        std::string lift_error; // populated when lift_failed
+
+        // Stage 1: raw lifted IR vs. native binary.
+        std::optional<pipeline::PipelineReport> raw_vs_native;
+        std::optional<pipeline::DeepDiveResult> raw_vs_native_dive;
+
+        // Stage 2: O2 IR vs. raw lifted IR.  Nullopt when Stage 1 failed (N/A, not error).
+        std::optional<pipeline::PipelineReport> opt_vs_raw;
+        std::optional<pipeline::DeepDiveResult> opt_vs_raw_dive;
+
+        // Non-empty when the O2 transform itself failed (unfold/fold error).
+        // Treated as a Stage 2 error, not a Stage 1 failure.
+        std::string opt_transform_error;
+
+        // Stage 1 passed: lift succeeded and raw_vs_native has no failures.
+        bool raw_pass() const;
+        // Stage 2 passed: no transform error AND (no opt_vs_raw failures OR Stage 2 not run).
+        // Returns true when Stage 2 was skipped because Stage 1 failed (N/A != failure).
+        bool opt_pass() const;
+        // Both stages passed.
+        bool full_pass() const;
+    };
+
     // ── Default fast pipeline (3-stage) ──────────────────────────────────────
     //
     // Stage 1 – wide discovery:  50 runs, full-range inputs,  bb=5000, loop=100
@@ -61,6 +93,18 @@ namespace lifted::eval
                           size_t deep_dive_count = 1,
                           std::string_view obfuscator = "");
 
+    // Full two-stage pipeline.
+    // Stage 1: raw lifted IR vs Unicorn, RAW_STRICT.
+    // Stage 2: O2-optimized IR vs raw lifted IR, OPTIMIZED_RELAXED.
+    //          Only run when Stage 1 produces no failures.
+    // deep_dive_count: 0 = skip deep-dives; >= 1 = deep-dive the first divergence per stage.
+    llvm::Expected<FullPipelineResult>
+    lift_and_verify_full_named(llvm::LLVMContext &context,
+                               const std::filesystem::path &path,
+                               const std::string &func_name,
+                               uint64_t entry_rva,
+                               size_t deep_dive_count = 1,
+                               std::string_view obfuscator = "");
     // Suite name -> compile-time CSV path.  Returns nullopt when the name is
     // unknown (i.e. no compile definition was injected for it).
     std::optional<std::filesystem::path> resolve_suite_name(const std::string &name);

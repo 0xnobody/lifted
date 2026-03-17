@@ -48,6 +48,12 @@ struct MutationReport {
     std::map<difficulty_t,     std::pair<size_t, size_t>> by_difficulty;
     std::map<unsigned,         std::pair<size_t, size_t>> by_width_bits;
 
+    // Timing fields (set by MutationCampaign::run).
+    // lift_duration_ms  = wall clock for the_lifter.lift() call only.
+    // campaign_duration_ms = wall clock for everything from lift through the mutant loop.
+    double lift_duration_ms     = 0.0;
+    double campaign_duration_ms = 0.0;
+
     void print(std::ostream &os) const;
 };
 
