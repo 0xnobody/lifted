@@ -1,3 +1,5 @@
+#include <csignal>
+#include <setjmp.h>
 #include <set>
 #include <vector>
 
@@ -16,6 +18,31 @@
 #include "../opt.hpp"
 
 #include "jit_executor_context.hpp"
+
+// --- JIT fault recovery ---------------------------------------------------
+// Hardware faults (SIGFPE, SIGSEGV, SIGILL, SIGBUS) raised by JIT-compiled
+// code cannot be caught with try/catch — they are OS signals.  We use
+// sigsetjmp/siglongjmp to unwind cleanly and report exit_type::EXCEPTION.
+//
+// thread_local: sigaction handlers are process-global, but synchronous
+// hardware faults are always delivered to the faulting thread, so per-thread
+// state is sufficient and safe for concurrent JIT runs.
+static thread_local sigjmp_buf tl_fault_buf;
+static thread_local bool       tl_in_jit = false;
+
+static void jit_fault_handler(int sig)
+{
+    if (tl_in_jit)
+    {
+        tl_in_jit = false;
+        siglongjmp(tl_fault_buf, sig);
+    }
+    // Fault occurred outside a JIT execution — restore the default handler
+    // and re-raise so that genuine crashes still terminate the process.
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+// ---------------------------------------------------------------------------
 
 namespace lifted::verification
 {
@@ -160,8 +187,37 @@ namespace lifted::verification
             .verifier_context = state.context_ptr(),
         };
 
-        // Call JIT function with verifier context
-        entry_fn(&executor_ctx);
+        // Install fault-recovery handlers, saving whatever was there before
+        // (LLVM or the OS default).  SA_RESETHAND is intentionally absent so
+        // the handler persists for the full duration of this call.
+        struct sigaction sa{}, old_fpe, old_segv, old_ill, old_bus;
+        sa.sa_handler = jit_fault_handler;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGFPE,  &sa, &old_fpe);
+        sigaction(SIGSEGV, &sa, &old_segv);
+        sigaction(SIGILL,  &sa, &old_ill);
+        sigaction(SIGBUS,  &sa, &old_bus);
+
+        // sigsetjmp with savesigs=1: saves the signal mask so that after a
+        // siglongjmp recovery SIGFPE (etc.) is not left blocked in the thread
+        // mask — which would cause the next fault to kill the process.
+        int fault_sig = 0;
+        tl_in_jit = true;
+        if ((fault_sig = sigsetjmp(tl_fault_buf, 1)) == 0)
+        {
+            entry_fn(&executor_ctx);
+            tl_in_jit = false;
+        }
+        // tl_in_jit is already false here — cleared on the normal path above
+        // or by the signal handler before it called siglongjmp.
+
+        sigaction(SIGFPE,  &old_fpe,  nullptr);
+        sigaction(SIGSEGV, &old_segv, nullptr);
+        sigaction(SIGILL,  &old_ill,  nullptr);
+        sigaction(SIGBUS,  &old_bus,  nullptr);
+
+        if (fault_sig != 0)
+            state.set_exit_reason(exit_type::EXCEPTION);
 
         return llvm::Error::success();
     }
