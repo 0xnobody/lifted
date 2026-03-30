@@ -1,0 +1,11 @@
+#include "@LIFTED_EVAL_POLARIS_ANNOTATIONS_HEADER@"
+
+#if defined(__clang__) && __has_attribute(annotate)
+#pragma clang attribute push (__attribute__((annotate(LIFTED_POLARIS_FUNCTION_ANNOTATION))), apply_to = function)
+#endif
+
+#include "@LIFTED_EVAL_WRAPPED_SOURCE@"
+
+#if defined(__clang__) && __has_attribute(annotate)
+#pragma clang attribute pop
+#endif

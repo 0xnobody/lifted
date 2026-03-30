@@ -37,39 +37,98 @@ set(_GNULIB_OPTS
     -Wno-unused-variable
 )
 
+set(_POLARIS_ANNOTATIONS_HEADER "${CMAKE_CURRENT_LIST_DIR}/../annotations.h")
+set(_POLARIS_WRAPPER_TEMPLATE   "${CMAKE_CURRENT_LIST_DIR}/gnulib-polaris-wrapper.c.in")
+
+function(_register_coreutils_polaris_wrapper)
+    cmake_parse_arguments(CGW "" "TARGET;SOURCE" "" ${ARGN})
+
+    if(NOT CGW_TARGET OR NOT CGW_SOURCE)
+        message(FATAL_ERROR "_register_coreutils_polaris_wrapper: TARGET and SOURCE are required")
+    endif()
+
+    if(NOT IS_ABSOLUTE "${CGW_SOURCE}")
+        set(CGW_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${CGW_SOURCE}")
+    endif()
+
+    set(_wrapper "${CMAKE_CURRENT_BINARY_DIR}/${CGW_TARGET}-polaris-wrapper.c")
+    set(LIFTED_EVAL_POLARIS_ANNOTATIONS_HEADER "${_POLARIS_ANNOTATIONS_HEADER}")
+    set(LIFTED_EVAL_WRAPPED_SOURCE "${CGW_SOURCE}")
+    configure_file("${_POLARIS_WRAPPER_TEMPLATE}" "${_wrapper}" @ONLY)
+
+    register_eval_source_override(
+        TARGET     "${CGW_TARGET}"
+        OBFUSCATOR polaris
+        SOURCE     "${_wrapper}"
+        DEPENDS    "${_wrapper}" "${CGW_SOURCE}" "${_POLARIS_ANNOTATIONS_HEADER}"
+    )
+endfunction()
+
+function(_define_coreutils_eval_target)
+    cmake_parse_arguments(CGT "" "NAME;SOURCE" "FUNCTIONS" ${ARGN})
+
+    if(NOT CGT_NAME OR NOT CGT_SOURCE)
+        message(FATAL_ERROR "_define_coreutils_eval_target: NAME and SOURCE are required")
+    endif()
+
+    define_eval_target(
+        NAME            "${CGT_NAME}"
+        SOURCE          "${CGT_SOURCE}"
+        LANGUAGE        C
+        COMPILE_OPTIONS ${_GNULIB_OPTS}
+        FUNCTIONS       ${CGT_FUNCTIONS}
+    )
+
+    _register_coreutils_polaris_wrapper(
+        TARGET "${CGT_NAME}"
+        SOURCE "${CGT_SOURCE}"
+    )
+endfunction()
+
 # ── Eval targets ──────────────────────────────────────────────────────────────
 
-define_eval_target(NAME gnulib-md5 SOURCE "${_GNULIB}/md5.c" LANGUAGE C
-    COMPILE_OPTIONS ${_GNULIB_OPTS}
-    FUNCTIONS md5_buffer md5_process_block md5_process_bytes md5_finish_ctx)
+_define_coreutils_eval_target(
+    NAME      gnulib-md5
+    SOURCE    "${_GNULIB}/md5.c"
+    FUNCTIONS md5_buffer md5_process_block md5_process_bytes md5_finish_ctx
+)
 
-define_eval_target(NAME gnulib-sha1 SOURCE "${_GNULIB}/sha1.c" LANGUAGE C
-    COMPILE_OPTIONS ${_GNULIB_OPTS}
-    FUNCTIONS sha1_buffer sha1_process_block sha1_process_bytes sha1_finish_ctx)
+_define_coreutils_eval_target(
+    NAME      gnulib-sha1
+    SOURCE    "${_GNULIB}/sha1.c"
+    FUNCTIONS sha1_buffer sha1_process_block sha1_process_bytes sha1_finish_ctx
+)
 
-define_eval_target(NAME gnulib-sha256 SOURCE "${_GNULIB}/sha256.c" LANGUAGE C
-    COMPILE_OPTIONS ${_GNULIB_OPTS}
+_define_coreutils_eval_target(
+    NAME      gnulib-sha256
+    SOURCE    "${_GNULIB}/sha256.c"
     FUNCTIONS sha256_buffer sha256_process_block sha256_process_bytes
-              sha256_finish_ctx sha224_buffer)  # sha224_process_block does not exist;
+              sha256_finish_ctx sha224_buffer
+)
 
-define_eval_target(NAME gnulib-sha512 SOURCE "${_GNULIB}/sha512.c" LANGUAGE C
-    COMPILE_OPTIONS ${_GNULIB_OPTS}
+_define_coreutils_eval_target(
+    NAME      gnulib-sha512
+    SOURCE    "${_GNULIB}/sha512.c"
     FUNCTIONS sha512_buffer sha512_process_block sha512_process_bytes
-              sha512_finish_ctx sha384_buffer)
+              sha512_finish_ctx sha384_buffer
+)
 
-define_eval_target(NAME gnulib-crc SOURCE "${_GNULIB}/crc.c" LANGUAGE C
-    COMPILE_OPTIONS ${_GNULIB_OPTS}
-    FUNCTIONS crc32 crc32_update crc32_update_no_xor crc32_no_xor)
+_define_coreutils_eval_target(
+    NAME      gnulib-crc
+    SOURCE    "${_GNULIB}/crc.c"
+    FUNCTIONS crc32 crc32_update crc32_update_no_xor crc32_no_xor
+)
 
 # ── Suite assembly ────────────────────────────────────────────────────────────
-# To add more gnulib targets later: add a define_eval_target() above and
-# append the NAME to the TARGETS list here.
+# To add more gnulib targets later: add a _define_coreutils_eval_target() above
+# and append the NAME to the TARGETS list here.
 
 define_eval_suite(
-    NAME    gnu-coreutils
-    TARGETS gnulib-md5
-            gnulib-sha1
-            gnulib-sha256
-            gnulib-sha512
-            gnulib-crc
+    NAME        gnu-coreutils
+    TARGETS     gnulib-md5
+                gnulib-sha1
+                gnulib-sha256
+                gnulib-sha512
+                gnulib-crc
+    OBFUSCATORS polaris
 )

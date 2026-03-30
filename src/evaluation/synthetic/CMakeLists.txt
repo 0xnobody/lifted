@@ -4,6 +4,10 @@
 
 project("lifted-eval-synthetic")
 
+set(_SYNTHETIC_OPTS
+    -I${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+
 set(EVAL_SYNTHETIC_LIBS
     arithmetic
     branch
@@ -25,6 +29,7 @@ define_eval_target(
     NAME     two-funcs
     SOURCE   two-funcs.cpp
     LANGUAGE CXX
+    COMPILE_OPTIONS ${_SYNTHETIC_OPTS}
     FUNCTIONS func_a func_b
 )
 
@@ -34,6 +39,7 @@ foreach(_lib IN LISTS EVAL_SYNTHETIC_LIBS)
         NAME    "${_lib}"
         SOURCE  "${_lib}.cpp"
         LANGUAGE CXX
+        COMPILE_OPTIONS ${_SYNTHETIC_OPTS}
     )
 endforeach()
 

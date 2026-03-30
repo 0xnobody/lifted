@@ -12,6 +12,11 @@
 #                      [FUNCTIONS <fn> ...]       # override auto-detect
 #                      [COMPILE_OPTIONS <opt> ...])
 #
+#   register_eval_source_override(TARGET     <target-id>
+#                                 OBFUSCATOR <obfuscator-id>
+#                                 SOURCE     <file>
+#                                 [DEPENDS   <path> ...])
+#
 #   define_eval_suite(NAME      <suite-id>
 #                    TARGETS   <target-id> ...
 #                    [OBFUSCATORS <obfuscator-id> ...])
@@ -53,6 +58,38 @@ function(register_obfuscator)
     set_property(GLOBAL PROPERTY _EVAL_OBF_${OBF_NAME}_COMPILER "${OBF_COMPILER}")
     set_property(GLOBAL PROPERTY _EVAL_OBF_${OBF_NAME}_FLAGS     "${OBF_FLAGS}")
     message(STATUS "[EvalHelpers] Registered obfuscator '${OBF_NAME}': ${OBF_COMPILER}")
+endfunction()
+
+# ── register_eval_source_override ─────────────────────────────────────────────
+function(register_eval_source_override)
+    cmake_parse_arguments(ESO "" "TARGET;OBFUSCATOR;SOURCE" "DEPENDS" ${ARGN})
+
+    if(NOT ESO_TARGET OR NOT ESO_OBFUSCATOR OR NOT ESO_SOURCE)
+        message(FATAL_ERROR "register_eval_source_override: TARGET, OBFUSCATOR, and SOURCE are required")
+    endif()
+
+    string(TOUPPER "${ESO_TARGET}" _target_upper)
+    string(REPLACE "-" "_" _target_upper "${_target_upper}")
+
+    if(NOT IS_ABSOLUTE "${ESO_SOURCE}")
+        set(ESO_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${ESO_SOURCE}")
+    endif()
+
+    set(_resolved_deps "")
+    foreach(_dep IN LISTS ESO_DEPENDS)
+        if(IS_ABSOLUTE "${_dep}")
+            list(APPEND _resolved_deps "${_dep}")
+        else()
+            list(APPEND _resolved_deps "${CMAKE_CURRENT_SOURCE_DIR}/${_dep}")
+        endif()
+    endforeach()
+
+    set_property(GLOBAL PROPERTY
+        "_EVAL_TARGET_${_target_upper}_SOURCE_OVERRIDE_${ESO_OBFUSCATOR}"
+        "${ESO_SOURCE}")
+    set_property(GLOBAL PROPERTY
+        "_EVAL_TARGET_${_target_upper}_SOURCE_OVERRIDE_${ESO_OBFUSCATOR}_DEPENDS"
+        "${_resolved_deps}")
 endfunction()
 
 # ── define_eval_target ────────────────────────────────────────────────────────
@@ -174,9 +211,17 @@ function(define_eval_target)
     # and so define_eval_suite can depend on it by name.
     add_custom_target("eval-${ET_NAME}-csv" DEPENDS "${_csv_path}")
 
-    # ── Export paths to parent scope ─────────────────────────────────────────
     string(TOUPPER "${ET_NAME}" _id_upper)
     string(REPLACE "-" "_" _id_upper "${_id_upper}")
+
+    # Store target metadata so define_eval_suite can faithfully rebuild optional
+    # obfuscated variants with the same source, language, and symbol selection.
+    set_property(GLOBAL PROPERTY "_EVAL_TARGET_${_id_upper}_SOURCE"          "${ET_SOURCE}")
+    set_property(GLOBAL PROPERTY "_EVAL_TARGET_${_id_upper}_LANGUAGE"        "${ET_LANGUAGE}")
+    set_property(GLOBAL PROPERTY "_EVAL_TARGET_${_id_upper}_COMPILE_OPTIONS" "${ET_COMPILE_OPTIONS}")
+    set_property(GLOBAL PROPERTY "_EVAL_TARGET_${_id_upper}_FUNCTIONS"       "${ET_FUNCTIONS}")
+
+    # ── Export paths to parent scope ─────────────────────────────────────────
 
     set("EVAL_TARGET_${_id_upper}_SO"  "${_so_path}"  PARENT_SCOPE)
     set("EVAL_TARGET_${_id_upper}_CSV" "${_csv_path}" PARENT_SCOPE)
@@ -242,13 +287,27 @@ function(define_eval_suite)
             set(_obf_so   "${CMAKE_CURRENT_BINARY_DIR}/libeval-${_target}-${_obf}.so")
             set(_obf_csv  "${CMAKE_CURRENT_BINARY_DIR}/${_target}-${_obf}.targets.csv")
 
-            # Find the source file from the OBJECT library
-            get_target_property(_obj_sources "eval-${_target}-obj" SOURCES)
-            list(GET _obj_sources 0 _src_file)
-            if(NOT IS_ABSOLUTE "${_src_file}")
-                # OBJECT library sources may be relative to their source dir
-                get_target_property(_src_dir "eval-${_target}-obj" SOURCE_DIR)
-                set(_src_file "${_src_dir}/${_src_file}")
+            get_property(_src_file GLOBAL PROPERTY "_EVAL_TARGET_${_up}_SOURCE_OVERRIDE_${_obf}")
+            get_property(_src_deps GLOBAL PROPERTY "_EVAL_TARGET_${_up}_SOURCE_OVERRIDE_${_obf}_DEPENDS")
+            if(NOT _src_file)
+                get_property(_src_file GLOBAL PROPERTY "_EVAL_TARGET_${_up}_SOURCE")
+                set(_src_deps "${_src_file}")
+            endif()
+
+            get_property(_lang GLOBAL PROPERTY "_EVAL_TARGET_${_up}_LANGUAGE")
+            get_property(_compile_opts GLOBAL PROPERTY "_EVAL_TARGET_${_up}_COMPILE_OPTIONS")
+            get_property(_functions GLOBAL PROPERTY "_EVAL_TARGET_${_up}_FUNCTIONS")
+
+            set(_lang_args "")
+            if(_lang STREQUAL "C")
+                list(APPEND _lang_args -x c)
+            elseif(_lang STREQUAL "CXX")
+                list(APPEND _lang_args -x c++)
+            endif()
+
+            set(_obf_fn_args "")
+            if(_functions)
+                list(APPEND _obf_fn_args "--functions" ${_functions})
             endif()
 
             separate_arguments(_flags_list UNIX_COMMAND "${_flags}")
@@ -257,13 +316,16 @@ function(define_eval_suite)
                 OUTPUT "${_obf_so}" "${_obf_csv}"
                 COMMAND "${_compiler}"
                         ${_flags_list}
+                        ${_compile_opts}
+                        ${_lang_args}
                         "${_src_file}"
                         -shared -fPIC -${EVAL_OPT_LEVEL} -fno-stack-protector -fno-tree-vectorize
                         -o "${_obf_so}"
                 COMMAND ${Python3_EXECUTABLE} "${_EVAL_SCRIPTS_DIR}/extract_functions.py"
                         --so     "${_obf_so}"
                         --output "${_obf_csv}"
-                DEPENDS "${_src_file}"
+                        ${_obf_fn_args}
+                DEPENDS ${_src_deps}
                 COMMENT "[EvalHelpers] Obfuscating ${_target} with ${_obf}"
                 VERBATIM
             )
