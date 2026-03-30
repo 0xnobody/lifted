@@ -18,7 +18,7 @@ include(ProcessorCount)
 set(POLARIS_VERSION "main" CACHE STRING "Polaris version/branch to fetch")
 set(POLARIS_REPOSITORY "https://github.com/za233/Polaris-Obfuscator.git" CACHE STRING "Polaris repository URL")
 set(LLVM_ENABLE_ASSERTIONS OFF CACHE BOOL "Enable LLVM assertions for Polaris build")
-set(POLARIS_PASSES "sub,mba,bcf" CACHE STRING "Comma-separated list of Polaris passes to enable. Passes available: fla,gvenc,indcall,indbr,alias,bcf,sub,merge,mba")
+set(POLARIS_PASSES "indcall,indbr,bcf" CACHE STRING "Comma-separated list of Polaris passes to enable. Passes available: fla,gvenc,indcall,indbr,alias,bcf,sub,merge,mba")
 
 ProcessorCount(N_CORES)
 if(N_CORES EQUAL 0)
