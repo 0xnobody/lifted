@@ -52,14 +52,14 @@ if(EVAL_INSERTIONSORT_SO)
     add_dependencies(lifted-tests eval-insertionsort)
 endif()
 
-if(TARGET eval-suite-synthetic)
+if(LIFTED_ENABLE_POLARIS AND POLARIS_CLANG_PATH AND EXISTS "${POLARIS_CLANG_PATH}" AND TARGET eval-suite-synthetic)
     target_compile_definitions(lifted-tests PRIVATE
         EVAL_ARITHMETIC_POLARIS_SO="${CMAKE_BINARY_DIR}/src/evaluation/synthetic/libeval-arithmetic-polaris.so"
     )
     add_dependencies(lifted-tests eval-suite-synthetic)
 endif()
 
-if(TARGET eval-suite-tum-simple-hash-functions)
+if(LIFTED_ENABLE_POLARIS AND POLARIS_CLANG_PATH AND EXISTS "${POLARIS_CLANG_PATH}" AND TARGET eval-suite-tum-simple-hash-functions)
     target_compile_definitions(lifted-tests PRIVATE
         EVAL_BKDRHASH_POLARIS_SO="${CMAKE_BINARY_DIR}/src/evaluation/tum/libeval-bkdrhash-polaris.so"
     )

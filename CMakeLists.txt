@@ -29,7 +29,14 @@ project(lifted-root)
 include(BuildRemill)
 include(BuildKLEE)
 include(BuildLIEF)
-include(BuildPolaris)
+
+option(LIFTED_ENABLE_POLARIS "Fetch, configure, and build Polaris during configure time" OFF)
+if(LIFTED_ENABLE_POLARIS)
+  include(BuildPolaris)
+else()
+  set(POLARIS_CLANG_PATH "" CACHE PATH "Path to Polaris clang executable" FORCE)
+endif()
+
 include(BuildSouper)
 include(BuildUnicorn)
 
