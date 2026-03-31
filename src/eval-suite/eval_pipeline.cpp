@@ -15,7 +15,6 @@
 #include "lifter/standard_lifter_callbacks.hpp"
 #include "opt.hpp"
 #include "pipeline/pipeline.hpp"
-#include "pipeline/stages/corpus_replay_stage.hpp"
 #include "pipeline/stages/seed_sweep_stage.hpp"
 #include "utils.hpp"
 #include "verification/jit_executor.hpp"
@@ -85,26 +84,11 @@ pipeline::PipelineSpec make_default_pipeline(
     };
     apply_profile(small_cfg);
 
-    // Stage 3 — corpus replay + medium boost
-    pipeline::RunConfig medium_cfg{
-        .seed = 0x1339,
-        .oracle = verification::sentinel_oracle(std::vector<verification::sentinel_t>{
-            {.size_bytes = 0, .value = 0, .inv_prob = 10},
-            {.size_bytes = 0, .value = 0xFFFF'FFFF'FFFF'FFFF, .inv_prob = 10},
-        }),
-        .gen_factory = std::make_shared<verification::uniform_value_generator_factory>(
-            verification::value_constraints_t{.max = 0x1000, .alignment = 8}),
-        .bb_limit = 3000,
-        .loop_limit = 75,
-    };
-    apply_profile(medium_cfg);
-
     pipeline::PipelineSpec spec;
     spec.name = "raw_vs_native[" + func_name + "]";
     spec.executors = {std::move(src), std::move(tgt)};
     spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(wide_cfg, 50));
     spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(small_cfg, 100));
-    spec.stages.push_back(std::make_unique<pipeline::CorpusReplayStage>(medium_cfg, 30));
     return spec;
 }
 

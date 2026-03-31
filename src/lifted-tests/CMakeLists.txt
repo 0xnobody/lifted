@@ -16,9 +16,17 @@ add_executable(lifted-tests
     "test_indirect_call_divergence.cpp"
     "test_elf_relocations.cpp"
     "test_visualization.cpp"
+    "test_opaque_call_stub.cpp"
  )
 
 target_link_libraries(lifted-tests PRIVATE lifted eval-suite)
+
+add_executable(lifted-tests-opaque-call-stub
+    "test_main.cpp"
+    "test_opaque_call_stub.cpp"
+)
+
+target_link_libraries(lifted-tests-opaque-call-stub PRIVATE lifted)
 
 # Provide the binary path for the multi-function lift test.
 if(DEFINED EVAL_TWO_FUNCS_SO)
@@ -42,6 +50,22 @@ if(EVAL_INDIRECT_CALL_SO)
         EVAL_INDIRECT_CALL_SO="${EVAL_INDIRECT_CALL_SO}"
     )
     add_dependencies(lifted-tests eval-indirect-call)
+endif()
+
+get_property(EVAL_EXT_CALL_SO GLOBAL PROPERTY "_EVAL_TARGET_EXT_CALL_SO")
+if(EVAL_EXT_CALL_SO)
+    target_compile_definitions(
+        lifted-tests
+        PRIVATE
+            EVAL_EXT_CALL_SO="${EVAL_EXT_CALL_SO}"
+    )
+    target_compile_definitions(
+        lifted-tests-opaque-call-stub
+        PRIVATE
+            EVAL_EXT_CALL_SO="${EVAL_EXT_CALL_SO}"
+    )
+    add_dependencies(lifted-tests eval-ext-call)
+    add_dependencies(lifted-tests-opaque-call-stub eval-ext-call)
 endif()
 
 get_property(EVAL_INSERTIONSORT_SO GLOBAL PROPERTY "_EVAL_TARGET_INSERTIONSORT_SO")

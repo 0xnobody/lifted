@@ -300,18 +300,18 @@ resolved_targets_result_t PolarisLifterCallbacks::resolve_targets(resolve_contex
 
     maybe_write_artifact(config_.artifact_dir, artifact_prefix + "pre_opt", *M);
 
-    auto unfolded_or = abi::unfold_function_state_recursive(analysis_func, ctx.bin_ctx);
-    if (!unfolded_or)
-    {
-        DLOG(WARNING) << "resolve_targets: unfold_function_state_recursive failed for BB 0x"
-                      << std::hex << ctx.bb.id << ": "
-                      << llvm::toString(unfolded_or.takeError());
-        return resolved_targets_result_t{};
-    }
-    analysis_func = *unfolded_or;
-    analysis_func->setLinkage(llvm::GlobalValue::ExternalLinkage);
-
-    maybe_write_artifact(config_.artifact_dir, artifact_prefix + "post_unfold", *M);
+    // auto unfolded_or = abi::unfold_function_state_recursive(analysis_func, ctx.bin_ctx);
+    // if (!unfolded_or)
+    //{
+    //     DLOG(WARNING) << "resolve_targets: unfold_function_state_recursive failed for BB 0x"
+    //                   << std::hex << ctx.bb.id << ": "
+    //                   << llvm::toString(unfolded_or.takeError());
+    //     return resolved_targets_result_t{};
+    // }
+    // analysis_func = *unfolded_or;
+    // analysis_func->setLinkage(llvm::GlobalValue::ExternalLinkage);
+    //
+    // maybe_write_artifact(config_.artifact_dir, artifact_prefix + "post_unfold", *M);
 
     opt::always_inline(M);
 

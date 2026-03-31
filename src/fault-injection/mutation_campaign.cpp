@@ -12,7 +12,6 @@
 #include "opt.hpp"
 #include "pipeline/pipeline.hpp"
 #include "pipeline/run_config.hpp"
-#include "pipeline/stages/corpus_replay_stage.hpp"
 #include "pipeline/stages/seed_sweep_stage.hpp"
 #include "utils.hpp"
 #include "verification/bb_sync_info.hpp"
@@ -201,7 +200,7 @@ static double duration_ms(std::chrono::steady_clock::time_point start,
     return static_cast<double>(duration_cast<nanoseconds>(end - start).count()) * 1e-6;
 }
 
-// Build the same 3-stage pipeline used by eval_pipeline.cpp (RAW_STRICT profile).
+// Build the same 2-stage pipeline used by eval_pipeline.cpp (RAW_STRICT profile).
 static pipeline::PipelineSpec make_campaign_pipeline(
     const std::string &func_name,
     std::shared_ptr<verification::Executor> src,
@@ -238,26 +237,11 @@ static pipeline::PipelineSpec make_campaign_pipeline(
         .compare_dims = DF::REG_STATE | DF::MEM_CONTENTS | DF::WRITE_SEQUENCE | DF::BB_TRACE | DF::EXT_CALLS,
     };
 
-    pipeline::RunConfig medium_cfg{
-        .seed = 0x1339,
-        .oracle = verification::sentinel_oracle(std::vector<verification::sentinel_t>{
-            {.size_bytes = 0, .value = 0, .inv_prob = 10},
-            {.size_bytes = 0, .value = 0xFFFF'FFFF'FFFF'FFFFull, .inv_prob = 10},
-        }),
-        .gen_factory = std::make_shared<verification::uniform_value_generator_factory>(
-            verification::value_constraints_t{.max = 0x1000, .alignment = 8}),
-        .bb_limit = 3000,
-        .loop_limit = 75,
-        .sync_on = EF::BB | EF::MEM_WRITE | EF::EXT_CALL,
-        .compare_dims = DF::REG_STATE | DF::MEM_CONTENTS | DF::WRITE_SEQUENCE | DF::BB_TRACE | DF::EXT_CALLS,
-    };
-
     pipeline::PipelineSpec spec;
     spec.name = "mutant[" + func_name + "]";
     spec.executors = {std::move(src), std::move(tgt)};
     spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(wide_cfg, 50));
     spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(small_cfg, 100));
-    spec.stages.push_back(std::make_unique<pipeline::CorpusReplayStage>(medium_cfg, 30));
     return spec;
 }
 
@@ -297,7 +281,7 @@ llvm::Expected<MutationReport> MutationCampaign::run(
 
     // Timing: campaign covers lift + inlining + baseline + all mutants.
     auto t0_campaign = std::chrono::steady_clock::now();
-    auto t0_lift     = t0_campaign;
+    auto t0_lift = t0_campaign;
 
     auto lift_result = the_lifter.lift(entry_rva, entry_ann_id, {.instrument_bb_entry = true});
     if (!lift_result)

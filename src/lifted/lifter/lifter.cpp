@@ -70,10 +70,18 @@ static llvm::Error emit_opaque_call_stub_body(llvm::Function &stub,
 
     llvm::Value *saved_rsp = abi::ExtractRegister(ir, abi::ABIRegister::RSP, state_ptr);
     llvm::Value *retaddr = ir.CreateCall(read_mem64, {memory, saved_rsp}, "retaddr");
+    std::vector<std::pair<abi::ABIRegister, llvm::Value *>> saved_nonvolatile_registers;
+    saved_nonvolatile_registers.reserve(cc.getNonVolatileRegisters().size());
+    for (auto reg : cc.getNonVolatileRegisters())
+    {
+        saved_nonvolatile_registers.emplace_back(reg, abi::ExtractRegister(ir, reg, state_ptr));
+    }
 
     ir.CreateCall(&opaque_target, {state_ptr, pc, memory});
 
     ir.CreateCall(store_rip, {state_ptr, retaddr});
+    for (const auto &[reg, saved_value] : saved_nonvolatile_registers)
+        abi::StoreRegister(ir, reg, state_ptr, saved_value);
     abi::StoreRegister(
         ir, abi::ABIRegister::RSP, state_ptr,
         ir.CreateAdd(saved_rsp, llvm::ConstantInt::get(saved_rsp->getType(), 8)));
