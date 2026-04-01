@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 
 namespace lifted::eval
@@ -56,6 +57,15 @@ double duration_ms(std::chrono::steady_clock::time_point start,
     return static_cast<double>(duration_cast<nanoseconds>(end - start).count()) * 1e-6;
 }
 
+std::unique_ptr<LIEF::Binary> parse_binary_serialized(const std::filesystem::path &path)
+{
+    static std::mutex parse_mutex;
+    // LIEF parser setup races on global logger registration under concurrent first-use.
+    // Serialize binary parsing so lifted-eval can keep the heavier lift/verify work parallel.
+    std::lock_guard<std::mutex> lock(parse_mutex);
+    return LIEF::Parser::parse(path);
+}
+
 void mark_skipped(VerificationPhaseResult &phase, std::string_view reason)
 {
     phase.status = PhaseStatus::SKIPPED;
@@ -66,6 +76,12 @@ void mark_skipped(MutationPhaseResult &phase, std::string_view reason)
 {
     phase.status = MutationPhaseStatus::SKIPPED;
     phase.skip_reason = std::string(reason);
+}
+
+void mark_skipped(Eg3ProfileResult &profile, std::string_view reason)
+{
+    mark_skipped(profile.selftest, reason);
+    mark_skipped(profile.mutation, reason);
 }
 
 std::unique_ptr<lifter::LifterCallbacks>
@@ -99,7 +115,7 @@ lift_artifacts(llvm::LLVMContext &context,
     auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux,
                                   remill::ArchName::kArchAMD64);
 
-    std::unique_ptr<LIEF::Binary> binary = LIEF::Parser::parse(path);
+    std::unique_ptr<LIEF::Binary> binary = parse_binary_serialized(path);
     if (!binary)
         return llvm::make_error<llvm::StringError>(
             "Failed to parse binary: " + path.string(),
@@ -184,6 +200,7 @@ make_unicorn(LiftArtifacts &artifacts, uint64_t entry_rva)
 
 VerificationPhaseResult run_phase(BinaryContext &bin_ctx,
                                   uint64_t entry_rva,
+                                  std::string_view phase_label,
                                   const std::string &func_name,
                                   std::shared_ptr<Executor> src,
                                   std::shared_ptr<Executor> tgt,
@@ -191,7 +208,8 @@ VerificationPhaseResult run_phase(BinaryContext &bin_ctx,
                                   size_t deep_dive_count)
 {
     VerificationPhaseResult phase;
-    pipeline::Pipeline pl(make_default_pipeline(func_name, std::move(src), std::move(tgt), profile));
+    pipeline::Pipeline pl(make_default_pipeline(
+        phase_label, func_name, std::move(src), std::move(tgt), profile));
 
     auto report = pl.run(bin_ctx, entry_rva);
     if (!report)
@@ -235,10 +253,11 @@ llvm::Expected<fault_injection::MutationReport>
 run_mutation_campaign(BinaryContext &bin_ctx,
                       const std::filesystem::path &binary_path,
                       uint64_t entry_rva,
-                      const std::string &report_func_name,
+                      const std::string &phase_label,
                       const std::string &lifted_function_name,
                       const llvm::Module &optimized_module,
                       const fault_injection::MutationCampaignConfig &cfg,
+                      PipelineCheckpointProfile profile,
                       double lift_duration_ms)
 {
     auto t0_campaign = std::chrono::steady_clock::now();
@@ -267,7 +286,7 @@ run_mutation_campaign(BinaryContext &bin_ctx,
     auto baseline_jit = std::shared_ptr<Executor>(std::move(*baseline_jit_or));
 
     fault_injection::MutationReport report;
-    report.func_name = report_func_name;
+    report.func_name = phase_label;
     report.binary_stem = binary_path.stem().string();
     report.total_enumerated = total_enumerated;
     report.total_mutants = points.size();
@@ -329,9 +348,9 @@ run_mutation_campaign(BinaryContext &bin_ctx,
         }
 
         auto mutant_jit = std::shared_ptr<Executor>(std::move(*mutant_jit_or));
-        auto phase = run_phase(bin_ctx, entry_rva, report_func_name,
-                               baseline_jit, mutant_jit,
-                               PipelineCheckpointProfile::OPTIMIZED_RELAXED,
+        auto phase = run_phase(bin_ctx, entry_rva, phase_label,
+                               phase_label, baseline_jit, mutant_jit,
+                               profile,
                                /*deep_dive_count=*/0);
 
         r.runs_total = phase.report ? phase.report->stages.size() : 0;
@@ -405,6 +424,67 @@ run_mutation_campaign(BinaryContext &bin_ctx,
 
     return report;
 }
+
+void run_eg3_profile(BinaryContext &bin_ctx,
+                     std::string_view phase_label,
+                     const std::filesystem::path &binary_path,
+                     uint64_t entry_rva,
+                     const std::string &report_func_name,
+                     const std::string &lifted_function_name,
+                     const llvm::Module &optimized_module,
+                     const fault_injection::MutationCampaignConfig &mutation_cfg,
+                     double lift_duration_ms,
+                     size_t deep_dive_count,
+                     bool run_mutation,
+                     Eg3ProfileResult &result)
+{
+    auto opt_self_src_or = make_opt_jit(optimized_module, lifted_function_name);
+    if (!opt_self_src_or)
+    {
+        result.selftest.status = PhaseStatus::ERROR;
+        result.selftest.error = llvm::toString(opt_self_src_or.takeError());
+        mark_skipped(result.mutation, "o2 self-test setup failed");
+        return;
+    }
+
+    auto opt_self_tgt_or = make_opt_jit(optimized_module, lifted_function_name);
+    if (!opt_self_tgt_or)
+    {
+        result.selftest.status = PhaseStatus::ERROR;
+        result.selftest.error = llvm::toString(opt_self_tgt_or.takeError());
+        mark_skipped(result.mutation, "o2 self-test setup failed");
+        return;
+    }
+
+    result.selftest = run_phase(
+        bin_ctx, entry_rva, std::string(phase_label) + " self-test",
+        report_func_name, *opt_self_src_or, *opt_self_tgt_or,
+        result.profile, deep_dive_count);
+    if (!run_mutation)
+    {
+        mark_skipped(result.mutation, "disabled");
+        return;
+    }
+
+    if (!result.selftest.passed())
+    {
+        mark_skipped(result.mutation, "o2 self-test did not pass");
+        return;
+    }
+
+    auto mutation_or = run_mutation_campaign(
+        bin_ctx, binary_path, entry_rva, std::string(phase_label) + " mutation",
+        lifted_function_name, optimized_module, mutation_cfg, result.profile, lift_duration_ms);
+    if (!mutation_or)
+    {
+        result.mutation.status = MutationPhaseStatus::ERROR;
+        result.mutation.error = llvm::toString(mutation_or.takeError());
+        return;
+    }
+
+    result.mutation.status = MutationPhaseStatus::RUN;
+    result.mutation.report = std::move(*mutation_or);
+}
 } // namespace
 
 bool FullPipelineResult::raw_pass() const
@@ -475,7 +555,22 @@ const char *mutation_phase_status_name(MutationPhaseStatus status)
     return "UNKNOWN";
 }
 
+const char *pipeline_checkpoint_profile_name(PipelineCheckpointProfile profile)
+{
+    switch (profile)
+    {
+    case PipelineCheckpointProfile::RAW_STRICT:
+        return "raw_strict";
+    case PipelineCheckpointProfile::OPTIMIZED_STRICT:
+        return "optimized_strict";
+    case PipelineCheckpointProfile::OPTIMIZED_RELAXED:
+        return "optimized_relaxed";
+    }
+    return "unknown";
+}
+
 pipeline::PipelineSpec make_default_pipeline(
+    std::string_view phase_label,
     const std::string &func_name,
     std::shared_ptr<verification::Executor> src,
     std::shared_ptr<verification::Executor> tgt,
@@ -492,6 +587,13 @@ pipeline::PipelineSpec make_default_pipeline(
             cfg.compare_dims =
                 DF::REG_STATE | DF::MEM_CONTENTS | DF::WRITE_SEQUENCE |
                 DF::BB_TRACE | DF::EXT_CALLS;
+            break;
+        case PipelineCheckpointProfile::OPTIMIZED_STRICT:
+            // Optimized-vs-optimized strict mode keeps structural BB/ext-call checks
+            // without requiring exact write sequencing across equivalent O2 rewrites.
+            cfg.sync_on = EF::BB | EF::EXT_CALL;
+            cfg.compare_dims =
+                DF::REG_STATE | DF::MEM_CONTENTS | DF::BB_TRACE | DF::EXT_CALLS;
             break;
         case PipelineCheckpointProfile::OPTIMIZED_RELAXED:
             cfg.sync_on = EF::EXT_CALL;
@@ -528,7 +630,7 @@ pipeline::PipelineSpec make_default_pipeline(
     apply_profile(small_cfg);
 
     pipeline::PipelineSpec spec;
-    spec.name = "raw_vs_native[" + func_name + "]";
+    spec.name = std::string(phase_label) + "[" + func_name + "]";
     spec.executors = {std::move(src), std::move(tgt)};
     spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(wide_cfg, 50));
     spec.stages.push_back(std::make_unique<pipeline::SeedSweepStage>(small_cfg, 100));
@@ -563,7 +665,7 @@ lift_and_verify_named(llvm::LLVMContext &context,
     if (!uc_or)
         return uc_or.takeError();
 
-    pipeline::Pipeline pl(make_default_pipeline(func_name, *jit_or, *uc_or));
+    pipeline::Pipeline pl(make_default_pipeline("EG1 raw/native", func_name, *jit_or, *uc_or));
     auto report = pl.run(*artifacts.bin_ctx, entry_rva);
     if (!report)
         return report.takeError();
@@ -615,7 +717,7 @@ lift_and_verify_full_named(llvm::LLVMContext &context,
     if (!uc_or)
         return uc_or.takeError();
 
-    pipeline::Pipeline p1(make_default_pipeline(func_name, *raw_jit_or, *uc_or));
+    pipeline::Pipeline p1(make_default_pipeline("EG1 raw/native", func_name, *raw_jit_or, *uc_or));
     auto report1 = p1.run(*artifacts.bin_ctx, entry_rva);
     if (!report1)
         return report1.takeError();
@@ -652,7 +754,7 @@ lift_and_verify_full_named(llvm::LLVMContext &context,
     }
 
     pipeline::Pipeline p2(make_default_pipeline(
-        func_name, *raw_jit_or, *opt_jit_or, PipelineCheckpointProfile::OPTIMIZED_RELAXED));
+        "EG2 raw/o2", func_name, *raw_jit_or, *opt_jit_or, PipelineCheckpointProfile::OPTIMIZED_RELAXED));
     auto report2 = p2.run(*artifacts.bin_ctx, entry_rva);
     if (!report2)
         return report2.takeError();
@@ -684,12 +786,25 @@ run_evaluation_named(llvm::LLVMContext &context,
                      const EvaluationConfig &config)
 {
     EvaluationRecord result;
+    result.eg3_strict.profile = config.eg3_strict_profile;
+    result.eg3_relaxed.profile = config.eg3_relaxed_profile;
 
     const bool need_raw = config.run_raw_vs_native || config.run_opt_vs_raw ||
-                          config.run_opt_selftest || config.run_mutation;
-    const bool need_opt = config.run_opt_vs_raw || config.run_opt_selftest ||
-                          config.run_mutation;
-    const bool need_selftest = config.run_opt_selftest || config.run_mutation;
+                          config.run_eg3_strict || config.run_eg3_relaxed;
+    const bool need_opt = config.run_opt_vs_raw || config.run_eg3_strict ||
+                          config.run_eg3_relaxed;
+
+    if (!config.run_eg3_strict)
+        mark_skipped(result.eg3_strict, "disabled");
+    if (!config.run_eg3_relaxed)
+        mark_skipped(result.eg3_relaxed, "disabled");
+
+    const auto skip_requested_eg3 = [&](std::string_view reason) {
+        if (config.run_eg3_strict)
+            mark_skipped(result.eg3_strict, reason);
+        if (config.run_eg3_relaxed)
+            mark_skipped(result.eg3_relaxed, reason);
+    };
 
     auto artifacts_or = lift_artifacts(context, path, func_name, entry_rva, config.obfuscator);
     if (!artifacts_or)
@@ -700,10 +815,7 @@ run_evaluation_named(llvm::LLVMContext &context,
             mark_skipped(result.raw_vs_native, "lift failed");
         if (need_opt)
             mark_skipped(result.opt_vs_raw, "lift failed");
-        if (need_selftest)
-            mark_skipped(result.opt_selftest, "lift failed");
-        if (config.run_mutation)
-            mark_skipped(result.mutation, "lift failed");
+        skip_requested_eg3("lift failed");
         return result;
     }
 
@@ -721,10 +833,7 @@ run_evaluation_named(llvm::LLVMContext &context,
             result.raw_vs_native.error = llvm::toString(raw_jit_or.takeError());
             if (need_opt)
                 mark_skipped(result.opt_vs_raw, "raw JIT setup failed");
-            if (need_selftest)
-                mark_skipped(result.opt_selftest, "raw JIT setup failed");
-            if (config.run_mutation)
-                mark_skipped(result.mutation, "raw JIT setup failed");
+            skip_requested_eg3("raw JIT setup failed");
             return result;
         }
         raw_jit = *raw_jit_or;
@@ -736,38 +845,29 @@ run_evaluation_named(llvm::LLVMContext &context,
             result.raw_vs_native.error = llvm::toString(uc_or.takeError());
             if (need_opt)
                 mark_skipped(result.opt_vs_raw, "native executor setup failed");
-            if (need_selftest)
-                mark_skipped(result.opt_selftest, "native executor setup failed");
-            if (config.run_mutation)
-                mark_skipped(result.mutation, "native executor setup failed");
+            skip_requested_eg3("native executor setup failed");
             return result;
         }
 
         result.raw_vs_native = run_phase(
-            *artifacts.bin_ctx, entry_rva, func_name, raw_jit, *uc_or,
-            PipelineCheckpointProfile::RAW_STRICT, config.deep_dive_count);
+            *artifacts.bin_ctx, entry_rva, "EG1 raw/native", func_name, raw_jit, *uc_or,
+            config.raw_vs_native_profile, config.deep_dive_count);
     }
-
-    if (!need_raw)
+    else
+    {
         mark_skipped(result.raw_vs_native, "disabled");
+    }
 
     if (!need_opt)
     {
         mark_skipped(result.opt_vs_raw, "disabled");
-        if (need_selftest)
-            mark_skipped(result.opt_selftest, "disabled");
-        if (config.run_mutation)
-            mark_skipped(result.mutation, "disabled");
         return result;
     }
 
     if (!result.raw_vs_native.passed())
     {
         mark_skipped(result.opt_vs_raw, "raw/native did not pass");
-        if (need_selftest)
-            mark_skipped(result.opt_selftest, "raw/native did not pass");
-        if (config.run_mutation)
-            mark_skipped(result.mutation, "raw/native did not pass");
+        skip_requested_eg3("raw/native did not pass");
         return result;
     }
 
@@ -777,81 +877,40 @@ run_evaluation_named(llvm::LLVMContext &context,
     {
         result.opt_vs_raw.status = PhaseStatus::ERROR;
         result.opt_vs_raw.error = llvm::toString(opt_jit_or.takeError());
-        if (need_selftest)
-            mark_skipped(result.opt_selftest, "optimized artifact setup failed");
-        if (config.run_mutation)
-            mark_skipped(result.mutation, "optimized artifact setup failed");
+        skip_requested_eg3("optimized artifact setup failed");
         return result;
     }
 
     result.opt_vs_raw = run_phase(
-        *artifacts.bin_ctx, entry_rva, func_name, raw_jit, *opt_jit_or,
-        PipelineCheckpointProfile::OPTIMIZED_RELAXED, config.deep_dive_count);
+        *artifacts.bin_ctx, entry_rva, "EG2 raw/o2", func_name, raw_jit, *opt_jit_or,
+        config.opt_vs_raw_profile, config.deep_dive_count);
 
-    if (!need_selftest)
-    {
-        mark_skipped(result.opt_selftest, "disabled");
-        if (config.run_mutation)
-            mark_skipped(result.mutation, "disabled");
+    if (!config.run_eg3_strict && !config.run_eg3_relaxed)
         return result;
-    }
 
     if (!result.opt_vs_raw.passed())
     {
-        mark_skipped(result.opt_selftest, "o2/raw did not pass");
-        if (config.run_mutation)
-            mark_skipped(result.mutation, "o2/raw did not pass");
+        skip_requested_eg3("o2/raw did not pass");
         return result;
     }
 
-    auto opt_self_src_or = make_opt_jit(*opt_module, artifacts.lifted_function_name);
-    if (!opt_self_src_or)
+    const double lift_duration_ms = result.lift_stats ? result.lift_stats->total_time_ms : 0.0;
+    if (config.run_eg3_strict)
     {
-        result.opt_selftest.status = PhaseStatus::ERROR;
-        result.opt_selftest.error = llvm::toString(opt_self_src_or.takeError());
-        if (config.run_mutation)
-            mark_skipped(result.mutation, "o2 self-test setup failed");
-        return result;
+        run_eg3_profile(
+            *artifacts.bin_ctx, "EG3 strict", path, entry_rva, func_name, artifacts.lifted_function_name,
+            *opt_module, config.mutation_config, lift_duration_ms,
+            config.deep_dive_count, config.run_mutation, result.eg3_strict);
     }
-    auto opt_self_tgt_or = make_opt_jit(*opt_module, artifacts.lifted_function_name);
-    if (!opt_self_tgt_or)
+
+    if (config.run_eg3_relaxed)
     {
-        result.opt_selftest.status = PhaseStatus::ERROR;
-        result.opt_selftest.error = llvm::toString(opt_self_tgt_or.takeError());
-        if (config.run_mutation)
-            mark_skipped(result.mutation, "o2 self-test setup failed");
-        return result;
+        run_eg3_profile(
+            *artifacts.bin_ctx, "EG3 relaxed", path, entry_rva, func_name, artifacts.lifted_function_name,
+            *opt_module, config.mutation_config, lift_duration_ms,
+            config.deep_dive_count, config.run_mutation, result.eg3_relaxed);
     }
 
-    result.opt_selftest = run_phase(
-        *artifacts.bin_ctx, entry_rva, func_name, *opt_self_src_or, *opt_self_tgt_or,
-        PipelineCheckpointProfile::OPTIMIZED_RELAXED, config.deep_dive_count);
-
-    if (!config.run_mutation)
-    {
-        mark_skipped(result.mutation, "disabled");
-        return result;
-    }
-
-    if (!result.opt_selftest.passed())
-    {
-        mark_skipped(result.mutation, "o2 self-test did not pass");
-        return result;
-    }
-
-    auto mutation_or = run_mutation_campaign(
-        *artifacts.bin_ctx, path, entry_rva, func_name, artifacts.lifted_function_name,
-        *opt_module, config.mutation_config,
-        result.lift_stats ? result.lift_stats->total_time_ms : 0.0);
-    if (!mutation_or)
-    {
-        result.mutation.status = MutationPhaseStatus::ERROR;
-        result.mutation.error = llvm::toString(mutation_or.takeError());
-        return result;
-    }
-
-    result.mutation.status = MutationPhaseStatus::RUN;
-    result.mutation.report = std::move(*mutation_or);
     return result;
 }
 

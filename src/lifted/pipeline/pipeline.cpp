@@ -275,8 +275,7 @@ llvm::Expected<PipelineReport> Pipeline::run(
         stage_report.total_runs = configs.size();
 
         if (llvm::errs().is_displayed())
-            llvm::errs() << "[" << stage->name() << "] ";
-
+            llvm::errs() << "[" << spec_.name << " :: " << stage->name() << "] ";
         for (uint64_t run_idx = 0; run_idx < configs.size(); ++run_idx)
         {
             const RunConfig &cfg = configs[run_idx];
@@ -288,8 +287,8 @@ llvm::Expected<PipelineReport> Pipeline::run(
             {
                 // Surface executor errors (JIT linking failures, Unicorn faults, …).
                 // Count as FAIL_INCOMPARABLE rather than aborting the whole pipeline.
-                llvm::errs() << "execute_one error at run " << run_idx << ": "
-                             << llvm::toString(outcome_exp.takeError()) << "\n";
+                llvm::errs() << "[" << spec_.name << "] execute_one error at run " << run_idx
+                             << ": " << llvm::toString(outcome_exp.takeError()) << "\n";
                 ++stage_report.incomparable;
                 continue;
             }

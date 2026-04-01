@@ -76,6 +76,13 @@ enum class MutationPhaseStatus
     ERROR,
 };
 
+enum class PipelineCheckpointProfile
+{
+    RAW_STRICT,
+    OPTIMIZED_STRICT,
+    OPTIMIZED_RELAXED,
+};
+
 struct MutationPhaseResult
 {
     MutationPhaseStatus status = MutationPhaseStatus::NOT_REQUESTED;
@@ -84,6 +91,18 @@ struct MutationPhaseResult
     std::string skip_reason;
 
     bool executed() const;
+};
+
+struct Eg3ProfileResult
+{
+    PipelineCheckpointProfile profile;
+    VerificationPhaseResult selftest;
+    MutationPhaseResult mutation;
+
+    explicit Eg3ProfileResult(
+        PipelineCheckpointProfile checkpoint_profile =
+            PipelineCheckpointProfile::OPTIMIZED_RELAXED)
+        : profile(checkpoint_profile) {}
 };
 
 struct EvaluationRecord
@@ -95,8 +114,8 @@ struct EvaluationRecord
 
     VerificationPhaseResult raw_vs_native;
     VerificationPhaseResult opt_vs_raw;
-    VerificationPhaseResult opt_selftest;
-    MutationPhaseResult mutation;
+    Eg3ProfileResult eg3_strict{PipelineCheckpointProfile::OPTIMIZED_STRICT};
+    Eg3ProfileResult eg3_relaxed{PipelineCheckpointProfile::OPTIMIZED_RELAXED};
 
     size_t bbs_total() const;
 };
@@ -107,18 +126,19 @@ struct EvaluationConfig
     std::string obfuscator;
     bool run_raw_vs_native = true;
     bool run_opt_vs_raw = true;
-    bool run_opt_selftest = false;
+    bool run_eg3_strict = false;
+    bool run_eg3_relaxed = false;
     bool run_mutation = false;
+    PipelineCheckpointProfile raw_vs_native_profile = PipelineCheckpointProfile::RAW_STRICT;
+    PipelineCheckpointProfile opt_vs_raw_profile = PipelineCheckpointProfile::OPTIMIZED_RELAXED;
+    PipelineCheckpointProfile eg3_strict_profile = PipelineCheckpointProfile::OPTIMIZED_STRICT;
+    PipelineCheckpointProfile eg3_relaxed_profile = PipelineCheckpointProfile::OPTIMIZED_RELAXED;
     fault_injection::MutationCampaignConfig mutation_config;
 };
 
-enum class PipelineCheckpointProfile
-{
-    RAW_STRICT,
-    OPTIMIZED_RELAXED,
-};
 
 pipeline::PipelineSpec make_default_pipeline(
+    std::string_view phase_label,
     const std::string &func_name,
     std::shared_ptr<verification::Executor> src,
     std::shared_ptr<verification::Executor> tgt,
@@ -153,5 +173,5 @@ std::vector<std::string> known_suite_names();
 
 const char *phase_status_name(PhaseStatus status);
 const char *mutation_phase_status_name(MutationPhaseStatus status);
-
+const char *pipeline_checkpoint_profile_name(PipelineCheckpointProfile profile);
 } // namespace lifted::eval

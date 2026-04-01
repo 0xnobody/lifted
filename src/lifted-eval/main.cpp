@@ -10,14 +10,16 @@
 #include "suite.hpp"
 #include "utils.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <optional>
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 #include <cstdio>
-
 namespace fs = std::filesystem;
 using namespace llvm;
 using namespace lifted::eval;
@@ -131,6 +133,11 @@ static cl::opt<std::string> RenderCfgOpt(
     cl::desc("Render CFGs via graphviz (svg|png|pdf)"),
     cl::init(""),
     cl::cat(LiftedEvalCategory));
+static cl::opt<int> JobsOpt(
+    "jobs",
+    cl::desc("Functions to evaluate concurrently per campaign (0=hardware concurrency)"),
+    cl::init(0),
+    cl::cat(LiftedEvalCategory));
 static cl::opt<bool> ListOpt(
     "list",
     cl::desc("Print the planned campaign matrix without executing it"),
@@ -144,6 +151,15 @@ struct CampaignPlan
     bool mutation = false;
     fs::path output_dir;
     EvaluationConfig config;
+};
+
+struct FunctionWorkItem
+{
+    size_t ordinal = 0;
+    fs::path so_path;
+    std::string binary;
+    std::string func;
+    uint64_t addr = 0;
 };
 
 std::string target_stem(const fs::path &so_path)
@@ -212,21 +228,64 @@ bool phase_failed(const VerificationPhaseResult &phase)
     return phase.status == PhaseStatus::FAIL || phase.status == PhaseStatus::ERROR;
 }
 
+bool mutation_failed(const MutationPhaseResult &mutation)
+{
+    return mutation.status == MutationPhaseStatus::ERROR ||
+           (mutation.status == MutationPhaseStatus::SKIPPED &&
+            mutation.skip_reason != "disabled");
+}
+
+bool eg3_profile_failed(const Eg3ProfileResult &profile)
+{
+    return phase_failed(profile.selftest) || mutation_failed(profile.mutation);
+}
+
+void print_eg3_profile_summary(std::string_view label, const Eg3ProfileResult &profile)
+{
+    const char *profile_name = pipeline_checkpoint_profile_name(profile.profile);
+
+    outs() << "  [EG3 " << label << " self-test/" << profile_name << "] "
+           << phase_status_name(profile.selftest.status);
+    if (!profile.selftest.skip_reason.empty())
+        outs() << "  (" << profile.selftest.skip_reason << ")";
+    else if (!profile.selftest.error.empty())
+        outs() << "  (" << profile.selftest.error << ")";
+    outs() << "\n";
+
+    outs() << "  [EG3 " << label << " mutation/" << profile_name << "] "
+           << mutation_phase_status_name(profile.mutation.status);
+    if (profile.mutation.report)
+    {
+        outs() << "  (kill="
+               << fmt_dbl(profile.mutation.report->mutation_score() * 100.0)
+               << "% adj="
+               << fmt_dbl(profile.mutation.report->adjusted_score() * 100.0)
+               << "%)";
+    }
+    else if (!profile.mutation.skip_reason.empty())
+    {
+        outs() << "  (" << profile.mutation.skip_reason << ")";
+    }
+    else if (!profile.mutation.error.empty())
+    {
+        outs() << "  (" << profile.mutation.error << ")";
+    }
+    outs() << "\n";
+}
+
 int campaign_exit_code(const std::vector<EvaluatedFunction> &results)
 {
     bool any_failure = false;
     for (const auto &entry : results)
     {
         if (entry.record.lift_failed || phase_failed(entry.record.raw_vs_native) ||
-            phase_failed(entry.record.opt_vs_raw) || phase_failed(entry.record.opt_selftest) ||
-            entry.record.mutation.status == MutationPhaseStatus::ERROR)
+            phase_failed(entry.record.opt_vs_raw) ||
+            eg3_profile_failed(entry.record.eg3_strict) ||
+            eg3_profile_failed(entry.record.eg3_relaxed))
         {
             any_failure = true;
             continue;
         }
-        if (entry.record.mutation.status == MutationPhaseStatus::SKIPPED &&
-            entry.record.mutation.skip_reason != "disabled")
-            any_failure = true;
     }
     return any_failure ? 1 : 0;
 }
@@ -249,29 +308,8 @@ void print_phase_summary(const EvaluatedFunction &entry)
         outs() << "  (" << entry.record.opt_vs_raw.skip_reason << ")";
     outs() << "\n";
 
-    outs() << "  [EG3 self-test] " << phase_status_name(entry.record.opt_selftest.status);
-    if (!entry.record.opt_selftest.skip_reason.empty())
-        outs() << "  (" << entry.record.opt_selftest.skip_reason << ")";
-    outs() << "\n";
-
-    outs() << "  [EG3 mutation] " << mutation_phase_status_name(entry.record.mutation.status);
-    if (entry.record.mutation.report)
-    {
-        outs() << "  (kill="
-               << fmt_dbl(entry.record.mutation.report->mutation_score() * 100.0)
-               << "% adj="
-               << fmt_dbl(entry.record.mutation.report->adjusted_score() * 100.0)
-               << "%)";
-    }
-    else if (!entry.record.mutation.skip_reason.empty())
-    {
-        outs() << "  (" << entry.record.mutation.skip_reason << ")";
-    }
-    else if (!entry.record.mutation.error.empty())
-    {
-        outs() << "  (" << entry.record.mutation.error << ")";
-    }
-    outs() << "\n";
+    print_eg3_profile_summary("strict", entry.record.eg3_strict);
+    print_eg3_profile_summary("relaxed", entry.record.eg3_relaxed);
 }
 
 std::string standard_dir_name(const std::string &suite, std::string_view obfuscator)
@@ -385,7 +423,8 @@ int main(int argc, char **argv)
         cfg.obfuscator = std::string(obfuscator);
         cfg.run_raw_vs_native = want_eg1;
         cfg.run_opt_vs_raw = want_eg2;
-        cfg.run_opt_selftest = want_eg3 && !run_mutation;
+        cfg.run_eg3_strict = want_eg3;
+        cfg.run_eg3_relaxed = want_eg3;
         cfg.run_mutation = false;
         return cfg;
     };
@@ -396,7 +435,8 @@ int main(int argc, char **argv)
         cfg.obfuscator = std::string(obfuscator);
         cfg.run_raw_vs_native = true;
         cfg.run_opt_vs_raw = true;
-        cfg.run_opt_selftest = true;
+        cfg.run_eg3_strict = true;
+        cfg.run_eg3_relaxed = true;
         cfg.run_mutation = true;
         cfg.mutation_config = mutation_cfg;
         return cfg;
@@ -466,8 +506,14 @@ int main(int argc, char **argv)
         }
         return 0;
     }
+    const auto auto_job_count = []() -> size_t {
+        const unsigned hint = std::thread::hardware_concurrency();
+        return hint == 0 ? 1 : static_cast<size_t>(hint);
+    };
+    const auto configured_job_count = [&]() -> size_t {
+        return JobsOpt <= 0 ? auto_job_count() : static_cast<size_t>(JobsOpt);
+    };
 
-    LLVMContext ctx;
     int overall_exit = 0;
     bool any_results = false;
 
@@ -501,30 +547,7 @@ int main(int argc, char **argv)
                << " / " << (plan.mutation ? "mutation" : "standard")
                << " ===\n";
 
-        std::vector<EvaluatedFunction> results;
-        size_t planned_count = 0;
-        for (const auto &entry : entries)
-        {
-            if (entry.obfuscator != plan.obfuscator)
-                continue;
-            const std::string stem = target_stem(entry.so_path);
-            if (!target_filters.empty() && !target_filters.count(stem))
-                continue;
-            if (ignore_filters.count(stem))
-                continue;
-            auto targets = parse_targets_csv(entry.targets_csv_path);
-            for (const auto &target : targets)
-            {
-                const std::string label = stem + "::" + target.func_name;
-                if (!func_filters.empty() && !func_filters.count(label))
-                    continue;
-                if (ignore_filters.count(label))
-                    continue;
-                ++planned_count;
-            }
-        }
-
-        size_t idx = 0;
+        std::vector<FunctionWorkItem> work_items;
         for (const auto &entry : entries)
         {
             if (entry.obfuscator != plan.obfuscator)
@@ -544,40 +567,95 @@ int main(int argc, char **argv)
                 if (ignore_filters.count(label))
                     continue;
 
-                ++idx;
-                outs() << "\n--- [" << idx << "/" << planned_count << "] "
-                       << entry.so_path.filename().string() << " :: " << target.func_name
-                       << " @ " << llvm::format_hex(target.addr, 18) << " ---\n";
-
-                auto record_or = run_evaluation_named(
-                    ctx, entry.so_path, target.func_name, target.addr, plan.config);
-                if (!record_or)
-                {
-                    errs() << "  [FATAL] " << toString(record_or.takeError()) << "\n";
-                    return 2;
-                }
-
-                results.push_back(EvaluatedFunction{
-                    .suite = plan.suite,
+                work_items.push_back(FunctionWorkItem{
+                    .ordinal = work_items.size() + 1,
+                    .so_path = entry.so_path,
                     .binary = stem,
                     .func = target.func_name,
-                    .obfuscator = obfuscator_name(plan.obfuscator),
-                    .record = std::move(*record_or),
+                    .addr = target.addr,
                 });
-
-                print_phase_summary(results.back());
-                write_function_reports(results.back(), plan.output_dir);
-                write_function_dot(results.back(), plan.output_dir, RenderCfgOpt);
             }
         }
 
-        if (results.empty())
+        if (work_items.empty())
         {
             outs() << "  [SKIPPED] no matching functions for this campaign\n";
             continue;
         }
 
         any_results = true;
+        const size_t jobs = std::max<size_t>(1, std::min(work_items.size(), configured_job_count()));
+        outs() << "  [INFO] jobs=" << jobs << "\n";
+
+        std::vector<std::optional<EvaluatedFunction>> ordered_results(work_items.size());
+        std::vector<std::string> fatal_errors(work_items.size());
+        std::atomic_size_t next_index{0};
+        std::vector<std::thread> workers;
+        workers.reserve(jobs);
+
+        for (size_t worker = 0; worker < jobs; ++worker)
+        {
+            workers.emplace_back([&] {
+                llvm::LLVMContext local_ctx;
+                while (true)
+                {
+                    const size_t index = next_index.fetch_add(1);
+                    if (index >= work_items.size())
+                        break;
+
+                    const auto &item = work_items[index];
+                    auto record_or = run_evaluation_named(
+                        local_ctx, item.so_path, item.func, item.addr, plan.config);
+                    if (!record_or)
+                    {
+                        fatal_errors[index] = toString(record_or.takeError());
+                        continue;
+                    }
+
+                    ordered_results[index] = EvaluatedFunction{
+                        .suite = plan.suite,
+                        .binary = item.binary,
+                        .func = item.func,
+                        .obfuscator = obfuscator_name(plan.obfuscator),
+                        .record = std::move(*record_or),
+                    };
+                }
+            });
+        }
+
+        for (auto &worker : workers)
+            worker.join();
+
+        for (size_t index = 0; index < fatal_errors.size(); ++index)
+        {
+            if (!fatal_errors[index].empty())
+            {
+                errs() << "  [FATAL] " << fatal_errors[index] << "\n";
+                return 2;
+            }
+            if (!ordered_results[index].has_value())
+            {
+                errs() << "  [FATAL] missing evaluation result for "
+                       << work_items[index].binary << "::" << work_items[index].func << "\n";
+                return 2;
+            }
+        }
+
+        std::vector<EvaluatedFunction> results;
+        results.reserve(ordered_results.size());
+        for (size_t index = 0; index < ordered_results.size(); ++index)
+        {
+            const auto &item = work_items[index];
+            outs() << "\n--- [" << item.ordinal << "/" << work_items.size() << "] "
+                   << item.so_path.filename().string() << " :: " << item.func
+                   << " @ " << llvm::format_hex(item.addr, 18) << " ---\n";
+
+            results.push_back(std::move(*ordered_results[index]));
+            print_phase_summary(results.back());
+            write_function_reports(results.back(), plan.output_dir);
+            write_function_dot(results.back(), plan.output_dir, RenderCfgOpt);
+        }
+
         const std::string label = plan.suite + " (obfuscator=" + obfuscator_name(plan.obfuscator)
             + ", mode=" + (plan.mutation ? std::string("mutation") : std::string("standard")) + ")";
         write_campaign_artifacts(label, results, plan.output_dir);
