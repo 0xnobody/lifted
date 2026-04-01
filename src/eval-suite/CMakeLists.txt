@@ -5,6 +5,8 @@ add_library(eval-suite STATIC
     suite.cpp
     eval_pipeline.hpp
     eval_pipeline.cpp
+    campaign_reporting.hpp
+    campaign_reporting.cpp
 )
 
 target_include_directories(eval-suite PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

@@ -1,448 +1,594 @@
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <iomanip>
-#include <iostream>
-
-#include <llvm/IR/LLVMContext.h>
-#include <llvm/Support/Error.h>
+#include <llvm/Support/CommandLine.h>
 #include <llvm/Support/Format.h>
+#include <llvm/Support/InitLLVM.h>
 #include <llvm/Support/raw_ostream.h>
-
-#include <remill/Arch/Arch.h>
-#include <remill/Arch/Name.h>
-#include <remill/OS/OS.h>
 
 #include <glog/logging.h>
 
-#include "abi/all_registers_cc.hpp"
-#include "abi/state_fold.hpp"
-#include "abi/systemv_x64.hpp"
-
+#include "campaign_reporting.hpp"
 #include "eval_pipeline.hpp"
-#include "lifter/lifter.hpp"
-#include "lifter/polaris_lifter_callbacks.hpp"
-#include "lifter/standard_lifter_callbacks.hpp"
-#include "mutation_campaign.hpp"
-#include "opt.hpp"
 #include "suite.hpp"
 #include "utils.hpp"
 
-#include "bb_sync_info_builder.hpp"
-#include "verification/jit_executor.hpp"
-#include "verification/unicorn_executor.hpp"
+#include <filesystem>
+#include <optional>
+#include <set>
+#include <string>
+#include <string_view>
+#include <vector>
+#include <cstdio>
 
-#include "visualization/pipeline_overlay.hpp"
-
-using namespace lifted;
+namespace fs = std::filesystem;
+using namespace llvm;
 using namespace lifted::eval;
 using namespace lifted::fault_injection;
 
-// ── Bulk mutation suite runner ───────────────────────────────────────────────
-//
-// Reads a suite CSV and runs MutationCampaign::run() on every listed function.
-// Prints a per-function report to stdout and writes a summary CSV to csv_out.
-static llvm::Error mutate_suite(llvm::LLVMContext &context,
-                                const std::filesystem::path &suite_csv_path,
-                                const MutationCampaign::Config cfg,
-                                const std::filesystem::path &csv_out)
+namespace
 {
-    llvm::outs() << "\n=== Mutation suite: " << suite_csv_path.filename().string() << " ===\n";
+static cl::OptionCategory LiftedEvalCategory("lifted-eval options");
 
-    auto suite = parse_suite_csv(suite_csv_path);
-    if (suite.empty())
-    {
-        llvm::errs() << "mutate_suite: no entries in " << suite_csv_path.string() << "\n";
-        return llvm::Error::success();
-    }
+static cl::list<std::string> SuiteOpt(
+    "suite",
+    cl::desc("Suites to run (comma-separated)"),
+    cl::CommaSeparated,
+    cl::cat(LiftedEvalCategory));
+static cl::opt<std::string> ObfuscatorOpt(
+    "obfuscator",
+    cl::desc("Obfuscator filter: none, polaris, or all (default: all)"),
+    cl::init("all"),
+    cl::cat(LiftedEvalCategory));
+static cl::list<std::string> TargetOpt(
+    "target",
+    cl::desc("Target stems to include (comma-separated)"),
+    cl::CommaSeparated,
+    cl::cat(LiftedEvalCategory));
+static cl::list<std::string> FuncOpt(
+    "func",
+    cl::desc("Function filters as target::func (comma-separated)"),
+    cl::CommaSeparated,
+    cl::cat(LiftedEvalCategory));
+static cl::list<std::string> IgnoreOpt(
+    "ignore",
+    cl::desc("Target stems or target::func labels to skip (comma-separated)"),
+    cl::CommaSeparated,
+    cl::cat(LiftedEvalCategory));
 
-    // Open CSV output file.
-    std::ofstream csv(csv_out);
-    if (!csv.is_open())
-        llvm::errs() << "mutate_suite: cannot open " << csv_out.string() << " for writing\n";
-    else
-        csv << "binary,func,total_enumerated,total_mutants,killed,survived,equivalent,errors,"
-               "mutation_score_pct,adjusted_score_pct\n";
+static cl::opt<bool> WithStandardOpt(
+    "with-standard",
+    cl::desc("Force standard evaluation campaigns on"),
+    cl::init(false),
+    cl::cat(LiftedEvalCategory));
+static cl::opt<bool> WithoutStandardOpt(
+    "without-standard",
+    cl::desc("Disable standard evaluation campaigns"),
+    cl::init(false),
+    cl::cat(LiftedEvalCategory));
+static cl::opt<bool> WithMutationOpt(
+    "with-mutation",
+    cl::desc("Force mutation campaigns on"),
+    cl::init(false),
+    cl::cat(LiftedEvalCategory));
+static cl::opt<bool> WithoutMutationOpt(
+    "without-mutation",
+    cl::desc("Disable mutation campaigns"),
+    cl::init(false),
+    cl::cat(LiftedEvalCategory));
+static cl::opt<bool> WithPolarisMutationOpt(
+    "with-polaris-mutation",
+    cl::desc("Enable mutation campaigns for Polaris targets"),
+    cl::init(false),
+    cl::cat(LiftedEvalCategory));
 
-    for (const auto &entry : suite)
-    {
-        auto targets = parse_targets_csv(entry.targets_csv_path);
-        if (targets.empty())
-        {
-            llvm::errs() << "  no targets in " << entry.targets_csv_path.string() << "\n";
-            continue;
-        }
+static cl::opt<bool> Eg1Opt(
+    "eg1",
+    cl::desc("Run EG1 (raw lifted IR vs native binary)"),
+    cl::init(false),
+    cl::cat(LiftedEvalCategory));
+static cl::opt<bool> Eg2Opt(
+    "eg2",
+    cl::desc("Run EG2 (raw lifted IR vs O2 IR, gated by EG1)"),
+    cl::init(false),
+    cl::cat(LiftedEvalCategory));
+static cl::opt<bool> Eg3Opt(
+    "eg3",
+    cl::desc("Run EG3 (O2 self-test and mutation gating)"),
+    cl::init(false),
+    cl::cat(LiftedEvalCategory));
+static cl::opt<bool> AllEgsOpt(
+    "all-egs",
+    cl::desc("Run EG1 + EG2 + EG3 (default when no EG flag is supplied)"),
+    cl::init(false),
+    cl::cat(LiftedEvalCategory));
 
-        std::string bin_stem = entry.so_path.stem().string();
-        if (bin_stem.starts_with("libeval-"))
-            bin_stem = bin_stem.substr(8);
+static cl::opt<int> MutationBudgetOpt(
+    "mutation-budget",
+    cl::desc("Mutation budget per function (default: 200)"),
+    cl::init(200),
+    cl::cat(LiftedEvalCategory));
+static cl::opt<std::string> MutationSeedOpt(
+    "mutation-seed",
+    cl::desc("Mutation RNG seed in hex (default: 0x1337)"),
+    cl::init("0x1337"),
+    cl::cat(LiftedEvalCategory));
+static cl::list<std::string> MutationCategoriesOpt(
+    "mutation-categories",
+    cl::desc("Mutation category filter (comma-separated)"),
+    cl::CommaSeparated,
+    cl::cat(LiftedEvalCategory));
 
-        for (const auto &target : targets)
-        {
-            llvm::outs() << "  [MUTATE] " << bin_stem << "::" << target.func_name
-                         << " @ " << llvm::format_hex(target.addr, 18) << "\n";
+static cl::opt<std::string> OutputRootOpt(
+    "output-root",
+    cl::desc("Root directory for evaluation outputs"),
+    cl::init("eval/results"),
+    cl::cat(LiftedEvalCategory));
+static cl::opt<int> MaxDeepDivesOpt(
+    "max-deep-dives",
+    cl::desc("Deep-dive divergences per function: 0=skip, 1=first (default)"),
+    cl::init(1),
+    cl::cat(LiftedEvalCategory));
+static cl::opt<std::string> RenderCfgOpt(
+    "render-cfg",
+    cl::desc("Render CFGs via graphviz (svg|png|pdf)"),
+    cl::init(""),
+    cl::cat(LiftedEvalCategory));
+static cl::opt<bool> ListOpt(
+    "list",
+    cl::desc("Print the planned campaign matrix without executing it"),
+    cl::init(false),
+    cl::cat(LiftedEvalCategory));
 
-            auto report_or = lift_and_mutate_named(
-                context, entry.so_path, target.func_name, target.addr, cfg);
-            if (!report_or)
-            {
-                llvm::errs() << "    [FATAL] " << llvm::toString(report_or.takeError()) << "\n";
-                continue;
-            }
-
-            if (report_or->lift_failed)
-            {
-                llvm::errs() << "    [ERROR] " << report_or->lift_error << "\n";
-                continue;
-            }
-
-            const auto &rpt = *report_or->report;
-            rpt.print(std::cout);
-
-            // Append to CSV.
-            if (csv.is_open())
-            {
-                csv << bin_stem << "," << target.func_name << ","
-                    << rpt.total_enumerated << "," << rpt.total_mutants << ","
-                    << rpt.killed << "," << rpt.survived << ","
-                    << rpt.equivalent << "," << rpt.errors << ","
-                    << std::fixed << std::setprecision(1)
-                    << (100.0 * rpt.mutation_score()) << ","
-                    << (100.0 * rpt.adjusted_score()) << "\n";
-            }
-        }
-    }
-
-    return llvm::Error::success();
-}
-// ── Suite runner
-// ─────────────────────────────────────────────────────────────── Reads a suite
-// CSV (so_path,targets_csv_path,obfuscator) and lifts every listed function.
-static llvm::Error lift_suite(llvm::LLVMContext &context,
-                              const std::filesystem::path &suite_csv_path)
+struct CampaignPlan
 {
-    llvm::outs() << "\n=== Suite: " << suite_csv_path.filename().string()
-                 << " ===\n";
+    std::string suite;
+    std::string obfuscator; // raw: "" or "polaris"
+    bool mutation = false;
+    fs::path output_dir;
+    EvaluationConfig config;
+};
 
-    auto suite = parse_suite_csv(suite_csv_path);
-    if (suite.empty())
-    {
-        llvm::errs() << "lift_suite: no entries in " << suite_csv_path.string()
-                     << "\n";
-        return llvm::Error::success();
-    }
-
-    int num_diverged = 0;
-    int num_total = 0;
-    for (const auto &entry : suite)
-    {
-        if (entry.obfuscator == "polaris")
-            continue;
-
-        auto targets = parse_targets_csv(entry.targets_csv_path);
-        if (targets.empty())
-        {
-            llvm::errs() << "  no targets in " << entry.targets_csv_path.string()
-                         << "\n";
-            continue;
-        }
-
-        for (const auto &target : targets)
-        {
-            std::string eval_name =
-                entry.so_path.filename().string() + "." + target.func_name;
-
-            std::ofstream report_file("/tmp/eval_" + eval_name + "_report.txt");
-
-            llvm::outs() << "  Lifting " << entry.so_path.filename().string()
-                         << "::" << target.func_name << " @ "
-                         << llvm::format_hex(target.addr, 18) << "\n";
-
-            auto result = lift_and_verify_named(context, entry.so_path,
-                                                target.func_name, target.addr,
-                                                1, entry.obfuscator);
-            if (!result)
-            {
-                llvm::errs() << "  FAILED: " << llvm::toString(result.takeError())
-                             << "\n";
-                continue;
-            }
-
-            if (result->lift_failed)
-            {
-                llvm::errs() << "  Lifting failed: " << result->lift_error << "\n";
-                continue;
-            }
-
-            if (result->lift_stats)
-                result->lift_stats->print(report_file);
-
-            if (result->report)
-                result->report->print(report_file);
-
-            if (result->deep_dive)
-                result->deep_dive->print(report_file);
-
-            visualization::OverlayData od = {.block_hits =
-                                                 &result->report->src_block_hits};
-
-            const lifted::pipeline::RunOutcome *div_ptr = nullptr;
-            if (result->report)
-            {
-                for (const auto &stage : result->report->stages)
-                {
-                    for (const auto &d : stage.divergences)
-                    {
-                        div_ptr = &d;
-                        break;
-                    }
-                    if (div_ptr)
-                        break;
-                }
-            }
-            od.divergence = div_ptr;
-
-            auto dot_output = visualization::overlay_to_dot(*result->cfg, od);
-
-            std::ofstream dot_file("/tmp/eval_" + eval_name + "_cfg.dot");
-            dot_file << dot_output;
-            dot_file.close();
-
-            system(("dot -Tsvg /tmp/eval_" + eval_name + "_cfg.dot -o /tmp/eval_" +
-                    eval_name + "_cfg.svg")
-                       .c_str());
-
-            if (div_ptr)
-            {
-                llvm::outs() << "[DIVERGED]\n";
-                num_diverged++;
-            }
-            num_total++;
-        }
-    }
-
-    llvm::outs() << "Total: " << num_total << ", Diverged: " << num_diverged << "\n";
-
-    return llvm::Error::success();
+std::string target_stem(const fs::path &so_path)
+{
+    std::string stem = so_path.stem().string();
+    if (stem.starts_with("libeval-"))
+        return stem.substr(8);
+    if (stem.starts_with("lib"))
+        return stem.substr(3);
+    return stem;
 }
 
-llvm::Error test_full_pipeline(llvm::LLVMContext &context,
-                               const std::filesystem::path &path,
-                               uint64_t entry_rva)
+std::string obfuscator_name(std::string_view obfuscator)
 {
-    auto arch = remill::Arch::Get(context, remill::OSName::kOSLinux,
-                                  remill::ArchName::kArchAMD64);
+    return obfuscator.empty() ? "none" : std::string(obfuscator);
+}
 
-    auto binary = LIEF::Parser::parse(path);
-    if (!binary)
-        return llvm::make_error<llvm::StringError>("Failed to parse binary: " +
-                                                       path.string(),
-                                                   llvm::inconvertibleErrorCode());
+std::optional<MutationCategory> parse_category(const std::string &s)
+{
+    if (s == "arithmetic" || s == "ARITHMETIC")
+        return MutationCategory::ARITHMETIC;
+    if (s == "bitwise" || s == "BITWISE")
+        return MutationCategory::BITWISE;
+    if (s == "comparison_neg" || s == "COMPARISON_NEG")
+        return MutationCategory::COMPARISON_NEG;
+    if (s == "comparison_bdry" || s == "COMPARISON_BDRY")
+        return MutationCategory::COMPARISON_BDRY;
+    if (s == "operand_swap" || s == "OPERAND_SWAP")
+        return MutationCategory::OPERAND_SWAP;
+    if (s == "drop_computation" || s == "DROP_COMPUTATION")
+        return MutationCategory::DROP_COMPUTATION;
+    if (s == "constant_repl" || s == "CONSTANT_REPL")
+        return MutationCategory::CONSTANT_REPL;
+    if (s == "negate_trunc" || s == "NEGATE_TRUNC")
+        return MutationCategory::NEGATE_TRUNC;
+    return std::nullopt;
+}
 
-    lifted::BinaryContext bin_ctx(std::move(binary));
+std::string fmt_dbl(double value, int precision = 1)
+{
+    char buffer[64];
+    std::snprintf(buffer, sizeof(buffer), "%.*f", precision, value);
+    return buffer;
+}
 
-    lifter::standard_lifter_config_t cb_config =
-        lifter::standard_lifter_config_t::from_standard_linux_binary(
-            bin_ctx.binary());
+std::vector<std::string> default_suite_order()
+{
+    std::vector<std::string> ordered;
+    const std::vector<std::string> thesis_order = {
+        "synthetic",
+        "tum-basic-algorithms",
+        "tum-small-programs",
+        "tum-simple-hash-functions",
+        "gnu-coreutils",
+    };
+    const auto known_names = known_suite_names();
+    const std::set<std::string> known(known_names.begin(), known_names.end());
+    for (const auto &suite : thesis_order)
+        if (known.count(suite))
+            ordered.push_back(suite);
+    return ordered;
+}
 
-    lifter::StandardLifterCallbacks callbacks(std::move(cb_config));
-    auto the_lifter_or = lifter::Lifter::create(arch.get(), bin_ctx, &callbacks);
-    if (!the_lifter_or)
-        return the_lifter_or.takeError();
-    auto &the_lifter = *the_lifter_or;
+bool phase_failed(const VerificationPhaseResult &phase)
+{
+    return phase.status == PhaseStatus::FAIL || phase.status == PhaseStatus::ERROR;
+}
 
-    auto entry_ann = std::make_unique<lifted::fnc_annotation_t>();
-    entry_ann->cc = &lifted::abi::AllRegistersCC::get();
-    annotation_id_t entry_annotation_id = bin_ctx.add_annotation(std::move(entry_ann));
-
-    auto lift_result = the_lifter.lift(entry_rva, entry_annotation_id, {.instrument_bb_entry = true});
-    if (!lift_result)
+int campaign_exit_code(const std::vector<EvaluatedFunction> &results)
+{
+    bool any_failure = false;
+    for (const auto &entry : results)
     {
-        return lift_result.takeError();
+        if (entry.record.lift_failed || phase_failed(entry.record.raw_vs_native) ||
+            phase_failed(entry.record.opt_vs_raw) || phase_failed(entry.record.opt_selftest) ||
+            entry.record.mutation.status == MutationPhaseStatus::ERROR)
+        {
+            any_failure = true;
+            continue;
+        }
+        if (entry.record.mutation.status == MutationPhaseStatus::SKIPPED &&
+            entry.record.mutation.skip_reason != "disabled")
+            any_failure = true;
+    }
+    return any_failure ? 1 : 0;
+}
+
+void print_phase_summary(const EvaluatedFunction &entry)
+{
+    if (entry.record.lift_failed)
+    {
+        outs() << "  [LIFTING] FAIL  (" << entry.record.lift_error << ")\n";
+        return;
     }
 
-    lift_result->stats.print(std::cout);
+    outs() << "  [EG1] " << phase_status_name(entry.record.raw_vs_native.status);
+    if (!entry.record.raw_vs_native.skip_reason.empty())
+        outs() << "  (" << entry.record.raw_vs_native.skip_reason << ")";
+    outs() << "\n";
 
-    auto bb_sync_info = eval::make_bb_sync_info(lift_result->basic_blocks);
+    outs() << "  [EG2] " << phase_status_name(entry.record.opt_vs_raw.status);
+    if (!entry.record.opt_vs_raw.skip_reason.empty())
+        outs() << "  (" << entry.record.opt_vs_raw.skip_reason << ")";
+    outs() << "\n";
 
-    std::string fn_name = lift_result->lifted_function->getName().str();
+    outs() << "  [EG3 self-test] " << phase_status_name(entry.record.opt_selftest.status);
+    if (!entry.record.opt_selftest.skip_reason.empty())
+        outs() << "  (" << entry.record.opt_selftest.skip_reason << ")";
+    outs() << "\n";
 
-    // Create executors eagerly — no factory indirection.
-    // Clone module so original is still available for optimization later.
-    auto jit_or = verification::JITExecutor::create(
-        llvm::CloneModule(*lift_result->module), fn_name);
-    if (!jit_or)
-        return jit_or.takeError();
-    auto jit = std::shared_ptr<verification::Executor>(std::move(*jit_or));
-
-    auto uc_or = verification::UnicornExecutor::create(bin_ctx, {}, entry_rva,
-                                                       verification::UnicornExecutor::Flags::NONE,
-                                                       bb_sync_info);
-    if (!uc_or)
-        return uc_or.takeError();
-    auto uc = std::shared_ptr<verification::Executor>(std::move(*uc_or));
-
-    // Pipeline 1: raw JIT vs Unicorn.
-    pipeline::Pipeline p1(eval::make_default_pipeline(
-        "raw_lifted", jit, uc, eval::PipelineCheckpointProfile::RAW_STRICT));
-
-    auto r1 = p1.run(bin_ctx, entry_rva);
-    if (!r1)
-        return r1.takeError();
-
-    r1->print(std::cout);
-    utils::output_to_file("/home/atlas/lifted/out/raw_lifted.ll", lift_result->module.get());
-
-    // Run some 'deobfuscations'
-    auto clone = llvm::CloneModule(*lift_result->module);
-
-    opt::always_inline(clone.get());
-
-    auto unfolded_or = lifted::abi::unfold_function_state_recursive(clone->getFunction(fn_name), bin_ctx);
-    if (!unfolded_or)
-        return unfolded_or.takeError();
-    (*unfolded_or)->setLinkage(llvm::GlobalValue::ExternalLinkage);
-
-    utils::output_to_file("/home/atlas/lifted/out/unfolded.ll", clone.get());
-
-    opt::always_inline(clone.get());
-    opt::default_opt(clone.get());
-
-    utils::output_to_file("/home/atlas/lifted/out/unfolded_deob.ll", clone.get());
-
-    auto refolded_or = lifted::abi::fold_function_state_recursive(*unfolded_or, bin_ctx);
-    if (!refolded_or)
-        return refolded_or.takeError();
-    (*refolded_or)->setLinkage(llvm::GlobalValue::ExternalLinkage);
-
-    opt::always_inline(clone.get());
-
-    utils::output_to_file("/home/atlas/lifted/out/refolded_deob.ll", clone.get());
-
-    // Create new JIT from optimized module.
-    auto opt_jit_or = verification::JITExecutor::create(
-        std::move(clone), (*refolded_or)->getName().str());
-    if (!opt_jit_or)
-        return opt_jit_or.takeError();
-    auto opt_jit =
-        std::shared_ptr<verification::Executor>(std::move(*opt_jit_or));
-
-    // Pipeline 2: reuse raw JIT as baseline, compare against optimized JIT with
-    // relaxed synchronization and dimension policy.
-    pipeline::Pipeline p2(
-        eval::make_default_pipeline(
-            "opt_vs_raw_lifted", jit, opt_jit,
-            eval::PipelineCheckpointProfile::OPTIMIZED_RELAXED));
-
-    auto r2 = p2.run(bin_ctx, entry_rva);
-    if (!r2)
-        return r2.takeError();
-
-    r2->print(std::cout);
-    utils::output_to_file("/home/atlas/lifted/out/raw_lifted_opt1.ll",
-                          lift_result->module.get());
-
-    return llvm::Error::success();
+    outs() << "  [EG3 mutation] " << mutation_phase_status_name(entry.record.mutation.status);
+    if (entry.record.mutation.report)
+    {
+        outs() << "  (kill="
+               << fmt_dbl(entry.record.mutation.report->mutation_score() * 100.0)
+               << "% adj="
+               << fmt_dbl(entry.record.mutation.report->adjusted_score() * 100.0)
+               << "%)";
+    }
+    else if (!entry.record.mutation.skip_reason.empty())
+    {
+        outs() << "  (" << entry.record.mutation.skip_reason << ")";
+    }
+    else if (!entry.record.mutation.error.empty())
+    {
+        outs() << "  (" << entry.record.mutation.error << ")";
+    }
+    outs() << "\n";
 }
+
+std::string standard_dir_name(const std::string &suite, std::string_view obfuscator)
+{
+    return suite + "_" + obfuscator_name(obfuscator);
+}
+
+std::string mutation_dir_name(const std::string &suite,
+                              std::string_view obfuscator,
+                              size_t budget)
+{
+    if (obfuscator.empty() && budget == 200)
+        return suite + "_200";
+    return suite + "_mut_" + obfuscator_name(obfuscator) + "_b" + std::to_string(budget);
+}
+
+} // namespace
 
 int main(int argc, char **argv)
 {
     FLAGS_minloglevel = 1;
     google::InitGoogleLogging(argv[0]);
 
-    llvm::LLVMContext context;
+    InitLLVM X(argc, argv);
+    cl::HideUnrelatedOptions(LiftedEvalCategory);
+    cl::ParseCommandLineOptions(argc, argv, "lifted-eval — batch evaluation runner\n");
 
-    // Simple argument parsing for mutation mode:
-    //   lifted-eval --mode mutate --suite <name> [--budget N] [--seed 0xHEX] [--output path.csv]
-    // All other invocations fall through to the legacy lift_suite behaviour.
-    bool mode_mutate = false;
-    std::string mutate_suite_name;
-    std::string mutate_output = "/tmp/mutation_results.csv";
-    MutationCampaign::Config mutate_cfg;
-
-    for (int i = 1; i < argc; ++i)
+    if (WithStandardOpt && WithoutStandardOpt)
     {
-        std::string_view arg = argv[i];
-        if (arg == "--mode" && i + 1 < argc)
+        errs() << "lifted-eval error: cannot pass both --with-standard and --without-standard\n";
+        return 2;
+    }
+    if (WithMutationOpt && WithoutMutationOpt)
+    {
+        errs() << "lifted-eval error: cannot pass both --with-mutation and --without-mutation\n";
+        return 2;
+    }
+
+    const bool explicit_suite_filter = SuiteOpt.getNumOccurrences() > 0;
+    std::vector<std::string> suites = explicit_suite_filter
+        ? std::vector<std::string>(SuiteOpt.begin(), SuiteOpt.end())
+        : default_suite_order();
+    if (suites.empty())
+    {
+        errs() << "lifted-eval error: no suites available\n";
+        return 2;
+    }
+
+    const auto known_names = known_suite_names();
+    const std::set<std::string> known(known_names.begin(), known_names.end());
+    for (const auto &suite : suites)
+    {
+        if (!known.count(suite))
         {
-            ++i;
-            mode_mutate = (std::string_view(argv[i]) == "mutate");
-        }
-        else if (arg == "--suite" && i + 1 < argc)
-        {
-            ++i;
-            mutate_suite_name = argv[i];
-        }
-        else if (arg == "--budget" && i + 1 < argc)
-        {
-            ++i;
-            mutate_cfg.budget = static_cast<size_t>(std::atoll(argv[i]));
-        }
-        else if (arg == "--seed" && i + 1 < argc)
-        {
-            ++i;
-            mutate_cfg.seed = static_cast<uint64_t>(std::stoull(argv[i], nullptr, 16));
-        }
-        else if (arg == "--output" && i + 1 < argc)
-        {
-            ++i;
-            mutate_output = argv[i];
+            errs() << "lifted-eval error: unknown suite '" << suite << "'\n";
+            return 2;
         }
     }
 
-    if (mode_mutate)
+    const bool run_standard = WithoutStandardOpt ? false : true;
+    const bool run_mutation = WithoutMutationOpt ? false : true;
+    const bool want_egs = AllEgsOpt || (!Eg1Opt && !Eg2Opt && !Eg3Opt);
+    const bool want_eg1 = want_egs || Eg1Opt || Eg2Opt || Eg3Opt;
+    const bool want_eg2 = want_egs || Eg2Opt || Eg3Opt;
+    const bool want_eg3 = want_egs || Eg3Opt;
+
+    if (!run_standard && !run_mutation)
     {
-        // Resolve suite name to CSV path.
-        std::filesystem::path csv_path;
-        if (!mutate_suite_name.empty())
+        errs() << "lifted-eval error: both standard and mutation campaigns are disabled\n";
+        return 2;
+    }
+
+    MutationCampaignConfig mutation_cfg;
+    mutation_cfg.budget = static_cast<size_t>(MutationBudgetOpt < 0 ? 200 : MutationBudgetOpt);
+    try
+    {
+        mutation_cfg.seed = std::stoull(MutationSeedOpt, nullptr, 16);
+    }
+    catch (...)
+    {
+        errs() << "lifted-eval error: invalid mutation seed '" << MutationSeedOpt << "'\n";
+        return 2;
+    }
+    for (const auto &cat_str : MutationCategoriesOpt)
+    {
+        auto cat = parse_category(cat_str);
+        if (!cat)
         {
-            auto p = eval::resolve_suite_name(mutate_suite_name);
-            if (!p)
-            {
-                llvm::errs() << "lifted-eval mutate: unknown suite '" << mutate_suite_name
-                             << "'. Use --suite <name> with a known suite.\n";
-                return EXIT_FAILURE;
-            }
-            csv_path = *p;
+            errs() << "lifted-eval error: unknown mutation category '" << cat_str << "'\n";
+            return 2;
         }
+        mutation_cfg.filter_categories.push_back(*cat);
+    }
+
+    const std::set<std::string> target_filters(TargetOpt.begin(), TargetOpt.end());
+    const std::set<std::string> func_filters(FuncOpt.begin(), FuncOpt.end());
+    const std::set<std::string> ignore_filters(IgnoreOpt.begin(), IgnoreOpt.end());
+
+    auto obfuscator_matches = [&](std::string_view obfuscator) -> bool
+    {
+        if (ObfuscatorOpt == "all")
+            return true;
+        if (ObfuscatorOpt == "none")
+            return obfuscator.empty();
+        return obfuscator == ObfuscatorOpt;
+    };
+
+    auto standard_config_for = [&](std::string_view obfuscator) {
+        EvaluationConfig cfg;
+        cfg.deep_dive_count = static_cast<size_t>(MaxDeepDivesOpt < 0 ? 0 : MaxDeepDivesOpt);
+        cfg.obfuscator = std::string(obfuscator);
+        cfg.run_raw_vs_native = want_eg1;
+        cfg.run_opt_vs_raw = want_eg2;
+        cfg.run_opt_selftest = want_eg3 && !run_mutation;
+        cfg.run_mutation = false;
+        return cfg;
+    };
+
+    auto mutation_config_for = [&](std::string_view obfuscator) {
+        EvaluationConfig cfg;
+        cfg.deep_dive_count = static_cast<size_t>(MaxDeepDivesOpt < 0 ? 0 : MaxDeepDivesOpt);
+        cfg.obfuscator = std::string(obfuscator);
+        cfg.run_raw_vs_native = true;
+        cfg.run_opt_vs_raw = true;
+        cfg.run_opt_selftest = true;
+        cfg.run_mutation = true;
+        cfg.mutation_config = mutation_cfg;
+        return cfg;
+    };
+
+    std::vector<CampaignPlan> plans;
+    for (const auto &suite : suites)
+    {
+        const bool default_suite_matrix = !explicit_suite_filter && ObfuscatorOpt == "all";
+        std::vector<std::string> standard_obfuscators;
+        if (default_suite_matrix && suite == "gnu-coreutils")
+            standard_obfuscators = {""};
         else
+            standard_obfuscators = {"", "polaris"};
+
+        if (run_standard)
         {
-            // Default to synthetic suite if available.
-#ifdef EVAL_SUITE_SYNTHETIC_CSV
-            csv_path = EVAL_SUITE_SYNTHETIC_CSV;
-#else
-            llvm::errs() << "lifted-eval mutate: no --suite argument and no default suite baked in.\n";
-            return EXIT_FAILURE;
-#endif
+            for (const auto &obfuscator : standard_obfuscators)
+            {
+                if (!obfuscator_matches(obfuscator))
+                    continue;
+                plans.push_back(CampaignPlan{
+                    .suite = suite,
+                    .obfuscator = obfuscator,
+                    .mutation = false,
+                    .output_dir = fs::path(std::string(OutputRootOpt)) / standard_dir_name(suite, obfuscator),
+                    .config = standard_config_for(obfuscator),
+                });
+            }
         }
 
-        if (auto err = mutate_suite(context, csv_path, mutate_cfg, mutate_output))
+        if (run_mutation)
         {
-            llvm::errs() << "mutate_suite error: " << llvm::toString(std::move(err)) << "\n";
-            return EXIT_FAILURE;
+            std::vector<std::string> mutation_obfuscators = {""};
+            if (WithPolarisMutationOpt || ObfuscatorOpt == "polaris")
+                mutation_obfuscators.push_back("polaris");
+            for (const auto &obfuscator : mutation_obfuscators)
+            {
+                if (!obfuscator_matches(obfuscator))
+                    continue;
+                plans.push_back(CampaignPlan{
+                    .suite = suite,
+                    .obfuscator = obfuscator,
+                    .mutation = true,
+                    .output_dir = fs::path(std::string(OutputRootOpt)) / mutation_dir_name(suite, obfuscator, mutation_cfg.budget),
+                    .config = mutation_config_for(obfuscator),
+                });
+            }
         }
-        return EXIT_SUCCESS;
     }
 
-    // Legacy mode: run the hardcoded lift_suite calls.
-    // if (auto err = test_full_pipeline(context, "/home/atlas/lifted/build/src/evaluation/tum/libeval-anagram.so", 0x124A))
-    //     llvm::errs() << "test_full_pipeline error: " << llvm::toString(std::move(err)) << "\n";
+    if (plans.empty())
+    {
+        errs() << "lifted-eval error: no campaigns selected\n";
+        return 2;
+    }
 
-    // if (auto err = lift_suite(context, EVAL_SUITE_SYNTHETIC_CSV))
-    //     llvm::errs() << "synthetic suite error: " << llvm::toString(std::move(err)) << "\n";
+    if (ListOpt)
+    {
+        outs() << "Planned campaigns:\n";
+        for (const auto &plan : plans)
+        {
+            outs() << "  - suite=" << plan.suite
+                   << " obfuscator=" << obfuscator_name(plan.obfuscator)
+                   << " mode=" << (plan.mutation ? "mutation" : "standard")
+                   << " out=" << plan.output_dir.string() << "\n";
+        }
+        return 0;
+    }
 
-    if (auto err = lift_suite(context, EVAL_SUITE_TUM_SIMPLE_HASH_FUNCTIONS_CSV))
-        llvm::errs() << "tum-simple-hash-functions suite error: " << llvm::toString(std::move(err)) << "\n";
+    LLVMContext ctx;
+    int overall_exit = 0;
+    bool any_results = false;
 
-    if (auto err = lift_suite(context, EVAL_SUITE_TUM_SMALL_PROGRAMS_CSV))
-        llvm::errs() << "tum-small-programs suite error: " << llvm::toString(std::move(err)) << "\n";
+    for (const auto &plan : plans)
+    {
+        auto suite_csv = resolve_suite_name(plan.suite);
+        if (!suite_csv)
+        {
+            errs() << "lifted-eval error: cannot resolve suite '" << plan.suite << "'\n";
+            return 2;
+        }
 
-    if (auto err = lift_suite(context, EVAL_SUITE_TUM_BASIC_ALGORITHMS_CSV))
-        llvm::errs() << "tum-basic-algorithms suite error: "
-                     << llvm::toString(std::move(err)) << "\n";
+        auto entries = parse_suite_csv(*suite_csv);
+        if (entries.empty())
+        {
+            errs() << "lifted-eval error: no entries in suite '" << plan.suite << "'\n";
+            return 2;
+        }
 
-    if (auto err = lift_suite(context, EVAL_SUITE_GNU_COREUTILS_CSV))
-        llvm::errs() << "gnu-coreutils suite error: " << llvm::toString(std::move(err)) << "\n";
+        std::error_code ec;
+        fs::create_directories(plan.output_dir, ec);
+        if (ec)
+        {
+            errs() << "lifted-eval error: cannot create output dir '"
+                   << plan.output_dir.string() << "': " << ec.message() << "\n";
+            return 2;
+        }
 
-    return EXIT_SUCCESS;
+        outs() << "\n=== Campaign: " << plan.suite
+               << " / " << obfuscator_name(plan.obfuscator)
+               << " / " << (plan.mutation ? "mutation" : "standard")
+               << " ===\n";
+
+        std::vector<EvaluatedFunction> results;
+        size_t planned_count = 0;
+        for (const auto &entry : entries)
+        {
+            if (entry.obfuscator != plan.obfuscator)
+                continue;
+            const std::string stem = target_stem(entry.so_path);
+            if (!target_filters.empty() && !target_filters.count(stem))
+                continue;
+            if (ignore_filters.count(stem))
+                continue;
+            auto targets = parse_targets_csv(entry.targets_csv_path);
+            for (const auto &target : targets)
+            {
+                const std::string label = stem + "::" + target.func_name;
+                if (!func_filters.empty() && !func_filters.count(label))
+                    continue;
+                if (ignore_filters.count(label))
+                    continue;
+                ++planned_count;
+            }
+        }
+
+        size_t idx = 0;
+        for (const auto &entry : entries)
+        {
+            if (entry.obfuscator != plan.obfuscator)
+                continue;
+            const std::string stem = target_stem(entry.so_path);
+            if (!target_filters.empty() && !target_filters.count(stem))
+                continue;
+            if (ignore_filters.count(stem))
+                continue;
+
+            auto targets = parse_targets_csv(entry.targets_csv_path);
+            for (const auto &target : targets)
+            {
+                const std::string label = stem + "::" + target.func_name;
+                if (!func_filters.empty() && !func_filters.count(label))
+                    continue;
+                if (ignore_filters.count(label))
+                    continue;
+
+                ++idx;
+                outs() << "\n--- [" << idx << "/" << planned_count << "] "
+                       << entry.so_path.filename().string() << " :: " << target.func_name
+                       << " @ " << llvm::format_hex(target.addr, 18) << " ---\n";
+
+                auto record_or = run_evaluation_named(
+                    ctx, entry.so_path, target.func_name, target.addr, plan.config);
+                if (!record_or)
+                {
+                    errs() << "  [FATAL] " << toString(record_or.takeError()) << "\n";
+                    return 2;
+                }
+
+                results.push_back(EvaluatedFunction{
+                    .suite = plan.suite,
+                    .binary = stem,
+                    .func = target.func_name,
+                    .obfuscator = obfuscator_name(plan.obfuscator),
+                    .record = std::move(*record_or),
+                });
+
+                print_phase_summary(results.back());
+                write_function_reports(results.back(), plan.output_dir);
+                write_function_dot(results.back(), plan.output_dir, RenderCfgOpt);
+            }
+        }
+
+        if (results.empty())
+        {
+            outs() << "  [SKIPPED] no matching functions for this campaign\n";
+            continue;
+        }
+
+        any_results = true;
+        const std::string label = plan.suite + " (obfuscator=" + obfuscator_name(plan.obfuscator)
+            + ", mode=" + (plan.mutation ? std::string("mutation") : std::string("standard")) + ")";
+        write_campaign_artifacts(label, results, plan.output_dir);
+        overall_exit = std::max(overall_exit, campaign_exit_code(results));
+    }
+
+    if (!any_results)
+    {
+        errs() << "lifted-eval error: filters excluded every function in every selected campaign\n";
+        return 2;
+    }
+
+    return overall_exit;
 }
