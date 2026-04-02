@@ -1327,37 +1327,52 @@ static int run_mutate_cmd(LLVMContext &ctx)
         eval_cfg.obfuscator = std::string(obfuscator);
         eval_cfg.run_raw_vs_native = true;
         eval_cfg.run_opt_vs_raw = true;
-        eval_cfg.run_opt_selftest = true;
+        eval_cfg.run_eg3_strict = true;
+        eval_cfg.run_eg3_relaxed = true;
         eval_cfg.run_mutation = true;
         eval_cfg.mutation_config = cfg;
         return eval_cfg;
     };
 
-    auto print_mutation_status = [](const EvaluatedFunction &entry)
+    auto mutation_phase_failed = [](const MutationPhaseResult &mutation)
+    {
+        return mutation.status == MutationPhaseStatus::ERROR ||
+               mutation.status == MutationPhaseStatus::SKIPPED;
+    };
+
+    auto print_profile_mutation_status = [](std::string_view label, const Eg3ProfileResult &profile)
+    {
+        outs() << "  [" << label << " / "
+               << pipeline_checkpoint_profile_name(profile.profile) << "] ";
+        if (profile.mutation.report)
+        {
+            outs() << "KILL%: "
+                   << fmt_dbl(profile.mutation.report->mutation_score() * 100.0)
+                   << "%  adj: "
+                   << fmt_dbl(profile.mutation.report->adjusted_score() * 100.0)
+                   << "%\n";
+            return;
+        }
+        if (profile.mutation.status == MutationPhaseStatus::ERROR)
+        {
+            outs() << "ERROR: " << profile.mutation.error << "\n";
+            return;
+        }
+        outs() << "SKIPPED: " << profile.mutation.skip_reason << "\n";
+    };
+
+    auto print_mutation_status = [&](const EvaluatedFunction &entry)
     {
         if (entry.record.lift_failed)
         {
             outs() << "  [LIFT FAIL] " << entry.record.lift_error << "\n";
             return;
         }
-        if (entry.record.mutation.report)
-        {
-            outs() << "  [KILL%: "
-                   << fmt_dbl(entry.record.mutation.report->mutation_score() * 100.0)
-                   << "%  adj: "
-                   << fmt_dbl(entry.record.mutation.report->adjusted_score() * 100.0)
-                   << "%]\n";
-            return;
-        }
-        if (entry.record.mutation.status == MutationPhaseStatus::ERROR)
-        {
-            outs() << "  [ERROR] " << entry.record.mutation.error << "\n";
-            return;
-        }
-        outs() << "  [SKIPPED] " << entry.record.mutation.skip_reason << "\n";
+        print_profile_mutation_status("strict", entry.record.eg3_strict);
+        print_profile_mutation_status("relaxed", entry.record.eg3_relaxed);
     };
 
-    auto result_exit_code = [](const std::vector<EvaluatedFunction> &results)
+    auto result_exit_code = [&](const std::vector<EvaluatedFunction> &results)
     {
         bool any_failure = false;
         for (const auto &entry : results)
@@ -1373,9 +1388,10 @@ static int run_mutate_cmd(LLVMContext &ctx)
             };
             if (phase_failed(entry.record.raw_vs_native) ||
                 phase_failed(entry.record.opt_vs_raw) ||
-                phase_failed(entry.record.opt_selftest) ||
-                entry.record.mutation.status == MutationPhaseStatus::ERROR ||
-                entry.record.mutation.status == MutationPhaseStatus::SKIPPED)
+                phase_failed(entry.record.eg3_strict.selftest) ||
+                phase_failed(entry.record.eg3_relaxed.selftest) ||
+                mutation_phase_failed(entry.record.eg3_strict.mutation) ||
+                mutation_phase_failed(entry.record.eg3_relaxed.mutation))
             {
                 any_failure = true;
             }
