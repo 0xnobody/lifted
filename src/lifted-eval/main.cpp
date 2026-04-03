@@ -1,4 +1,5 @@
 #include <llvm/Support/CommandLine.h>
+#include <llvm/Support/Error.h>
 #include <llvm/Support/Format.h>
 #include <llvm/Support/InitLLVM.h>
 #include <llvm/Support/raw_ostream.h>
@@ -12,14 +13,28 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <set>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
-#include <cstdio>
+
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char **environ;
 namespace fs = std::filesystem;
 using namespace llvm;
 using namespace lifted::eval;
@@ -138,11 +153,101 @@ static cl::opt<int> JobsOpt(
     cl::desc("Functions to evaluate concurrently per campaign (0=hardware concurrency)"),
     cl::init(0),
     cl::cat(LiftedEvalCategory));
+static cl::opt<uint64_t> LiftTimeoutSecOpt(
+    "lift-timeout-sec",
+    cl::desc("Hard timeout in seconds while waiting for lift completion (0=disabled)"),
+    cl::init(0),
+    cl::cat(LiftedEvalCategory));
 static cl::opt<bool> ListOpt(
     "list",
     cl::desc("Print the planned campaign matrix without executing it"),
     cl::init(false),
     cl::cat(LiftedEvalCategory));
+
+static cl::opt<bool> ChildEvalOpt(
+    "child-eval",
+    cl::desc("Internal: evaluate exactly one function"),
+    cl::init(false),
+    cl::Hidden);
+static cl::opt<std::string> ChildSoPathOpt(
+    "child-so-path",
+    cl::desc("Internal: shared object path for child evaluation"),
+    cl::init(""),
+    cl::Hidden);
+static cl::opt<std::string> ChildFuncOpt(
+    "child-func",
+    cl::desc("Internal: function name for child evaluation"),
+    cl::init(""),
+    cl::Hidden);
+static cl::opt<uint64_t> ChildAddrOpt(
+    "child-addr",
+    cl::desc("Internal: function RVA for child evaluation"),
+    cl::init(0),
+    cl::Hidden);
+static cl::opt<std::string> ChildResultPathOpt(
+    "child-result-path",
+    cl::desc("Internal: result JSON path for child evaluation"),
+    cl::init(""),
+    cl::Hidden);
+static cl::opt<int> ChildLiftFdOpt(
+    "child-lift-fd",
+    cl::desc("Internal: write FD used to signal lift completion"),
+    cl::init(-1),
+    cl::Hidden);
+static cl::opt<uint64_t> ChildDeepDivesOpt(
+    "child-deep-dives",
+    cl::desc("Internal: deep-dive budget for child evaluation"),
+    cl::init(1),
+    cl::Hidden);
+static cl::opt<std::string> ChildObfuscatorOpt(
+    "child-obfuscator",
+    cl::desc("Internal: obfuscator for child evaluation"),
+    cl::init(""),
+    cl::Hidden);
+static cl::opt<int> ChildRunRawVsNativeOpt(
+    "child-run-raw-vs-native",
+    cl::desc("Internal: whether child should run EG1"),
+    cl::init(1),
+    cl::Hidden);
+static cl::opt<int> ChildRunOptVsRawOpt(
+    "child-run-opt-vs-raw",
+    cl::desc("Internal: whether child should run EG2"),
+    cl::init(1),
+    cl::Hidden);
+static cl::opt<int> ChildRunEg3StrictOpt(
+    "child-run-eg3-strict",
+    cl::desc("Internal: whether child should run EG3 strict"),
+    cl::init(0),
+    cl::Hidden);
+static cl::opt<int> ChildRunEg3RelaxedOpt(
+    "child-run-eg3-relaxed",
+    cl::desc("Internal: whether child should run EG3 relaxed"),
+    cl::init(0),
+    cl::Hidden);
+static cl::opt<int> ChildRunMutationOpt(
+    "child-run-mutation",
+    cl::desc("Internal: whether child should run mutation"),
+    cl::init(0),
+    cl::Hidden);
+static cl::opt<uint64_t> ChildMutationBudgetOpt(
+    "child-mutation-budget",
+    cl::desc("Internal: mutation budget for child evaluation"),
+    cl::init(200),
+    cl::Hidden);
+static cl::opt<uint64_t> ChildMutationSeedOpt(
+    "child-mutation-seed",
+    cl::desc("Internal: mutation seed for child evaluation"),
+    cl::init(0x1337),
+    cl::Hidden);
+static cl::list<std::string> ChildMutationCategoryOpt(
+    "child-mutation-category",
+    cl::desc("Internal: mutation category filter for child evaluation"),
+    cl::Hidden);
+static cl::opt<uint64_t> ChildLiftTimeoutSecOpt(
+    "child-lift-timeout-sec",
+    cl::desc("Internal: configured lift timeout for child evaluation"),
+    cl::init(0),
+    cl::Hidden);
 
 struct CampaignPlan
 {
@@ -198,6 +303,492 @@ std::optional<MutationCategory> parse_category(const std::string &s)
     return std::nullopt;
 }
 
+constexpr int kChildLiftCheckpointFd = 198;
+std::atomic_uint64_t NextChildResultId{0};
+
+llvm::Error make_string_error(const std::string &message)
+{
+    return llvm::make_error<llvm::StringError>(message, llvm::inconvertibleErrorCode());
+}
+
+void close_fd_if_open(int &fd)
+{
+    if (fd < 0)
+        return;
+    while (::close(fd) != 0)
+    {
+        if (errno == EINTR)
+            continue;
+        break;
+    }
+    fd = -1;
+}
+
+llvm::Error set_close_on_exec(int fd)
+{
+    const int flags = ::fcntl(fd, F_GETFD);
+    if (flags < 0)
+        return make_string_error(
+            "fcntl(F_GETFD) failed for fd " + std::to_string(fd) + ": " + std::strerror(errno));
+    if (::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) != 0)
+        return make_string_error(
+            "fcntl(F_SETFD) failed for fd " + std::to_string(fd) + ": " + std::strerror(errno));
+    return llvm::Error::success();
+}
+
+std::string wait_status_description(int status)
+{
+    if (WIFEXITED(status))
+        return "exit code " + std::to_string(WEXITSTATUS(status));
+    if (WIFSIGNALED(status))
+        return "signal " + std::to_string(WTERMSIG(status));
+    return "unknown wait status";
+}
+
+void kill_and_reap(pid_t pid)
+{
+    if (pid <= 0)
+        return;
+    if (::kill(pid, SIGKILL) != 0 && errno != ESRCH)
+    {
+        // Best-effort cleanup: still wait below in case the child already exited.
+    }
+
+    int status = 0;
+    while (::waitpid(pid, &status, 0) < 0)
+    {
+        if (errno == EINTR)
+            continue;
+        if (errno == ECHILD)
+            break;
+        break;
+    }
+}
+
+void append_flag_arg(std::vector<std::string> &args, std::string_view flag, const std::string &value)
+{
+    args.push_back(std::string(flag) + "=" + value);
+}
+
+template <typename T>
+void append_flag_arg(std::vector<std::string> &args, std::string_view flag, T value)
+{
+    args.push_back(std::string(flag) + "=" + std::to_string(value));
+}
+
+std::string mutation_category_arg(MutationCategory cat)
+{
+    switch (cat)
+    {
+    case MutationCategory::ARITHMETIC:
+        return "ARITHMETIC";
+    case MutationCategory::BITWISE:
+        return "BITWISE";
+    case MutationCategory::COMPARISON_NEG:
+        return "COMPARISON_NEG";
+    case MutationCategory::COMPARISON_BDRY:
+        return "COMPARISON_BDRY";
+    case MutationCategory::OPERAND_SWAP:
+        return "OPERAND_SWAP";
+    case MutationCategory::DROP_COMPUTATION:
+        return "DROP_COMPUTATION";
+    case MutationCategory::CONSTANT_REPL:
+        return "CONSTANT_REPL";
+    case MutationCategory::NEGATE_TRUNC:
+        return "NEGATE_TRUNC";
+    }
+    return "UNKNOWN";
+}
+
+llvm::Expected<fs::path> current_executable_path(const char *argv0)
+{
+    std::error_code ec;
+    fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+    if (!ec && !exe.empty())
+        return exe;
+
+    if (argv0 && *argv0)
+    {
+        fs::path argv0_path(argv0);
+        if (argv0_path.is_absolute() || argv0_path.has_parent_path())
+        {
+            fs::path absolute_path = fs::absolute(argv0_path, ec);
+            if (!ec)
+                return absolute_path;
+        }
+
+        if (const char *path_env = std::getenv("PATH"))
+        {
+            std::string_view remaining(path_env);
+            while (true)
+            {
+                const size_t sep = remaining.find(':');
+                const std::string_view entry = remaining.substr(0, sep);
+
+                fs::path base;
+                if (entry.empty())
+                {
+                    std::error_code cwd_ec;
+                    base = fs::current_path(cwd_ec);
+                    if (cwd_ec)
+                    {
+                        if (sep == std::string_view::npos)
+                            break;
+                        remaining.remove_prefix(sep + 1);
+                        continue;
+                    }
+                }
+                else
+                {
+                    base = fs::path(entry);
+                }
+
+                fs::path candidate = base / argv0;
+                if (::access(candidate.c_str(), X_OK) == 0)
+                    return candidate;
+
+                if (sep == std::string_view::npos)
+                    break;
+                remaining.remove_prefix(sep + 1);
+            }
+        }
+    }
+
+    return make_string_error(
+        "unable to resolve current executable path for child evaluation spawning");
+}
+
+llvm::Expected<fs::path> make_child_result_path()
+{
+    std::error_code ec;
+    const fs::path temp_dir = fs::temp_directory_path(ec);
+    if (ec)
+        return make_string_error(
+            "failed to resolve temporary directory for child result JSON: " + ec.message());
+
+    for (size_t attempt = 0; attempt < 1024; ++attempt)
+    {
+        const uint64_t unique = NextChildResultId.fetch_add(1);
+        fs::path path = temp_dir / (
+            "lifted-eval-child-" + std::to_string(::getpid()) + "-" + std::to_string(unique) + ".json");
+        ec.clear();
+        if (!fs::exists(path, ec))
+            return path;
+        if (ec)
+            return make_string_error(
+                "failed to probe temporary child result path '" + path.string() + "': " + ec.message());
+    }
+
+    return make_string_error("failed to allocate unique child result path");
+}
+
+llvm::Expected<EvaluationConfig> child_config_from_options()
+{
+    EvaluationConfig cfg;
+    cfg.deep_dive_count = static_cast<size_t>(ChildDeepDivesOpt);
+    cfg.obfuscator = ChildObfuscatorOpt;
+    cfg.run_raw_vs_native = ChildRunRawVsNativeOpt != 0;
+    cfg.run_opt_vs_raw = ChildRunOptVsRawOpt != 0;
+    cfg.run_eg3_strict = ChildRunEg3StrictOpt != 0;
+    cfg.run_eg3_relaxed = ChildRunEg3RelaxedOpt != 0;
+    cfg.run_mutation = ChildRunMutationOpt != 0;
+    cfg.mutation_config.budget = static_cast<size_t>(ChildMutationBudgetOpt);
+    cfg.mutation_config.seed = ChildMutationSeedOpt;
+    cfg.lift_timeout_sec = ChildLiftTimeoutSecOpt;
+
+    for (const auto &cat_str : ChildMutationCategoryOpt)
+    {
+        auto cat = parse_category(cat_str);
+        if (!cat)
+            return make_string_error(
+                "unknown child mutation category '" + cat_str + "'");
+        cfg.mutation_config.filter_categories.push_back(*cat);
+    }
+
+    return cfg;
+}
+
+int run_child_evaluation_mode()
+{
+    if (ChildSoPathOpt.empty() || ChildFuncOpt.empty() || ChildResultPathOpt.empty() ||
+        ChildLiftFdOpt < 0)
+    {
+        errs() << "lifted-eval child error: missing required child evaluation arguments\n";
+        return 2;
+    }
+
+    auto config_or = child_config_from_options();
+    if (!config_or)
+    {
+        errs() << "lifted-eval child error: " << toString(config_or.takeError()) << "\n";
+        return 2;
+    }
+
+    llvm::LLVMContext local_ctx;
+    int checkpoint_fd = ChildLiftFdOpt;
+    auto on_lift_complete = [&](const EvaluationRecord &) -> llvm::Error {
+        const char marker = 'L';
+        while (true)
+        {
+            const ssize_t written = ::write(checkpoint_fd, &marker, 1);
+            if (written == 1)
+                break;
+            if (written < 0 && errno == EINTR)
+                continue;
+            return make_string_error(
+                "failed to write lift completion checkpoint: " + std::string(std::strerror(errno)));
+        }
+        close_fd_if_open(checkpoint_fd);
+        return llvm::Error::success();
+    };
+
+    auto record_or = run_evaluation_named(
+        local_ctx,
+        fs::path(std::string(ChildSoPathOpt)),
+        ChildFuncOpt,
+        ChildAddrOpt,
+        *config_or,
+        on_lift_complete);
+    close_fd_if_open(checkpoint_fd);
+    if (!record_or)
+    {
+        errs() << "lifted-eval child error: " << toString(record_or.takeError()) << "\n";
+        return 2;
+    }
+
+    if (auto err = write_evaluation_record_json(
+            *record_or, fs::path(std::string(ChildResultPathOpt))))
+    {
+        errs() << "lifted-eval child error: " << toString(std::move(err)) << "\n";
+        return 2;
+    }
+
+    return 0;
+}
+
+llvm::Expected<EvaluationRecord> read_child_result(const FunctionWorkItem &item,
+                                                    const fs::path &result_path,
+                                                    int child_status)
+{
+    auto record_or = read_evaluation_record_json(result_path);
+    std::error_code remove_ec;
+    fs::remove(result_path, remove_ec);
+    if (!record_or)
+    {
+        return make_string_error(
+            "child evaluation for " + item.binary + "::" + item.func +
+            " failed to load result JSON '" + result_path.string() +
+            "' after " + wait_status_description(child_status) + ": " +
+            toString(record_or.takeError()));
+    }
+    return std::move(*record_or);
+}
+
+llvm::Expected<EvaluationRecord> run_evaluation_in_child(const fs::path &exe_path,
+                                                          const FunctionWorkItem &item,
+                                                          const EvaluationConfig &config)
+{
+    auto result_path_or = make_child_result_path();
+    if (!result_path_or)
+        return result_path_or.takeError();
+    const fs::path result_path = *result_path_or;
+
+    int checkpoint_pipe[2] = {-1, -1};
+    if (::pipe(checkpoint_pipe) != 0)
+    {
+        return make_string_error(
+            "pipe() failed for child evaluation checkpoint: " + std::string(std::strerror(errno)));
+    }
+    if (auto err = set_close_on_exec(checkpoint_pipe[0]))
+    {
+        close_fd_if_open(checkpoint_pipe[0]);
+        close_fd_if_open(checkpoint_pipe[1]);
+        return err;
+    }
+    if (auto err = set_close_on_exec(checkpoint_pipe[1]))
+    {
+        close_fd_if_open(checkpoint_pipe[0]);
+        close_fd_if_open(checkpoint_pipe[1]);
+        return err;
+    }
+
+    posix_spawn_file_actions_t file_actions;
+    int rc = ::posix_spawn_file_actions_init(&file_actions);
+    if (rc != 0)
+    {
+        close_fd_if_open(checkpoint_pipe[0]);
+        close_fd_if_open(checkpoint_pipe[1]);
+        return make_string_error(
+            "posix_spawn_file_actions_init failed: " + std::string(std::strerror(rc)));
+    }
+
+    const auto fail_before_spawn = [&](const std::string &message) -> llvm::Expected<EvaluationRecord> {
+        ::posix_spawn_file_actions_destroy(&file_actions);
+        close_fd_if_open(checkpoint_pipe[0]);
+        close_fd_if_open(checkpoint_pipe[1]);
+        return make_string_error(message);
+    };
+
+    rc = ::posix_spawn_file_actions_addclose(&file_actions, checkpoint_pipe[0]);
+    if (rc != 0)
+    {
+        return fail_before_spawn(
+            "posix_spawn_file_actions_addclose(read end) failed: " + std::string(std::strerror(rc)));
+    }
+    rc = ::posix_spawn_file_actions_adddup2(&file_actions, checkpoint_pipe[1], kChildLiftCheckpointFd);
+    if (rc != 0)
+    {
+        return fail_before_spawn(
+            "posix_spawn_file_actions_adddup2(checkpoint) failed: " + std::string(std::strerror(rc)));
+    }
+    rc = ::posix_spawn_file_actions_addclose(&file_actions, checkpoint_pipe[1]);
+    if (rc != 0)
+    {
+        return fail_before_spawn(
+            "posix_spawn_file_actions_addclose(write end) failed: " + std::string(std::strerror(rc)));
+    }
+
+    std::vector<std::string> child_args;
+    child_args.reserve(16 + config.mutation_config.filter_categories.size());
+    child_args.push_back(exe_path.string());
+    child_args.push_back("--child-eval");
+    append_flag_arg(child_args, "--child-so-path", item.so_path.string());
+    append_flag_arg(child_args, "--child-func", item.func);
+    append_flag_arg(child_args, "--child-addr", item.addr);
+    append_flag_arg(child_args, "--child-result-path", result_path.string());
+    append_flag_arg(child_args, "--child-lift-fd", kChildLiftCheckpointFd);
+    append_flag_arg(child_args, "--child-deep-dives", config.deep_dive_count);
+    append_flag_arg(child_args, "--child-run-raw-vs-native", config.run_raw_vs_native ? 1 : 0);
+    append_flag_arg(child_args, "--child-run-opt-vs-raw", config.run_opt_vs_raw ? 1 : 0);
+    append_flag_arg(child_args, "--child-run-eg3-strict", config.run_eg3_strict ? 1 : 0);
+    append_flag_arg(child_args, "--child-run-eg3-relaxed", config.run_eg3_relaxed ? 1 : 0);
+    append_flag_arg(child_args, "--child-run-mutation", config.run_mutation ? 1 : 0);
+    append_flag_arg(child_args, "--child-mutation-budget", config.mutation_config.budget);
+    append_flag_arg(child_args, "--child-mutation-seed", config.mutation_config.seed);
+    append_flag_arg(child_args, "--child-lift-timeout-sec", config.lift_timeout_sec);
+    if (!config.obfuscator.empty())
+        append_flag_arg(child_args, "--child-obfuscator", config.obfuscator);
+    for (auto category : config.mutation_config.filter_categories)
+        append_flag_arg(child_args, "--child-mutation-category", mutation_category_arg(category));
+
+    std::vector<char *> argv;
+    argv.reserve(child_args.size() + 1);
+    for (auto &arg : child_args)
+        argv.push_back(arg.data());
+    argv.push_back(nullptr);
+
+    pid_t child_pid = -1;
+    rc = ::posix_spawn(
+        &child_pid, exe_path.c_str(), &file_actions, nullptr, argv.data(), environ);
+    ::posix_spawn_file_actions_destroy(&file_actions);
+    if (rc != 0)
+    {
+        close_fd_if_open(checkpoint_pipe[0]);
+        close_fd_if_open(checkpoint_pipe[1]);
+        return make_string_error(
+            "posix_spawn failed for child evaluation: " + std::string(std::strerror(rc)));
+    }
+
+    close_fd_if_open(checkpoint_pipe[1]);
+
+    bool lift_complete = false;
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(config.lift_timeout_sec);
+    while (!lift_complete)
+    {
+        pollfd pfd{};
+        pfd.fd = checkpoint_pipe[0];
+        pfd.events = POLLIN | POLLHUP | POLLERR;
+
+        int timeout_ms = -1;
+        if (config.lift_timeout_sec > 0)
+        {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline)
+            {
+                close_fd_if_open(checkpoint_pipe[0]);
+                kill_and_reap(child_pid);
+                std::error_code remove_ec;
+                fs::remove(result_path, remove_ec);
+                return make_lift_status_record(
+                    config,
+                    LiftStatus::TIMEOUT,
+                    "lift timed out before completion after " +
+                        std::to_string(config.lift_timeout_sec) + "s");
+            }
+
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - now);
+            const auto bounded = std::min<int64_t>(
+                std::numeric_limits<int>::max(),
+                std::max<int64_t>(1, remaining.count()));
+            timeout_ms = static_cast<int>(bounded);
+        }
+
+        int poll_rc = 0;
+        do
+        {
+            poll_rc = ::poll(&pfd, 1, timeout_ms);
+        } while (poll_rc < 0 && errno == EINTR);
+
+        if (poll_rc < 0)
+        {
+            close_fd_if_open(checkpoint_pipe[0]);
+            kill_and_reap(child_pid);
+            std::error_code remove_ec;
+            fs::remove(result_path, remove_ec);
+            return make_string_error(
+                "poll() failed while waiting for lift checkpoint: " +
+                std::string(std::strerror(errno)));
+        }
+        if (poll_rc == 0)
+        {
+            close_fd_if_open(checkpoint_pipe[0]);
+            kill_and_reap(child_pid);
+            std::error_code remove_ec;
+            fs::remove(result_path, remove_ec);
+            return make_lift_status_record(
+                config,
+                LiftStatus::TIMEOUT,
+                "lift timed out before completion after " +
+                    std::to_string(config.lift_timeout_sec) + "s");
+        }
+
+        if (pfd.revents & POLLIN)
+        {
+            char marker = 0;
+            ssize_t n = 0;
+            do
+            {
+                n = ::read(checkpoint_pipe[0], &marker, 1);
+            } while (n < 0 && errno == EINTR);
+            if (n > 0)
+            {
+                lift_complete = true;
+                break;
+            }
+        }
+
+        if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL))
+            break;
+    }
+
+    close_fd_if_open(checkpoint_pipe[0]);
+
+    int child_status = 0;
+    while (::waitpid(child_pid, &child_status, 0) < 0)
+    {
+        if (errno == EINTR)
+            continue;
+        std::error_code remove_ec;
+        fs::remove(result_path, remove_ec);
+        return make_string_error(
+            "waitpid() failed for child evaluation: " + std::string(std::strerror(errno)));
+    }
+
+    return read_child_result(item, result_path, child_status);
+}
+
 std::string fmt_dbl(double value, int precision = 1)
 {
     char buffer[64];
@@ -232,7 +823,8 @@ bool mutation_failed(const MutationPhaseResult &mutation)
 {
     return mutation.status == MutationPhaseStatus::ERROR ||
            (mutation.status == MutationPhaseStatus::SKIPPED &&
-            mutation.skip_reason != "disabled");
+            mutation.skip_reason != "disabled" &&
+            mutation.skip_reason != "lift timeout");
 }
 
 bool eg3_profile_failed(const Eg3ProfileResult &profile)
@@ -278,7 +870,8 @@ int campaign_exit_code(const std::vector<EvaluatedFunction> &results)
     bool any_failure = false;
     for (const auto &entry : results)
     {
-        if (entry.record.lift_failed || phase_failed(entry.record.raw_vs_native) ||
+        if (entry.record.lift_status == LiftStatus::ERROR ||
+            phase_failed(entry.record.raw_vs_native) ||
             phase_failed(entry.record.opt_vs_raw) ||
             eg3_profile_failed(entry.record.eg3_strict) ||
             eg3_profile_failed(entry.record.eg3_relaxed))
@@ -292,9 +885,20 @@ int campaign_exit_code(const std::vector<EvaluatedFunction> &results)
 
 void print_phase_summary(const EvaluatedFunction &entry)
 {
-    if (entry.record.lift_failed)
+    if (entry.record.lift_status == LiftStatus::ERROR)
     {
-        outs() << "  [LIFTING] FAIL  (" << entry.record.lift_error << ")\n";
+        outs() << "  [LIFTING] FAIL";
+        if (!entry.record.lift_message.empty())
+            outs() << "  (" << entry.record.lift_message << ")";
+        outs() << "\n";
+        return;
+    }
+    if (entry.record.lift_status == LiftStatus::TIMEOUT)
+    {
+        outs() << "  [LIFTING] TIMEOUT";
+        if (!entry.record.lift_message.empty())
+            outs() << "  (" << entry.record.lift_message << ")";
+        outs() << "\n";
         return;
     }
 
@@ -336,6 +940,9 @@ int main(int argc, char **argv)
     InitLLVM X(argc, argv);
     cl::HideUnrelatedOptions(LiftedEvalCategory);
     cl::ParseCommandLineOptions(argc, argv, "lifted-eval — batch evaluation runner\n");
+
+    if (ChildEvalOpt)
+        return run_child_evaluation_mode();
 
     if (WithStandardOpt && WithoutStandardOpt)
     {
@@ -426,6 +1033,7 @@ int main(int argc, char **argv)
         cfg.run_eg3_strict = want_eg3;
         cfg.run_eg3_relaxed = want_eg3;
         cfg.run_mutation = false;
+        cfg.lift_timeout_sec = LiftTimeoutSecOpt;
         return cfg;
     };
 
@@ -439,6 +1047,7 @@ int main(int argc, char **argv)
         cfg.run_eg3_relaxed = true;
         cfg.run_mutation = true;
         cfg.mutation_config = mutation_cfg;
+        cfg.lift_timeout_sec = LiftTimeoutSecOpt;
         return cfg;
     };
 
@@ -506,6 +1115,14 @@ int main(int argc, char **argv)
         }
         return 0;
     }
+
+    auto self_exe_or = current_executable_path(argv[0]);
+    if (!self_exe_or)
+    {
+        errs() << "lifted-eval error: " << toString(self_exe_or.takeError()) << "\n";
+        return 2;
+    }
+    const fs::path self_exe = *self_exe_or;
     const auto auto_job_count = []() -> size_t {
         const unsigned hint = std::thread::hardware_concurrency();
         return hint == 0 ? 1 : static_cast<size_t>(hint);
@@ -596,7 +1213,6 @@ int main(int argc, char **argv)
         for (size_t worker = 0; worker < jobs; ++worker)
         {
             workers.emplace_back([&] {
-                llvm::LLVMContext local_ctx;
                 while (true)
                 {
                     const size_t index = next_index.fetch_add(1);
@@ -604,8 +1220,7 @@ int main(int argc, char **argv)
                         break;
 
                     const auto &item = work_items[index];
-                    auto record_or = run_evaluation_named(
-                        local_ctx, item.so_path, item.func, item.addr, plan.config);
+                    auto record_or = run_evaluation_in_child(self_exe, item, plan.config);
                     if (!record_or)
                     {
                         fatal_errors[index] = toString(record_or.takeError());

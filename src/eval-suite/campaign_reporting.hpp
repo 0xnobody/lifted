@@ -18,7 +18,7 @@ struct CsvRow
     std::string func;
     std::string obfuscator;
     size_t bbs_total = 0;
-    std::string stage1_result; // PASS, FAIL, ERROR, LIFT_FAIL
+    std::string stage1_result; // PASS, FAIL, ERROR, TIMEOUT
     double stage1_coverage_pct = 0.0;
     std::string stage2_result; // PASS, FAIL, ERROR, N/A
     double stage2_coverage_pct = 0.0;
@@ -46,6 +46,7 @@ struct RunSummary
     StageStats stage1;
     StageStats stage2;
     std::vector<std::string> lift_errors;
+    std::vector<std::string> lift_timeouts;
     std::vector<CsvRow> csv_rows;
     // Lift wall-clock time summed across all successfully-lifted functions.
     double total_lift_ms = 0.0;

@@ -388,12 +388,21 @@ static void print_function_header(size_t idx, size_t total,
 // there in addition to the brief lines on outs(). Pass nullptr when per-function report
 // files are being written separately via write_function_reports().
 // Brief status lines ([STAGE N], [RESULT]) always go to outs() for terminal visibility.
+static void print_lift_failure_status(raw_ostream &os, LiftStatus status, const std::string &message)
+{
+    os << "  [LIFTING]  " << lift_status_name(status);
+    if (!message.empty())
+        os << ": " << message;
+    os << "\n";
+}
+
+
 static void print_function_result(const FullPipelineResult &r,
                                   std::ostream *detail_os = &std::cout)
 {
-    if (r.lift_failed)
+    if (r.lift_status != LiftStatus::PASS)
     {
-        outs() << "  [LIFTING]  FAILED: " << r.lift_error << "\n";
+        print_lift_failure_status(outs(), r.lift_status, r.lift_message);
         return;
     }
     outs() << "  [LIFTING]  OK\n";
@@ -461,9 +470,9 @@ static FullPipelineResult stage1_only_result(LiftAndVerifyResult &&r)
     FullPipelineResult fr;
     fr.lift_stats = std::move(r.lift_stats);
     fr.cfg = std::move(r.cfg);
-    fr.lift_failed = r.lift_failed;
-    fr.lift_error = std::move(r.lift_error);
-    if (!r.lift_failed && r.report)
+    fr.lift_status = r.lift_status;
+    fr.lift_message = std::move(r.lift_message);
+    if (r.lift_status == LiftStatus::PASS && r.report)
     {
         fr.raw_vs_native = std::move(r.report);
         fr.raw_vs_native_dive = std::move(r.deep_dive);
@@ -937,7 +946,7 @@ static int run_fn_cmd(LLVMContext &ctx)
     if (fn_out_dir)
         write_function_dot(fr, *fn_out_dir, binary_path.stem().string(), func_name, fn_render_fmt);
 
-    if (fr.lift_failed)
+    if (fr.lift_status != LiftStatus::PASS)
         return 2;
     return fr.full_pass() ? 0 : 1;
 }
@@ -1116,9 +1125,9 @@ static int run_graph_cmd(LLVMContext &ctx)
             errs() << "  [FATAL] " << toString(result.takeError()) << "\n";
             return 2;
         }
-        if (result->lift_failed)
+        if (result->lift_status != LiftStatus::PASS)
         {
-            errs() << "  [LIFTING] FAILED: " << result->lift_error << "\n";
+            print_lift_failure_status(errs(), result->lift_status, result->lift_message);
             return 2;
         }
         if (!result->cfg)
@@ -1363,9 +1372,12 @@ static int run_mutate_cmd(LLVMContext &ctx)
 
     auto print_mutation_status = [&](const EvaluatedFunction &entry)
     {
-        if (entry.record.lift_failed)
+        if (entry.record.lift_status != LiftStatus::PASS)
         {
-            outs() << "  [LIFT FAIL] " << entry.record.lift_error << "\n";
+            outs() << "  [LIFT " << lift_status_name(entry.record.lift_status) << "]";
+            if (!entry.record.lift_message.empty())
+                outs() << " " << entry.record.lift_message;
+            outs() << "\n";
             return;
         }
         print_profile_mutation_status("strict", entry.record.eg3_strict);
@@ -1377,7 +1389,7 @@ static int run_mutate_cmd(LLVMContext &ctx)
         bool any_failure = false;
         for (const auto &entry : results)
         {
-            if (entry.record.lift_failed)
+            if (entry.record.lift_status != LiftStatus::PASS)
             {
                 any_failure = true;
                 continue;

@@ -69,7 +69,7 @@ void RunSummary::record(const std::string &label,
                         std::string_view obfusc)
 {
     size_t bbs = r.lift_stats ? r.lift_stats->bbs_total : 0;
-    if (!r.lift_failed && r.lift_stats)
+    if (r.lift_status == LiftStatus::PASS && r.lift_stats)
     {
         total_lift_ms += r.lift_stats->total_time_ms;
         ++lift_count;
@@ -80,13 +80,22 @@ void RunSummary::record(const std::string &label,
     row.obfuscator = std::string(obfusc);
     row.bbs_total = bbs;
 
-    if (r.lift_failed)
+    if (r.lift_status != LiftStatus::PASS)
     {
         ++stage1.tested;
         ++stage1.errors;
-        stage1.failing.push_back(label + " [lift error]");
-        lift_errors.push_back(label + ": " + r.lift_error);
-        row.stage1_result = "LIFT_FAIL";
+        const char *status_name = lift_status_name(r.lift_status);
+        const char *bucket_name =
+            r.lift_status == LiftStatus::TIMEOUT ? "lift timeout" : "lift error";
+        stage1.failing.push_back(label + " [" + bucket_name + "]");
+        std::string detail = label + ": " + status_name;
+        if (!r.lift_message.empty())
+            detail += ": " + r.lift_message;
+        if (r.lift_status == LiftStatus::TIMEOUT)
+            lift_timeouts.push_back(std::move(detail));
+        else
+            lift_errors.push_back(std::move(detail));
+        row.stage1_result = status_name;
         row.stage2_result = "N/A";
         csv_rows.push_back(std::move(row));
         return;
@@ -203,6 +212,8 @@ void RunSummary::print_summary(const std::string &suite_label, std::ostream &os)
     os << "  PASS:    " << stage1.pass << "  (" << fmt_dbl(pct(stage1.pass, stage1.tested)) << "%)\n";
     os << "  FAIL:    " << stage1.fail << "  (" << fmt_dbl(pct(stage1.fail, stage1.tested)) << "%)\n";
     os << "  ERRORS:  " << stage1.errors << "\n";
+    os << "  Lift errors:   " << lift_errors.size() << "\n";
+    os << "  Lift timeouts: " << lift_timeouts.size() << "\n";
     double s1_avg = stage1.pass_cov_count > 0
         ? stage1.total_coverage_pct / static_cast<double>(stage1.pass_cov_count) : 0.0;
     os << "  Avg. coverage (PASS only):  " << fmt_dbl(s1_avg) << "%\n";
@@ -298,6 +309,26 @@ void write_summary_artifacts(const RunSummary &summary,
 }
 
 
+static void write_lift_report(std::ostream &os,
+                              LiftStatus status,
+                              const std::optional<lifter::lift_stats_t> &lift_stats,
+                              const std::string &lift_message)
+{
+    if (status != LiftStatus::PASS)
+    {
+        os << "[LIFTING " << lift_status_name(status) << "]";
+        if (!lift_message.empty())
+            os << " " << lift_message;
+        os << "\n";
+        return;
+    }
+    if (lift_stats)
+        lift_stats->print(os);
+    else
+        os << "[LIFTING PASS] no lift stats available\n";
+}
+
+
 void write_function_dot(const FullPipelineResult &r,
                         const fs::path &out_dir,
                         const std::string &stem,
@@ -363,17 +394,7 @@ void write_function_reports(const FullPipelineResult &r,
 
     {
         std::ofstream f(out_dir / (prefix + ".lift.report.txt"));
-        if (r.lift_failed)
-        {
-            f << "[LIFTING FAILED] " << r.lift_error << "\n";
-        }
-        else
-        {
-            if (r.lift_stats)
-                r.lift_stats->print(f);
-            else
-                f << "[LIFTING OK] no lift stats available\n";
-        }
+        write_lift_report(f, r.lift_status, r.lift_stats, r.lift_message);
     }
 
     if (r.raw_vs_native || r.raw_vs_native_dive)
@@ -694,17 +715,10 @@ void write_function_reports(const EvaluatedFunction &result,
         {
             llvm::errs() << "  [WARN] cannot write lift report for " << result.func << "\n";
         }
-        else if (result.record.lift_failed)
-        {
-            f << "[LIFTING FAILED] " << result.record.lift_error << "\n";
-        }
-        else if (result.record.lift_stats)
-        {
-            result.record.lift_stats->print(f);
-        }
         else
         {
-            f << "[LIFTING OK] no lift stats available\n";
+            write_lift_report(f, result.record.lift_status, result.record.lift_stats,
+                              result.record.lift_message);
         }
     }
 
@@ -818,7 +832,8 @@ void write_campaign_artifacts(const std::string &campaign_label,
     size_t eg1_pass = 0;
     size_t eg2_tested = 0;
     size_t eg2_pass = 0;
-    size_t lift_failures = 0;
+    size_t lift_errors = 0;
+    size_t lift_timeouts = 0;
     size_t raw_gate_failures = 0;
     size_t o2_gate_failures = 0;
     double total_lift_ms = 0.0;
@@ -842,7 +857,7 @@ void write_campaign_artifacts(const std::string &campaign_label,
     if (csv)
     {
         csv << "binary,func,obfuscator,bbs_total,"
-               "lift_result,raw_native_result,raw_native_coverage_pct,raw_native_failures,"
+               "lift_result,lift_message,raw_native_result,raw_native_coverage_pct,raw_native_failures,"
                "o2_raw_result,o2_raw_coverage_pct,o2_raw_failures,"
                "o2_selftest_strict_result,o2_selftest_strict_profile,o2_selftest_strict_coverage_pct,o2_selftest_strict_failures,o2_selftest_strict_skip_reason,"
                "o2_selftest_relaxed_result,o2_selftest_relaxed_profile,o2_selftest_relaxed_coverage_pct,o2_selftest_relaxed_failures,o2_selftest_relaxed_skip_reason,"
@@ -880,13 +895,19 @@ void write_campaign_artifacts(const std::string &campaign_label,
         const double relaxed_kill_pct = record.eg3_relaxed.mutation.report
             ? record.eg3_relaxed.mutation.report->mutation_score() * 100.0 : 0.0;
 
-        if (record.lift_failed)
-            ++lift_failures;
-        else
+        switch (record.lift_status)
         {
-            ++lift_succeeded;
-            if (record.lift_stats)
-                total_lift_ms += record.lift_stats->total_time_ms;
+            case LiftStatus::PASS:
+                ++lift_succeeded;
+                if (record.lift_stats)
+                    total_lift_ms += record.lift_stats->total_time_ms;
+                break;
+            case LiftStatus::ERROR:
+                ++lift_errors;
+                break;
+            case LiftStatus::TIMEOUT:
+                ++lift_timeouts;
+                break;
         }
 
         if (record.raw_vs_native.status != PhaseStatus::NOT_RUN &&
@@ -930,7 +951,8 @@ void write_campaign_artifacts(const std::string &campaign_label,
         {
             csv << entry.binary << "," << entry.func << "," << entry.obfuscator << ","
                 << bbs_total << ","
-                << (record.lift_failed ? "FAIL" : "PASS") << ","
+                << lift_status_name(record.lift_status) << ","
+                << (record.lift_status == LiftStatus::PASS ? "" : record.lift_message) << ","
                 << phase_status_name(record.raw_vs_native.status) << "," << fmt_dbl(eg1_cov, 2) << "," << eg1_failures_count << ","
                 << phase_status_name(record.opt_vs_raw.status) << "," << fmt_dbl(eg2_cov, 2) << "," << eg2_failures_count << ","
                 << phase_status_name(record.eg3_strict.selftest.status) << ","
@@ -976,8 +998,8 @@ void write_campaign_artifacts(const std::string &campaign_label,
         obj["func"] = entry.func;
         obj["obfuscator"] = entry.obfuscator;
         obj["bbs_total"] = static_cast<int64_t>(bbs_total);
-        obj["lift_result"] = record.lift_failed ? "FAIL" : "PASS";
-        obj["lift_error"] = record.lift_error;
+        obj["lift_result"] = lift_status_name(record.lift_status);
+        obj["lift_message"] = record.lift_status == LiftStatus::PASS ? std::string{} : record.lift_message;
         obj["lift_ms"] = record.lift_stats ? record.lift_stats->total_time_ms : 0.0;
         obj["raw_native"] = phase_json(record.raw_vs_native, bbs_total);
         obj["o2_raw"] = phase_json(record.opt_vs_raw, bbs_total);
@@ -1025,7 +1047,9 @@ void write_campaign_artifacts(const std::string &campaign_label,
         report << "Functions attempted: " << attempted << "\n\n";
 
         report << "--- Phase Eligibility ---\n";
-        report << "Lift succeeded: " << lift_succeeded << "\n";
+        report << "Lift passed: " << lift_succeeded << "\n";
+        report << "Lift errors: " << lift_errors << "\n";
+        report << "Lift timeouts: " << lift_timeouts << "\n";
         report << "EG1 pass: " << eg1_pass << "/" << eg1_tested << "\n";
         report << "EG2 pass: " << eg2_pass << "/" << eg2_tested << "\n";
         report << "EG3 strict self-test pass: " << strict_agg.self_pass << "/" << strict_agg.self_tested << "\n";
@@ -1034,7 +1058,8 @@ void write_campaign_artifacts(const std::string &campaign_label,
         report << "EG3 relaxed mutation executed: " << relaxed_agg.mutation_executed << "\n\n";
 
         report << "--- Failure Buckets ---\n";
-        report << "Lift failures: " << lift_failures << "\n";
+        report << "Lift errors: " << lift_errors << "\n";
+        report << "Lift timeouts: " << lift_timeouts << "\n";
         report << "Raw/native failures: " << raw_gate_failures << "\n";
         report << "O2/raw failures: " << o2_gate_failures << "\n";
         report << "EG3 strict self-test failures: " << strict_agg.self_fail << "\n";
@@ -1103,11 +1128,11 @@ void write_campaign_artifacts(const std::string &campaign_label,
 
     if (eg3_csv)
     {
-        eg3_csv << "suite,obfuscator,functions_total,lift_failures,raw_gate_failures,o2_gate_failures,"
+        eg3_csv << "suite,obfuscator,functions_total,lift_errors,lift_timeouts,raw_gate_failures,o2_gate_failures,"
                    "strict_profile,strict_selftest_tested,strict_selftest_pass,strict_selftest_fail,strict_mutation_executed,strict_mutation_skipped,strict_mutation_errors,strict_total_enumerated,strict_total_mutants,strict_killed,strict_survived,strict_equivalent,strict_errors,strict_kill_pct,strict_adjusted_kill_pct,"
                    "relaxed_profile,relaxed_selftest_tested,relaxed_selftest_pass,relaxed_selftest_fail,relaxed_mutation_executed,relaxed_mutation_skipped,relaxed_mutation_errors,relaxed_total_enumerated,relaxed_total_mutants,relaxed_killed,relaxed_survived,relaxed_equivalent,relaxed_errors,relaxed_kill_pct,relaxed_adjusted_kill_pct,kill_pct_delta\n";
         eg3_csv << suite << "," << obfuscator << "," << attempted << ","
-                << lift_failures << "," << raw_gate_failures << "," << o2_gate_failures << ","
+                << lift_errors << "," << lift_timeouts << "," << raw_gate_failures << "," << o2_gate_failures << ","
                 << strict_agg.profile_name << "," << strict_agg.self_tested << "," << strict_agg.self_pass << "," << strict_agg.self_fail << ","
                 << strict_agg.mutation_executed << "," << strict_agg.mutation_skipped << "," << strict_agg.mutation_errors << ","
                 << strict_agg.total_enumerated << "," << strict_agg.total_mutants << "," << strict_agg.total_killed << ","
@@ -1163,7 +1188,8 @@ void write_campaign_artifacts(const std::string &campaign_label,
             os.attribute("suite", suite);
             os.attribute("obfuscator", obfuscator);
             os.attribute("functions_total", static_cast<int64_t>(attempted));
-            os.attribute("lift_failures", static_cast<int64_t>(lift_failures));
+            os.attribute("lift_errors", static_cast<int64_t>(lift_errors));
+            os.attribute("lift_timeouts", static_cast<int64_t>(lift_timeouts));
             os.attribute("raw_gate_failures", static_cast<int64_t>(raw_gate_failures));
             os.attribute("o2_gate_failures", static_cast<int64_t>(o2_gate_failures));
             os.attributeObject("strict", [&] {

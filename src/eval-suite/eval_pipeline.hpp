@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -18,22 +20,31 @@
 namespace lifted::eval
 {
 
+enum class LiftStatus
+{
+    PASS,
+    ERROR,
+    TIMEOUT,
+};
+
 struct LiftAndVerifyResult
 {
     std::optional<lifter::lift_stats_t> lift_stats;    // populated on successful lift
     std::optional<pipeline::PipelineReport> report;    // null only if lifting failed
     std::optional<pipeline::DeepDiveResult> deep_dive; // null if no divergence or skipped
     std::optional<visualization::CfgSnapshot> cfg;     // populated on successful lift
-    bool lift_failed = false;
-    std::string lift_error; // populated when lift_failed
+    LiftStatus lift_status = LiftStatus::PASS;
+    std::string lift_message; // populated when lift_status != PASS
+
+    bool lift_succeeded() const;
 };
 
 struct FullPipelineResult
 {
     std::optional<lifter::lift_stats_t> lift_stats; // populated on successful lift
     std::optional<visualization::CfgSnapshot> cfg;  // populated on successful lift
-    bool lift_failed = false;
-    std::string lift_error; // populated when lift_failed
+    LiftStatus lift_status = LiftStatus::PASS;
+    std::string lift_message; // populated when lift_status != PASS
 
     std::optional<pipeline::PipelineReport> raw_vs_native;
     std::optional<pipeline::DeepDiveResult> raw_vs_native_dive;
@@ -43,6 +54,7 @@ struct FullPipelineResult
 
     std::string opt_transform_error;
 
+    bool lift_succeeded() const;
     bool raw_pass() const;
     bool opt_pass() const;
     bool full_pass() const;
@@ -109,14 +121,15 @@ struct EvaluationRecord
 {
     std::optional<lifter::lift_stats_t> lift_stats;
     std::optional<visualization::CfgSnapshot> cfg;
-    bool lift_failed = false;
-    std::string lift_error;
+    LiftStatus lift_status = LiftStatus::PASS;
+    std::string lift_message;
 
     VerificationPhaseResult raw_vs_native;
     VerificationPhaseResult opt_vs_raw;
     Eg3ProfileResult eg3_strict{PipelineCheckpointProfile::OPTIMIZED_STRICT};
     Eg3ProfileResult eg3_relaxed{PipelineCheckpointProfile::OPTIMIZED_RELAXED};
 
+    bool lift_succeeded() const;
     size_t bbs_total() const;
 };
 
@@ -134,8 +147,10 @@ struct EvaluationConfig
     PipelineCheckpointProfile eg3_strict_profile = PipelineCheckpointProfile::OPTIMIZED_STRICT;
     PipelineCheckpointProfile eg3_relaxed_profile = PipelineCheckpointProfile::OPTIMIZED_RELAXED;
     fault_injection::MutationCampaignConfig mutation_config;
+    uint64_t lift_timeout_sec = 0;
 };
 
+using LiftCompleteCallback = std::function<llvm::Error(const EvaluationRecord &)>;
 
 pipeline::PipelineSpec make_default_pipeline(
     std::string_view phase_label,
@@ -165,12 +180,21 @@ run_evaluation_named(llvm::LLVMContext &context,
                      const std::filesystem::path &path,
                      const std::string &func_name,
                      uint64_t entry_rva,
-                     const EvaluationConfig &config = EvaluationConfig());
+                     const EvaluationConfig &config = EvaluationConfig(),
+                     LiftCompleteCallback on_lift_complete = {});
 
+EvaluationRecord make_lift_status_record(const EvaluationConfig &config,
+                                         LiftStatus status,
+                                         std::string message);
+
+llvm::Error write_evaluation_record_json(const EvaluationRecord &record,
+                                         const std::filesystem::path &path);
+llvm::Expected<EvaluationRecord> read_evaluation_record_json(const std::filesystem::path &path);
 
 std::optional<std::filesystem::path> resolve_suite_name(const std::string &name);
 std::vector<std::string> known_suite_names();
 
+const char *lift_status_name(LiftStatus status);
 const char *phase_status_name(PhaseStatus status);
 const char *mutation_phase_status_name(MutationPhaseStatus status);
 const char *pipeline_checkpoint_profile_name(PipelineCheckpointProfile profile);

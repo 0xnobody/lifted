@@ -85,7 +85,7 @@ TEST(indirect_call_invalid_targets_never_pass)
     auto result = unwrapExpected(
         lifted::eval::lift_and_verify_named(context, so_path, "test", *entry_va, 0));
 
-    CHECK(!result.lift_failed);
+    CHECK_EQ(result.lift_status, lifted::eval::LiftStatus::PASS);
     CHECK(result.report.has_value());
     if (!result.report)
         return;
