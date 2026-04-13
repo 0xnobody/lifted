@@ -396,7 +396,7 @@ const char *edge_type_name(lifter::edge_t::Type type)
 }
 
 llvm::Expected<lifter::edge_t::Type> parse_edge_type_value(const llvm::json::Value &value,
-                                                            const std::string &path)
+                                                           const std::string &path)
 {
     auto text = parse_string_value(value, path);
     if (!text)
@@ -445,7 +445,6 @@ llvm::Expected<lifter::synthetic_block_info_t::Type> parse_synthetic_block_type_
         return lifter::synthetic_block_info_t::Type::INDIRECT;
     return make_string_error(path + " has unknown synthetic block type '" + *text + "'");
 }
-
 
 llvm::Expected<fault_injection::MutationCategory> parse_mutation_category_name(
     llvm::StringRef name,
@@ -550,7 +549,7 @@ llvm::json::Object lift_stats_json(const lifter::lift_stats_t &stats)
 }
 
 llvm::Expected<lifter::lift_stats_t> parse_lift_stats_json(const llvm::json::Value &value,
-                                                            const std::string &path)
+                                                           const std::string &path)
 {
     auto obj_or = require_object(value, path);
     if (!obj_or)
@@ -637,7 +636,7 @@ llvm::json::Object lifted_bb_json(const lifter::lifted_bb_t &bb)
 }
 
 llvm::Expected<lifter::lifted_bb_t> parse_lifted_bb_json(const llvm::json::Value &value,
-                                                          const std::string &path)
+                                                         const std::string &path)
 {
     auto obj_or = require_object(value, path);
     if (!obj_or)
@@ -747,7 +746,7 @@ llvm::json::Object cfg_snapshot_json(const visualization::CfgSnapshot &cfg)
 }
 
 llvm::Expected<visualization::CfgSnapshot> parse_cfg_snapshot_json(const llvm::json::Value &value,
-                                                                    const std::string &path)
+                                                                   const std::string &path)
 {
     auto obj_or = require_object(value, path);
     if (!obj_or)
@@ -785,7 +784,7 @@ llvm::Expected<visualization::CfgSnapshot> parse_cfg_snapshot_json(const llvm::j
             if (!id_or)
                 return id_or.takeError();
             auto block_or = parse_synthetic_block_json(entry.second,
-                path + ".synthetic_blocks." + entry.first.str());
+                                                       path + ".synthetic_blocks." + entry.first.str());
             if (!block_or)
                 return block_or.takeError();
             cfg.synthetic_blocks[static_cast<lifter::bb_id_t>(*id_or)] = std::move(*block_or);
@@ -890,8 +889,8 @@ llvm::Expected<pipeline::StageReport> parse_stage_report_json(const llvm::json::
 }
 
 pipeline::Corpus make_placeholder_corpus(size_t entries,
-                                          size_t unique_blocks,
-                                          const std::unordered_map<uint64_t, uint64_t> &src_block_hits)
+                                         size_t unique_blocks,
+                                         const std::unordered_map<uint64_t, uint64_t> &src_block_hits)
 {
     pipeline::Corpus corpus;
     auto classifier = pipeline::make_natural_exit_classifier();
@@ -1301,7 +1300,7 @@ llvm::json::Object eg3_profile_json(const Eg3ProfileResult &profile)
 }
 
 llvm::Expected<Eg3ProfileResult> parse_eg3_profile_json(const llvm::json::Value &value,
-                                                         const std::string &path)
+                                                        const std::string &path)
 {
     auto obj_or = require_object(value, path);
     if (!obj_or)
@@ -1406,7 +1405,7 @@ make_lifter_callbacks(BinaryContext &bin_ctx,
                       const std::string &func_name)
 {
     const std::string artifact_dir =
-        "/home/atlas/lifted/out/eval_artifacts/" + path.filename().string() + "_" + func_name;
+        "/home/atlas/lifted/eval/eval_artifacts/" + path.filename().string() + "_" + func_name;
 
     if (obfuscator == "polaris")
     {
@@ -1725,8 +1724,7 @@ run_mutation_campaign(BinaryContext &bin_ctx,
         if (killed)
             ++by_category.first;
 
-        auto &by_difficulty = report.by_difficulty[
-            fault_injection::static_difficulty(r.point.mut->category)];
+        auto &by_difficulty = report.by_difficulty[fault_injection::static_difficulty(r.point.mut->category)];
         ++by_difficulty.second;
         if (killed)
             ++by_difficulty.first;
@@ -1999,7 +1997,7 @@ lift_and_verify_named(llvm::LLVMContext &context,
     }
 
     auto artifacts = std::move(*artifacts_or);
-    utils::output_to_file("/home/atlas/lifted/out/lifter_outputs/" + path.filename().string() + "_" + func_name + ".ll",
+    utils::output_to_file("/home/atlas/lifted/eval/lifter_outputs/" + path.filename().string() + "_" + func_name + ".ll",
                           artifacts.raw_module.get());
 
     auto jit_or = make_raw_jit(artifacts);
@@ -2238,8 +2236,6 @@ run_evaluation_named(llvm::LLVMContext &context,
     return result;
 }
 
-
-
 EvaluationRecord make_lift_status_record(const EvaluationConfig &config,
                                          LiftStatus status,
                                          std::string message)
@@ -2294,7 +2290,6 @@ llvm::Expected<EvaluationRecord> read_evaluation_record_json(const std::filesyst
 
     return parse_evaluation_record_json(*parsed_or, "evaluation_record");
 }
-
 
 std::optional<std::filesystem::path> resolve_suite_name(const std::string &name)
 {
