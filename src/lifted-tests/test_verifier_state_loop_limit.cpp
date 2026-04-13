@@ -1,18 +1,23 @@
 // test_verifier_state_loop_limit.cpp
 //
-// Unit tests for verifier_state's dynamic back-edge loop-limit logic.
+// Unit tests for verifier_state's dynamic loop-limit edge-counting logic.
 //
 // The logic under test (in on_bb_entered):
-//   An edge (from, to) is a *back-edge* (loop iteration) when the destination
+//   An edge (from, to) is counted toward loop_limit when the destination
 //   block has already been visited: bb_first_seen.count(to) > 0.
-//   Back-edge traversals are counted per directed edge {from, to}.
+//   Counts are maintained per directed edge {from, to}.
 //   When any counter reaches bb_loop_limit, LOOP_LIMIT is signalled.
+//
+// Terminology note:
+//   The implementation still uses the historical field name `back_edge_count`,
+//   but the runtime rule is revisit-based rather than structural-CFG back-edge
+//   detection.
 //
 // Key semantic guarantees being tested:
 //   - True loops (A->B->C->A repeated) correctly accumulate and fire.
-//   - While-loops (jump-to-condition, condition seen before body): the back-edge
-//     cond->body is correctly counted from its second traversal onward, even
-//     though first_seen[cond] < first_seen[body].
+//   - While-loops (jump-to-condition, condition seen before body): the repeated
+//     cond->body edge is correctly counted from its second traversal onward,
+//     even though first_seen[cond] < first_seen[body].
 //   - Dispatcher arms (B->A, C->A, D->A) each have their own counter; with
 //     limit=N, none fires unless that specific arm is repeated N times.
 //   - Shared-prefix edges (A->B when B already seen) are counted on 2nd+

@@ -208,7 +208,15 @@ namespace lifted::verification
         if (address < LOAD_BASE)
         {
             if (address != verifier_state::FINISH_SENTINEL)
+            {
                 ctx->state->set_exit_reason(exit_type::MISSING_BLOCK);
+                // Record the raw VA as a diagnostic entry so the deep-dive shows
+                // where Unicorn escaped to (typically an unresolved PLT target).
+                // address is a VA below LOAD_BASE, not an RVA — it appears as a
+                // small value in the trace, distinguishable from normal block RVAs.
+                State s = unicorn_to_state(uc);
+                ctx->state->record_missing_block_entry(address, &s);
+            }
             uc_emu_stop(uc);
             return;
         }
@@ -318,6 +326,9 @@ namespace lifted::verification
             // Native execution reached code the lifted real-block map does not own.
             // Treat it as a missing-block escape instead of fabricating a phantom BB.
             ctx->state->set_exit_reason(exit_type::MISSING_BLOCK);
+            // Record the failing RVA as a diagnostic checkpoint so the deep-dive
+            // shows it as <absent> on the JIT side, identifying the missing block.
+            ctx->state->record_missing_block_entry(raw_current_rva, &state);
             uc_emu_stop(uc);
             return;
         }

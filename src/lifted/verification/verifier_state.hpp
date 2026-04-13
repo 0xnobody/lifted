@@ -62,7 +62,7 @@ namespace lifted::verification
         checkpoint_config_t checkpoint_config;
         loop_limit_policy loop_policy = loop_limit_policy::TERMINATE;
         uint64_t bb_limit = UINT64_MAX;   // max basic blocks executed (UINT64_MAX = unlimited)
-        uint64_t loop_limit = UINT64_MAX; // max back-edge arrivals per header (UINT64_MAX = unlimited)
+        uint64_t loop_limit = UINT64_MAX; // max counted directed-edge revisits in the BB trace (UINT64_MAX = unlimited)
         recursive_call_policy recursive_policy = recursive_call_policy::SKIP;
     };
 
@@ -98,7 +98,7 @@ namespace lifted::verification
 
         std::vector<uint64_t> bbs_entered_rvas;
         std::unordered_map<uint64_t, uint64_t>                  bb_first_seen;       // addr -> step when first seen
-        std::map<std::pair<uint64_t, uint64_t>, uint64_t>        back_edge_count;     // (from,to) -> times crossed
+        std::map<std::pair<uint64_t, uint64_t>, uint64_t>        back_edge_count;     // historical name: counted directed revisits {(from,to)} -> times crossed after `to` was seen
         uint64_t bb_step = 0;
         uint64_t bb_loop_limit = -1;
         uint64_t bb_limit = -1;
@@ -283,37 +283,41 @@ namespace lifted::verification
                              << llvm::format_hex(rva, 18) << " (step: " << bb_step << ")\n";
             }
 
-            // An edge (from, to) is a back-edge (loop iteration) when the destination
-            // was already visited before this traversal — the "revisit" criterion.
+            // loop_limit uses a dynamic revisit criterion over the observed BB trace,
+            // not a structural natural-loop/back-edge analysis over the CFG.
+            //
+            // A directed edge (from, to) is counted once the destination was already
+            // visited before this traversal.
             //
             // Why first_seen ordering was wrong for while-loops:
             //   A while-loop compiled with jump-to-condition layout looks like:
             //     setup → cond (initial jmp)     first_seen[cond] = T
             //     cond  → body (first entry)     first_seen[body] = T+1
             //     body  → cond (fallthrough, skipped by JIT)
-            //     cond  → body (loop back-edge!) first_seen[body]=T+1 > first_seen[cond]=T
+            //     cond  → body (loop revisit!)   first_seen[body]=T+1 > first_seen[cond]=T
             //   The ordering test (first_seen[to] < first_seen[from]) is FALSE for
-            //   cond→body even though it is the genuine loop back-edge.  Neither JIT
-            //   nor Unicorn fires LOOP_LIMIT: the function runs forever.
+            //   cond→body even though it is the genuine looping transition. Neither
+            //   JIT nor Unicorn fires LOOP_LIMIT: the function runs forever.
             //
             // Revisit criterion:
             //   - First traversal of any edge: destination not yet in bb_first_seen
-            //     → not counted (first entry to that block, not a loop iteration).
-            //   - Second+ traversal: destination already seen → counted as back-edge.
+            //     → not counted (first entry to that block).
+            //   - Second+ traversal: destination already seen → counted toward
+            //     loop_limit.
             //
             // Handles correctly:
             //   While-loops (jump-to-condition): cond→body counted from its second
             //     traversal onward, regardless of which block was seen first.     ✓
             //   Do-while / post-tested loops: body→cond counted from 2nd traversal. ✓
             //   Self-loops (X→X): X in bb_first_seen after first entry → counted.  ✓
-            //   Multi-block loops A→B→C→A: all edges accumulate together per
-            //     iteration (first-pass setup traversal excluded).               ✓
+            //   Multi-block loops A→B→C→A: repeated edges accumulate independently
+            //     per directed edge; the first setup traversal is excluded.        ✓
             //
             // Forward edges in dispatchers or shared prefixes are also counted on
-            // their second+ traversal.  Both JIT and Unicorn count them equally
-            // (no divergence), and the loop limit still bounds execution.
+            // their second+ traversal. Both JIT and Unicorn count them equally
+            // (no divergence), and loop_limit still bounds execution.
             // The old ordering filter avoided this case but silently missed
-            // while-loop back-edges, causing unbounded execution.
+            // while-loop revisit edges, causing unbounded execution.
             //
             // Both executors now report canonical lifted REAL-block starts in
             // the shared verifier trace. Unicorn maps raw QEMU TB starts back
@@ -573,6 +577,19 @@ namespace lifted::verification
         void set_exit_reason(exit_type reason)
         {
             exit_reason = reason;
+        }
+
+        /// Push a diagnostic checkpoint entry for a block address that triggered
+        /// MISSING_BLOCK.  Records the failing RVA in bb_trace and, when BB events
+        /// are synced, in the checkpoint record — bypassing assert_checkpoint since
+        /// exit_reason is already set.  The extra entry surfaces as <absent> on the
+        /// other side in the deep-dive table and bb_trace diff, revealing which block
+        /// caused the escape without requiring any new fields or structs.
+        void record_missing_block_entry(uint64_t rva, const State *state)
+        {
+            bbs_entered_rvas.push_back(rva);
+            if (has_flag(checkpoint_config.sync_on, event_flags::BB))
+                checkpoint_record.push_bb(rva, state, current_memory_contents_hash());
         }
 
         recursive_call_policy recursive_policy() const
