@@ -1,0 +1,586 @@
+
+=== Pipeline: EG1 raw/native[main] ===
+
+[Stage 1] SeedSweep(50 runs, base_seed=0x1338)
+  Comparison outcomes:
+    PASS:                  42  (84.0%)
+    FAIL_DIVERGED:          8  (16.0%)
+    FAIL_INCOMPARABLE:      0  (0.0%)
+    NEEDS_RERUN triggered:   0  (0.0%)
+    NEEDS_RERUN → PASS:      0  (0.0%)
+  Src (final) exit types:  NATURAL_EXIT=50
+  Tgt exit types:  NATURAL_EXIT=42  MISSING_BLOCK=8
+  Coverage:  11 unique blocks
+  Corpus:    50 entries added
+  Timing (wall clock, executor run_single only):
+    Src:      2.9 ms total,    0.06 ms/run avg
+    Tgt:     17.4 ms total,    0.35 ms/run avg
+
+  DIVERGENCES (8):
+    Run #7  seed=0xabbc7c36c106aca1
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1211
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x7db6e0bdabc101e6 bb=0x84f90ceee6c4b259 mem=0x47c6991bc0eb9357 mem_write=0xad911c2d7578085b read=0x0 ext_call=0x0
+    Run #12  seed=0x21cdfd9258f82f25
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1300
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x5d7be024b26e4083 bb=0x4874462cf5e1acae mem=0x46187d064d5f2789 mem_write=0x706c951660f8ca3d read=0x0 ext_call=0x0
+    Run #19  seed=0xafac5054fd1f48bb
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1211
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x5348571620279bf7 bb=0x84f90ceee6c4b259 mem=0x31049baebc241f4f mem_write=0x747333797f94c05b read=0x0 ext_call=0x0
+    Run #22  seed=0x3e8fce669f0fd405
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1211
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xa2f567deb27912b2 bb=0x84f90ceee6c4b259 mem=0x8041495b8c419ef mem_write=0xe11ffe58cf88b1d5 read=0x0 ext_call=0x0
+    Run #24  seed=0xc0e32d803ef862bd
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1300
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x896f769d6e895646 bb=0x4874462cf5e1acae mem=0x869177edb1dcdd50 mem_write=0x5a4837de0da9927d read=0x0 ext_call=0x0
+    Run #36  seed=0x594af08dddc104c8
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x124f
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x88325f63f5232e10 bb=0x9cc1c5ef96800c2d mem=0xf210f396365f70a0 mem_write=0xd721323e8b53fa40 read=0x0 ext_call=0x0
+    Run #40  seed=0xb0f431937415e8a0
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x124f
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x2817c860f6596d3a bb=0x9cc1c5ef96800c2d mem=0x38410ea89b1294bb mem_write=0xd41155df390da2ed read=0x0 ext_call=0x0
+    Run #41  seed=0x2d09b4a4c824e721
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1300
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xa7380b8fafca5924 bb=0x4874462cf5e1acae mem=0xe8f4f64d372a0880 mem_write=0x3b9d0e0a67d1b257 read=0x0 ext_call=0x0
+
+[Stage 2] SeedSweep(100 runs, base_seed=0x1337)
+  Comparison outcomes:
+    PASS:                  61  (61.0%)
+    FAIL_DIVERGED:         39  (39.0%)
+    FAIL_INCOMPARABLE:      0  (0.0%)
+    NEEDS_RERUN triggered:   0  (0.0%)
+    NEEDS_RERUN → PASS:      0  (0.0%)
+  Src (final) exit types:  NATURAL_EXIT=100
+  Tgt exit types:  NATURAL_EXIT=61  MISSING_BLOCK=39
+  Coverage:  11 unique blocks
+  Corpus:    100 entries added
+  Timing (wall clock, executor run_single only):
+    Src:      7.4 ms total,    0.07 ms/run avg
+    Tgt:     44.0 ms total,    0.44 ms/run avg
+
+  DIVERGENCES (39):
+    Run #0  seed=0xea99ce012398900b
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x12e4
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xeef436ebf3a92ea1 bb=0x4b5a087afa4969f0 mem=0xa75f463437e30b13 mem_write=0x3ea1d36b0b7e3329 read=0x0 ext_call=0x0
+    Run #2  seed=0x7d9a0ea4e56f1a06
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x126e
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xc2256bf64a419aae bb=0x8c63ce7b9c5f4059 mem=0x6920b1df7793fb30 mem_write=0x774dad586488cae7 read=0x0 ext_call=0x0
+    Run #3  seed=0x2c8e792e4a32ff11
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1230
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xf6ab76f66c0b8e5f bb=0x8a25485dd3141432 mem=0x315444f3075f9203 mem_write=0x1cc79f2a53f8cb00 read=0x0 ext_call=0x0
+    Run #5  seed=0x4decd8e6cb1870ee
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x12c8
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x83d860cb91cd114a bb=0xe90dfde08c92a09e mem=0x8ba0b02852a04b75 mem_write=0x6b5adc7352cff5b4 read=0x0 ext_call=0x0
+    Run #8  seed=0x1bfb69e25efa5e43
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x128d
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xd96279852f839f3f bb=0xaf1ad08a47d0e336 mem=0x262389bcf90b58e0 mem_write=0xe6a1e64772ce6985 read=0x0 ext_call=0x0
+    Run #9  seed=0x5985ba8bc69548ed
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x124f
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x7cccfa83eee83253 bb=0x9cc1c5ef96800c2d mem=0xd685134558aafeb6 mem_write=0x5965bc410269aa2b read=0x0 ext_call=0x0
+    Run #13  seed=0x1230b4391a1e322b
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1300
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xe8f37a0aaa0f7a49 bb=0x4874462cf5e1acae mem=0xab25cf0728b32c45 mem_write=0x1e401c690df0d03a read=0x0 ext_call=0x0
+    Run #14  seed=0x27d25de1ced17297
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1211
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xb873ac18108883d7 bb=0x84f90ceee6c4b259 mem=0x7023898e134595d3 mem_write=0x4c1e0a59d4c2f169 read=0x0 ext_call=0x0
+    Run #15  seed=0x31281e88b060e883
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x128d
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xe6f9bc220bb7dbd2 bb=0xaf1ad08a47d0e336 mem=0x73c1fc134ff63ccd mem_write=0x117bc4bdfd8c1b80 read=0x0 ext_call=0x0
+    Run #18  seed=0x3701693258727db1
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x131c
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x1a1b599c2e0b7b77 bb=0xcd0cb4dd4a398139 mem=0x6e39cf02ed3aa0d4 mem_write=0x873638ea6345f1d5 read=0x0 ext_call=0x0
+    Run #22  seed=0x4769e06f5144fcfa
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x12ac
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x3a634f2e854fce9c bb=0x56b0a3add7f90c9d mem=0x3da2daf26fabc703 mem_write=0xf6583507e322e076 read=0x0 ext_call=0x0
+    Run #23  seed=0x50c140e0abb8b9bd
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x12ac
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x69cb4b4b8108a3d0 bb=0x56b0a3add7f90c9d mem=0x5905c8e799912339 mem_write=0x19a28156c042dcb7 read=0x0 ext_call=0x0
+    Run #26  seed=0x9be291238df34f77
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x12e4
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x2b837e4e899a278b bb=0x4b5a087afa4969f0 mem=0x8ee87f2236d671ef mem_write=0xfeba449f4388490e read=0x0 ext_call=0x0
+    Run #27  seed=0xcc227984ae10136a
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x124f
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xced18f2039626a4b bb=0x9cc1c5ef96800c2d mem=0xc0fa002ea8620ca0 mem_write=0xa5e56e96bc05ba70 read=0x0 ext_call=0x0
+    Run #29  seed=0x16aef30e2501882c
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x131c
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x56180acac3505c34 bb=0xcd0cb4dd4a398139 mem=0xde5fa7807944c3a8 mem_write=0xea0fceb811010873 read=0x0 ext_call=0x0
+    Run #31  seed=0xd6b2884e861a2cbc
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x12c8
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xb7af2e924761d363 bb=0xe90dfde08c92a09e mem=0x8b658dee5bddbdea mem_write=0x3b962e8f5d8f0455 read=0x0 ext_call=0x0
+    Run #35  seed=0xff85141c1d3c7b80
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1211
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x2f52f40332af221 bb=0x84f90ceee6c4b259 mem=0x5516222f4550d4bb mem_write=0x1944a094388bb0e read=0x0 ext_call=0x0
+    Run #37  seed=0x296e72726900ddfc
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x126e
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xe2989142cedcea94 bb=0x8c63ce7b9c5f4059 mem=0xfc85d1155e713c50 mem_write=0x53a8436846e92c6d read=0x0 ext_call=0x0
+    Run #39  seed=0x19104a9dca4bd86f
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1211
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x329b60bb3aeef878 bb=0x84f90ceee6c4b259 mem=0x349b1ae68b928b01 mem_write=0x64e0ce06482b5a3d read=0x0 ext_call=0x0
+    Run #40  seed=0xb871a34ba5fa323f
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1211
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xa9601e30b2529592 bb=0x84f90ceee6c4b259 mem=0xf1746b8f4c677073 mem_write=0xa9ccb59be6b6bcf4 read=0x0 ext_call=0x0
+    Run #42  seed=0xc6efe4deec4b2525
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x12c8
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xa2df3e3c860604e4 bb=0xe90dfde08c92a09e mem=0xb6f16318be39eff2 mem_write=0x83b59a94f87f676b read=0x0 ext_call=0x0
+    Run #49  seed=0x19152dd2248472a3
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x12ac
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x49c163d3eb64759 bb=0x56b0a3add7f90c9d mem=0x90411660a717530a mem_write=0xcfe1b6c7f7008c3e read=0x0 ext_call=0x0
+    Run #50  seed=0xd387342b26a85865
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1300
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x44ba6a041ebfcd8f bb=0x4874462cf5e1acae mem=0x8b7b7349a10d11a1 mem_write=0x1a2b647afbfe7495 read=0x0 ext_call=0x0
+    Run #54  seed=0x8e0dd7910733ca3d
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1211
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x2069b325465677a6 bb=0x84f90ceee6c4b259 mem=0x168aa9aab0945552 mem_write=0x12f87f211c27c058 read=0x0 ext_call=0x0
+    Run #55  seed=0x5754b02840fc444
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1211
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x42ffa370874d51fe bb=0x84f90ceee6c4b259 mem=0xdc80d649635a1068 mem_write=0xd990f37144d7d64c read=0x0 ext_call=0x0
+    Run #56  seed=0xf77766c73f2f484d
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x124f
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x3706fcdfe6c2ac9 bb=0x9cc1c5ef96800c2d mem=0xb7bede0138c136f2 mem_write=0x6a0330653faca389 read=0x0 ext_call=0x0
+    Run #57  seed=0xf366e0914718fcc4
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x12e4
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xe6e6865ea7685508 bb=0x4b5a087afa4969f0 mem=0x988c7c188f4e3823 mem_write=0x6015a8d61cbdd8a2 read=0x0 ext_call=0x0
+    Run #60  seed=0xe9a66b56fed02fd0
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x126e
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x1946124dc4bb765c bb=0x8c63ce7b9c5f4059 mem=0x44696e1c6b68b33 mem_write=0xe9a7bf9496aeaf90 read=0x0 ext_call=0x0
+    Run #64  seed=0xe771e8b8c9862724
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1211
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xf807a489fdfea646 bb=0x84f90ceee6c4b259 mem=0xdba421de39743df1 mem_write=0x6759a65f1d518415 read=0x0 ext_call=0x0
+    Run #67  seed=0x465fdb6c33765900
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x131c
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x79e0159030dd98a4 bb=0xcd0cb4dd4a398139 mem=0x3156342ae2116a06 mem_write=0xd06b5f0149b67554 read=0x0 ext_call=0x0
+    Run #69  seed=0x568ce7a7bb7f32fe
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x128d
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x4e59a8c1b8edd161 bb=0xaf1ad08a47d0e336 mem=0x378bf4fe59209f49 mem_write=0x3c4215a38c88ed05 read=0x0 ext_call=0x0
+    Run #71  seed=0x3efa30a19ec433a9
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x124f
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xc5c7c35e1c21fd93 bb=0x9cc1c5ef96800c2d mem=0xf67bf33bd7e7c429 mem_write=0xe47bbcbb5a06b6e9 read=0x0 ext_call=0x0
+    Run #74  seed=0x6ff96c0f56657365
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x124f
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x60bcb570b3408c83 bb=0x9cc1c5ef96800c2d mem=0x32e79ea7992345fa mem_write=0xd35023ae2a3669a5 read=0x0 ext_call=0x0
+    Run #76  seed=0xd72aa971c895845f
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x126e
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xe7108ed772ffad60 bb=0x8c63ce7b9c5f4059 mem=0xada35dd0953ed966 mem_write=0xacc36ee3e46a4cbb read=0x0 ext_call=0x0
+    Run #80  seed=0x1b95789aa2b04ae1
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x128d
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xdb5249e4a06a7dc3 bb=0xaf1ad08a47d0e336 mem=0x73a472966295061b mem_write=0x734c0f66432dff4e read=0x0 ext_call=0x0
+    Run #85  seed=0x7bce1b9c4a69a74f
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x1230
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x26e26cce4efca460 bb=0x8a25485dd3141432 mem=0x496f96b394790686 mem_write=0x76a06cd3973985c9 read=0x0 ext_call=0x0
+    Run #93  seed=0xbcf48bc49c7d8059
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x124f
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x8a7bd1b6bbea01a7 bb=0x9cc1c5ef96800c2d mem=0x2ab54aa67f44ecf2 mem_write=0x703b7f0423985716 read=0x0 ext_call=0x0
+    Run #98  seed=0xcad89ab4e8deb4d6
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x128d
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0x108c8a808aa1fbdd bb=0xaf1ad08a47d0e336 mem=0xc50cb3cb912ee84f mem_write=0x775d11dd39b354ea read=0x0 ext_call=0x0
+    Run #99  seed=0x5c458f5fa518d3d1
+      Src exit: NATURAL_EXIT   Tgt exit: MISSING_BLOCK
+[DIFF]
+  exit_type: r1=NATURAL_EXIT  r2=MISSING_BLOCK
+  bb_trace: r1_len=5  r2_len=6  (1 divergences):
+    [5] r1=<absent>  r2=0x126e
+  checkpoints: r1_events=13  r2_events=14  (1 divergences):
+    [14] field=state
+      last 5 BBs: 0x1139  0x1174  0x1337  0x1198  0x11ed    ← state diverged at this BB entry
+      r1: state=0x0 bb=0x0 mem=0x0 mem_write=0x0 read=0x0 ext_call=0x0
+      r2: state=0xbf64afe6334e3e59 bb=0x8c63ce7b9c5f4059 mem=0x2a62bd42daeb1b3d mem_write=0x288c53479882555f read=0x0 ext_call=0x0
+
+=== Summary ===
+Total runs:   150
+PASS:         103  (68.7%)   [includes rerun-resolved]
+FAIL:         47  (31.3%)
+Unique BBs:   11
+Corpus:       150 entries
+Timing (totals across all stages):
+  Src:     10.2 ms total,    0.07 ms/run avg
+  Tgt:     61.4 ms total,    0.41 ms/run avg
+  [DEEP DIVE S1 1/1]
+Status: FAIL_DIVERGED — first divergence at checkpoint 14
+
+  Chk  Src (JIT)                                                               Tgt (Unicorn)                                                           Status
+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+    1  BB   rva=0x1139  rax=0xffffffffffffffff rcx=0xffffffffffffffff rdx=0x7  (same)                                                                  [=]
+    2  W64 addr=0x7ffefffffff8  val=0x9a59a8ed73714660                         (same)                                                                  [=]
+    3  W64 addr=0x7ffeffffeff8  val=0x6424c4cc61b209d8                         (same)                                                                  [=]
+    4  W32 addr=0x7ffeffffe0a4  val=0x1fb9a650                                 (same)                                                                  [=]
+    5  W64 addr=0x7ffeffffe098  val=0x65f79b3ebe8a0d70                         (same)                                                                  [=]
+    6  BB   rva=0x1174  rax=0xffffffffffffffff rcx=0xffffffffffffffff rdx=0x7  (same)                                                                  [=]
+    7  W32 addr=0x7ffefffffff0  val=0x0                                        (same)                                                                  [=]
+    8  W32 addr=0x7ffefffffff4  val=0x78                                       (same)                                                                  [=]
+    9  BB   rva=0x1337  rax=0x78 rcx=0xffffffffffffffff rdx=0x7035e8ec1cdb342  (same)                                                                  [=]
+   10  BB   rva=0x1198  rax=0x78 rcx=0xffffffffffffffff rdx=0x7035e8ec1cdb342  (same)                                                                  [=]
+   11  W32 addr=0x7ffeffffffe8  val=0x0                                        (same)                                                                  [=]
+   12  W32 addr=0x7ffefffffff4  val=0xc                                        (same)                                                                  [=]
+   13  BB   rva=0x11ed  rax=0xc rcx=0x0 rdx=0xc rsi=0x0 rdi=0xf8a53e9e1fb9a65  (same)                                                                  [=]
+
+>>> FIRST DIVERGENCE AT CHECKPOINT 14 <<<
+
+   14  <absent>                                                                BB   rva=0x1211  rax=0x7ffff7001211 rcx=0x0 rdx=0x7ffff7002038 rsi=0x0  [!]
+

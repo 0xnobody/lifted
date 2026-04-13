@@ -1,0 +1,8 @@
+[LIFT STATS]
+  lifted=15
+  cached=11
+  total=15
+  lift=7.01052ms
+  resolve=156.202ms
+  stitch=2.64436ms
+  total=225.995ms

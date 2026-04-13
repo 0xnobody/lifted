@@ -1,0 +1,41 @@
+digraph CFG {
+    graph [rankdir=TB, fontname="Courier New", nodesep=0.5, ranksep=0.8];
+    node  [shape=Mrecord, fontname="Courier New", fontsize=10, style=filled, fillcolor=white];
+    edge  [fontname="Courier New", fontsize=8];
+
+    "bb_0000000000001139" [label="0x1139..0x116a | CBR | hits: 150", style=filled, fillcolor="#d25b0c", penwidth=2];
+    "bb_000000000000116a" [label="0x116a..0x1174 | JMP | hits: 43", style=filled, fillcolor="#ffdd2b"];
+    "bb_0000000000001174" [label="0x1174..0x1198 | JMP | hits: 107", style=filled, fillcolor="#ff8c42"];
+    "bb_0000000000001198" [label="0x1198..0x11ed | CBR | hits: 100", style=filled, fillcolor="#ff953a"];
+    "bb_00000000000011ed" [label="0x11ed..0x1211 | IJMP | hits: 47 | DIVERGED", style=filled, fillcolor="#ffdb1a", color=red, penwidth=3];
+    "bb_0000000000001337" [label="0x1337..0x1341 | CBR | hits: 160", style=filled, fillcolor="#c75000"];
+    "bb_0000000000001341" [label="0x1341..0x134c | JMP | hits: 60", style=filled, fillcolor="#ffce08"];
+    "bb_000000000000134c" [label="0x134c..0x1370 | CALL | hits: 0", style=filled, fillcolor="#e8e8e8"];
+    "bb_0000000000001370" [label="0x1370..0x1374 | NORM | TRUNC | hits: 0", style=filled, fillcolor="#e8e8e8"];
+    "bb_0000000000001374" [label="0x1374..0x137a | CBR | hits: 60", style=filled, fillcolor="#ffce08"];
+    "bb_000000000000137a" [label="0x137a..0x1384 | CALL | hits: 60", style=filled, fillcolor="#ffce08"];
+    "bb_0000000000001384" [label="0x1384..0x1389 | NORM | TRUNC | hits: 60", style=filled, fillcolor="#ffce08"];
+    "bb_0000000000001389" [label="0x1389..0x138b | RET | hits: 103", style=filled, fillcolor="#ff913d"];
+    "bb_ffff000000000000" [label="printf", style=filled, fillcolor="lightblue", shape=hexagon];
+    "bb_ffff000000000001" [label="putchar", style=filled, fillcolor="lightblue", shape=hexagon];
+
+    "bb_0000000000001139" -> "bb_000000000000116a";
+    "bb_0000000000001139" -> "bb_0000000000001174" [color=blue, penwidth=2];
+    "bb_000000000000116a" -> "bb_0000000000001389";
+    "bb_0000000000001174" -> "bb_0000000000001337" [color=blue, penwidth=2];
+    "bb_0000000000001198" -> "bb_00000000000011ed" [color=blue, penwidth=2];
+    "bb_0000000000001198" -> "bb_0000000000001337" [color=purple, style=bold, label="×100"];
+    "bb_0000000000001337" -> "bb_0000000000001198" [color=blue, penwidth=2];
+    "bb_0000000000001337" -> "bb_0000000000001341";
+    "bb_0000000000001341" -> "bb_0000000000001374";
+    "bb_000000000000134c" -> "bb_ffff000000000000" [color=steelblue, style=dotted, label="ext"];
+    "bb_0000000000001370" -> "bb_0000000000001374" [color=purple, style=bold, label="fall"];
+    "bb_0000000000001374" -> "bb_000000000000134c";
+    "bb_0000000000001374" -> "bb_000000000000137a";
+    "bb_000000000000137a" -> "bb_ffff000000000001" [color=steelblue, style=dotted, label="ext"];
+    "bb_0000000000001384" -> "bb_0000000000001389" [color=gray, style=dashed, label="fall"];
+    "bb_ffff000000000000" -> "bb_0000000000001370" [color=darkgreen, style=dashed, label="ret"];
+    "bb_ffff000000000001" -> "bb_0000000000001384" [color=darkgreen, style=dashed, label="ret"];
+
+    __exit_badge [shape=plaintext, label="Exit: NATURAL_EXIT"];
+}
